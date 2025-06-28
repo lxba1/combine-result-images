@@ -51,7 +51,7 @@ const ImageProcessor: React.FC = () => {
     }
   };
 
-  const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value, type } = event.target;
     setSettings(prev => ({
       ...prev,
@@ -151,20 +151,20 @@ const ImageProcessor: React.FC = () => {
         Image Combiner
       </Typography>
       <Grid container spacing={3}>
-        <Grid item xs={12} md={4}>
+        <Grid xs={12} md={4}>
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>
                 Settings
               </Typography>
               <Grid container spacing={2}>
-                <Grid item xs={12}>
+                <Grid xs={12}>
                   <TextField label="Columns" type="number" name="colCount" value={settings.colCount} onChange={handleSettingChange} fullWidth />
                 </Grid>
-                <Grid item xs={12}>
+                <Grid xs={12}>
                   <TextField label="Offset (px)" type="number" name="offsetX" value={settings.offsetX} onChange={handleSettingChange} fullWidth />
                 </Grid>
-                <Grid item xs={12}>
+                <Grid xs={12}>
                     <Typography gutterBottom>Background Color</Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center' }}>
                         <Input
@@ -184,7 +184,7 @@ const ImageProcessor: React.FC = () => {
                         />
                     </Box>
                 </Grid>
-                <Grid item xs={12}>
+                <Grid xs={12}>
                     <Typography gutterBottom>Quality</Typography>
                     <Slider name="quality" value={settings.quality} onChange={handleSliderChange('quality')} aria-labelledby="input-slider" min={1} max={100} />
                 </Grid>
@@ -197,15 +197,15 @@ const ImageProcessor: React.FC = () => {
                     Cropping
                 </Typography>
                 <Grid container spacing={2}>
-                    <Grid item xs={6}><TextField label="Crop X" type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid item xs={6}><TextField label="Crop Y" type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid item xs={6}><TextField label="Crop Width" type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid item xs={6}><TextField label="Crop Height" type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid xs={6}><TextField label="Crop X" type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid xs={6}><TextField label="Crop Y" type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid xs={6}><TextField label="Crop Width" type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid xs={6}><TextField label="Crop Height" type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth /></Grid>
                 </Grid>
             </CardContent>
           </Card>
         </Grid>
-        <Grid item xs={12} md={8}>
+        <Grid xs={12} md={8}>
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>
