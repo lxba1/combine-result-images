@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input } from '@mui/material';
+import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel } from '@mui/material';
 
 interface ImageSettings {
   colCount: number;
@@ -12,6 +12,12 @@ interface ImageSettings {
   cropY: number;
   cropWidth: number;
   cropHeight: number;
+  maskEnabled: boolean;
+  maskX: number;
+  maskY: number;
+  maskWidth: number;
+  maskHeight: number;
+  maskColor: string;
 }
 
 const ImageProcessor: React.FC = () => {
@@ -31,6 +37,12 @@ const ImageProcessor: React.FC = () => {
         cropY: 117,
         cropWidth: 1538,
         cropHeight: 665,
+        maskEnabled: false,
+        maskX: 0,
+        maskY: 0,
+        maskWidth: 100,
+        maskHeight: 100,
+        maskColor: '#FFFFFF',
       };
     }
   });
@@ -51,15 +63,25 @@ const ImageProcessor: React.FC = () => {
     }
   };
 
-  const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    const { name, value, type } = event.target;
+  const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    const { name, value } = event.target;
+    let newValue: string | number | boolean = value;
+
+    if (event.target instanceof HTMLInputElement) {
+      if (event.target.type === 'number') {
+        newValue = parseInt(value, 10);
+      } else if (event.target.type === 'checkbox') {
+        newValue = event.target.checked;
+      }
+    }
+
     setSettings(prev => ({
       ...prev,
-      [name]: type === 'number' ? parseInt(value, 10) : value,
+      [name]: newValue,
     }));
   };
 
-  const handleSliderChange = (name: string) => (event: Event, value: number | number[]) => {
+  const handleSliderChange = (name: string) => (_event: Event, value: number | number[]) => {
     setSettings(prev => ({
         ...prev,
         [name]: value as number,
@@ -71,6 +93,37 @@ const ImageProcessor: React.FC = () => {
       alert('Please select images first.');
       return;
     }
+
+    // Validation for Cropping parameters
+    if (isNaN(settings.cropX) || isNaN(settings.cropY) || isNaN(settings.cropWidth) || isNaN(settings.cropHeight)) {
+      alert('Cropping parameters (X, Y, Width, Height) cannot be empty.');
+      return;
+    }
+    if (settings.cropWidth <= 0 || settings.cropHeight <= 0) {
+      alert('Cropping Width and Height must be positive values.');
+      return;
+    }
+    if (settings.cropX < 0 || settings.cropY < 0) {
+      alert('Cropping X and Y coordinates cannot be negative.');
+      return;
+    }
+
+    // Validation for Masking parameters if enabled
+    if (settings.maskEnabled) {
+      if (isNaN(settings.maskX) || isNaN(settings.maskY) || isNaN(settings.maskWidth) || isNaN(settings.maskHeight)) {
+        alert('Masking parameters (X, Y, Width, Height) cannot be empty when enabled.');
+        return;
+      }
+      if (settings.maskWidth <= 0 || settings.maskHeight <= 0) {
+        alert('Masking Width and Height must be positive values when enabled.');
+        return;
+      }
+      if (settings.maskX < 0 || settings.maskY < 0) {
+        alert('Masking X and Y coordinates cannot be negative when enabled.');
+        return;
+      }
+    }
+
     setIsProcessing(true);
     setProcessedImageUrl(null);
 
@@ -82,20 +135,37 @@ const ImageProcessor: React.FC = () => {
         return new Promise<HTMLCanvasElement>((resolve, reject) => {
           const img = new Image();
           img.onload = () => {
-            const canvas = document.createElement('canvas');
-            canvas.width = cropRect.width;
-            canvas.height = cropRect.height;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) return reject(new Error('Could not get canvas context'));
+            // Create a temporary canvas for the original image to apply mask
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = img.width;
+            tempCanvas.height = img.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            if (!tempCtx) return reject(new Error('Could not get temporary canvas context'));
 
-            // Crop
-            ctx.drawImage(img, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
+            // Draw original image onto temporary canvas
+            tempCtx.drawImage(img, 0, 0);
 
-            // Draw rectangle
-            ctx.fillStyle = drawRect.color;
-            ctx.fillRect(drawRect.x, drawRect.y, drawRect.width, drawRect.height);
+            // Apply mask if enabled
+            if (settings.maskEnabled) {
+              tempCtx.fillStyle = settings.maskColor;
+              tempCtx.fillRect(settings.maskX, settings.maskY, settings.maskWidth, settings.maskHeight);
+            }
 
-            resolve(canvas);
+            // Now, create the final canvas for cropping
+            const finalCanvas = document.createElement('canvas');
+            finalCanvas.width = cropRect.width;
+            finalCanvas.height = cropRect.height;
+            const finalCtx = finalCanvas.getContext('2d');
+            if (!finalCtx) return reject(new Error('Could not get final canvas context'));
+
+            // Crop from the temporary canvas onto the final canvas
+            finalCtx.drawImage(tempCanvas, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
+
+            // Draw rectangle (original feature) - this should be relative to the cropped canvas
+            finalCtx.fillStyle = drawRect.color;
+            finalCtx.fillRect(drawRect.x, drawRect.y, drawRect.width, drawRect.height);
+
+            resolve(finalCanvas);
           };
           img.onerror = reject;
           img.src = URL.createObjectURL(imageFile);
@@ -151,20 +221,20 @@ const ImageProcessor: React.FC = () => {
         Image Combiner
       </Typography>
       <Grid container spacing={3}>
-        <Grid item xs={12} md={4}>
+        <Grid size={{xs:12, md:4}}>
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>
                 Settings
               </Typography>
               <Grid container spacing={2}>
-                <Grid item xs={12}>
+                <Grid size={{xs:12}}>
                   <TextField label="Columns" type="number" name="colCount" value={settings.colCount} onChange={handleSettingChange} fullWidth />
                 </Grid>
-                <Grid item xs={12}>
+                <Grid size={{xs:12}}>
                   <TextField label="Offset (px)" type="number" name="offsetX" value={settings.offsetX} onChange={handleSettingChange} fullWidth />
                 </Grid>
-                <Grid item xs={12}>
+                <Grid size={{xs:12}}>
                     <Typography gutterBottom>Background Color</Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center' }}>
                         <Input
@@ -184,7 +254,7 @@ const ImageProcessor: React.FC = () => {
                         />
                     </Box>
                 </Grid>
-                <Grid item xs={12}>
+                <Grid size={{xs:12}}>
                     <Typography gutterBottom>Quality</Typography>
                     <Slider name="quality" value={settings.quality} onChange={handleSliderChange('quality')} aria-labelledby="input-slider" min={1} max={100} />
                 </Grid>
@@ -197,15 +267,62 @@ const ImageProcessor: React.FC = () => {
                     Cropping
                 </Typography>
                 <Grid container spacing={2}>
-                    <Grid item xs={6}><TextField label="Crop X" type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid item xs={6}><TextField label="Crop Y" type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid item xs={6}><TextField label="Crop Width" type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid item xs={6}><TextField label="Crop Height" type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid size={{xs:6}}><TextField label="Crop X" type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid size={{xs:6}}><TextField label="Crop Y" type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid size={{xs:6}}><TextField label="Crop Width" type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth /></Grid>
+                    <Grid size={{xs:6}}><TextField label="Crop Height" type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth /></Grid>
+                </Grid>
+            </CardContent>
+          </Card>
+          <Card sx={{ mt: 3 }}>
+            <CardContent>
+                <Typography variant="h5" component="h2" gutterBottom>
+                    Masking
+                </Typography>
+                <FormControlLabel
+                    control={<Switch checked={settings.maskEnabled} onChange={handleSettingChange} name="maskEnabled" />}
+                    label="Enable Mask"
+                />
+                <Grid container spacing={2} sx={{ mt: 1 }}>
+                    <Grid size={{xs:6}}>
+                        <TextField label="Mask X" type="number" name="maskX" value={settings.maskX} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                    </Grid>
+                    <Grid size={{xs:6}}>
+                        <TextField label="Mask Y" type="number" name="maskY" value={settings.maskY} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                    </Grid>
+                    <Grid size={{xs:6}}>
+                        <TextField label="Mask Width" type="number" name="maskWidth" value={settings.maskWidth} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                    </Grid>
+                    <Grid size={{xs:6}}>
+                        <TextField label="Mask Height" type="number" name="maskHeight" value={settings.maskHeight} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                    </Grid>
+                    <Grid size={{xs:12}}>
+                        <Typography gutterBottom>Mask Color</Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <Input
+                                type="color"
+                                name="maskColor"
+                                value={settings.maskColor}
+                                onChange={handleSettingChange}
+                                sx={{ width: 50, height: 40, p: 0, border: 'none', '&::-webkit-color-swatch-wrapper': { p: 0 }, '&::-webkit-color-swatch': { border: 'none' } }}
+                                disabled={!settings.maskEnabled}
+                            />
+                            <TextField
+                                variant="outlined"
+                                size="small"
+                                name="maskColor"
+                                value={settings.maskColor}
+                                onChange={handleSettingChange}
+                                sx={{ ml: 2, flexGrow: 1 }}
+                                disabled={!settings.maskEnabled}
+                            />
+                        </Box>
+                    </Grid>
                 </Grid>
             </CardContent>
           </Card>
         </Grid>
-        <Grid item xs={12} md={8}>
+        <Grid size={{xs:12, md:8}}>
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>
