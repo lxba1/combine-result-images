@@ -94,6 +94,16 @@ const ImageProcessor: React.FC = () => {
       return;
     }
 
+    // Validation for Columns and Offset
+    if (isNaN(settings.colCount) || settings.colCount <= 0) {
+      alert('Columns must be a positive number.');
+      return;
+    }
+    if (isNaN(settings.offsetX) || settings.offsetX < 0) {
+      alert('Offset (px) cannot be empty or negative.');
+      return;
+    }
+
     // Validation for Cropping parameters
     if (isNaN(settings.cropX) || isNaN(settings.cropY) || isNaN(settings.cropWidth) || isNaN(settings.cropHeight)) {
       alert('Cropping parameters (X, Y, Width, Height) cannot be empty.');
