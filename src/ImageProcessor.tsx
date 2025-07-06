@@ -335,14 +335,11 @@ const ImageProcessor: React.FC = () => {
                     throw new Error("Blocks array is not available in OCR result.");
                 }
 
-                console.log("Full OCR text:", ocrResult.data.text); // Log full recognized text
                 const words = ocrResult.data.blocks
                     .map(block => block.paragraphs
                         .map(paragraph => paragraph.lines
                             .map(line => line.words)))
                     .flat(3);
-
-                console.log("Raw words from OCR:", words);
 
                 if (!words || !Array.isArray(words)) {
                     console.error("'words' property is missing or not an array after extraction.");
