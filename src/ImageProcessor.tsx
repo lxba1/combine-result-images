@@ -18,13 +18,37 @@ interface ImageSettings {
   maskWidth: number;
   maskHeight: number;
   maskColor: string;
+  cropAuto: boolean;
 }
 
 const ImageProcessor: React.FC = () => {
   const [settings, setSettings] = useState<ImageSettings>(() => {
     const savedSettings = localStorage.getItem('imageProcessorSettings');
     if (savedSettings) {
-      return JSON.parse(savedSettings);
+      const loadedSettings = JSON.parse(savedSettings);
+      // Ensure cropAuto exists to avoid issues with old saved settings
+      return {
+        ...{ // Default values
+          colCount: 4,
+          offsetX: 8,
+          offsetY: 8,
+          bgColor: '#000000',
+          quality: 80,
+          webpMethod: 6,
+          cropX: 31,
+          cropY: 117,
+          cropWidth: 1538,
+          cropHeight: 665,
+          cropAuto: true,
+          maskEnabled: false,
+          maskX: 0,
+          maskY: 0,
+          maskWidth: 100,
+          maskHeight: 100,
+          maskColor: '#FFFFFF',
+        },
+        ...loadedSettings
+      };
     } else {
       return {
         colCount: 4,
@@ -37,6 +61,7 @@ const ImageProcessor: React.FC = () => {
         cropY: 117,
         cropWidth: 1538,
         cropHeight: 665,
+        cropAuto: false,
         maskEnabled: false,
         maskX: 0,
         maskY: 0,
@@ -137,7 +162,111 @@ const ImageProcessor: React.FC = () => {
     setIsProcessing(true);
     setProcessedImageUrl(null);
 
-    const cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
+    let cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
+
+    if (settings.cropAuto) {
+        const THRESHOLD = 40;
+        const ASPECT_LIMIT = 2.1;
+
+        const getLuminance = (data: Uint8ClampedArray, i: number) => {
+            return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        }
+
+        const getBandSkipX = (width: number, height: number) => {
+            if (width / height > ASPECT_LIMIT) {
+                const logicalW = height * ASPECT_LIMIT;
+                return Math.floor((width - logicalW) / 2) + 1;
+            }
+            return 0;
+        }
+
+        const findLeftToRight = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
+            const y = Math.floor(h / 2);
+            for (let x = skipX + 1; x < w; x++) {
+                const i = (y * w + x);
+                const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i - 1) * 4));
+                if (d > THRESHOLD) {
+                    return { x, y };
+                }
+            }
+            return null;
+        }
+
+        const findRightToLeft = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
+            const y = Math.floor(h / 2);
+            for (let x = w - skipX - 2; x > 0; x--) {
+                const i = (y * w + x);
+                const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i + 1) * 4));
+                if (d > THRESHOLD) {
+                    return { x, y };
+                }
+            }
+            return null;
+        }
+
+        const findTopToBottom = (data: Uint8ClampedArray, w: number, h: number) => {
+            const x = Math.floor(w / 2);
+            for (let y = 1; y < h; y++) {
+                const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y - 1) * w + x) * 4));
+                if (d > THRESHOLD) {
+                    return { x, y };
+                }
+            }
+            return null;
+        }
+
+        const findBottomToTop = (data: Uint8ClampedArray, w: number, h: number) => {
+            const x = Math.floor(w / 2);
+            for (let y = Math.floor(h * 0.95); y > 0; y--) {
+                const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y + 1) * w + x) * 4));
+                if (d > THRESHOLD) {
+                    return { x, y };
+                }
+            }
+            return null;
+        }
+
+        const firstImageFile = images[0];
+        const img = new Image();
+        img.src = URL.createObjectURL(firstImageFile);
+        await new Promise(resolve => img.onload = resolve);
+
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = img.width;
+        tempCanvas.height = img.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        if (tempCtx) {
+            tempCtx.drawImage(img, 0, 0);
+            const w = tempCanvas.width, h = tempCanvas.height;
+            const data = tempCtx.getImageData(0, 0, w, h).data;
+            const skipX = getBandSkipX(w, h);
+
+            const left = findLeftToRight(data, w, h, skipX);
+            const right = findRightToLeft(data, w, h, skipX);
+            const top = findTopToBottom(data, w, h);
+            const bottom = findBottomToTop(data, w, h);
+
+            if (left && right && top && bottom) {
+                cropRect = {
+                    x: left.x,
+                    y: top.y,
+                    width: right.x - left.x + 1,
+                    height: bottom.y - top.y + 1
+                };
+                setSettings(prev => ({ ...prev, ...cropRect }));
+            } else {
+                alert('Failed to detect crop area automatically. Please set it manually.');
+                setSettings(prev => ({ ...prev, cropAuto: false }));
+                setIsProcessing(false);
+                return;
+            }
+        } else {
+            alert('Failed to get canvas context.');
+            setIsProcessing(false);
+            return;
+        }
+    }
+
     const drawRect = { x: 1308 - cropRect.x, y: 209 - cropRect.y, width: 1566 - 1308, height: 247 - 209, color: '#ffe1d8' };
 
     const processedImages: HTMLCanvasElement[] = await Promise.all(
@@ -276,11 +405,15 @@ const ImageProcessor: React.FC = () => {
                 <Typography variant="h5" component="h2" gutterBottom>
                     Cropping
                 </Typography>
-                <Grid container spacing={2}>
-                    <Grid size={{xs:6}}><TextField label="Crop X" type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid size={{xs:6}}><TextField label="Crop Y" type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid size={{xs:6}}><TextField label="Crop Width" type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth /></Grid>
-                    <Grid size={{xs:6}}><TextField label="Crop Height" type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth /></Grid>
+                <FormControlLabel
+                    control={<Switch checked={settings.cropAuto} onChange={handleSettingChange} name="cropAuto" />}
+                    label="Enable Auto Mode"
+                />
+                <Grid container spacing={2} sx={{ mt: 1 }}>
+                    <Grid size={{xs:6}}><TextField label="Crop X" type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                    <Grid size={{xs:6}}><TextField label="Crop Y" type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                    <Grid size={{xs:6}}><TextField label="Crop Width" type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                    <Grid size={{xs:6}}><TextField label="Crop Height" type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
                 </Grid>
             </CardContent>
           </Card>
