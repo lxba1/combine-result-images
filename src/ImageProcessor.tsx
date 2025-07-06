@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel } from '@mui/material';
+import Tesseract, { PSM } from 'tesseract.js';
 
 interface ImageSettings {
   colCount: number;
@@ -19,6 +20,7 @@ interface ImageSettings {
   maskHeight: number;
   maskColor: string;
   cropAuto: boolean;
+  maskAuto: boolean;
 }
 
 const ImageProcessor: React.FC = () => {
@@ -41,6 +43,7 @@ const ImageProcessor: React.FC = () => {
           cropHeight: 665,
           cropAuto: true,
           maskEnabled: false,
+          maskAuto: true,
           maskX: 0,
           maskY: 0,
           maskWidth: 100,
@@ -61,8 +64,9 @@ const ImageProcessor: React.FC = () => {
         cropY: 117,
         cropWidth: 1538,
         cropHeight: 665,
-        cropAuto: false,
+        cropAuto: true,
         maskEnabled: false,
+        maskAuto: false,
         maskX: 0,
         maskY: 0,
         maskWidth: 100,
@@ -79,6 +83,7 @@ const ImageProcessor: React.FC = () => {
   const [images, setImages] = useState<File[]>([]);
   const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState('');
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -119,126 +124,155 @@ const ImageProcessor: React.FC = () => {
       return;
     }
 
-    // Validation for Columns and Offset
-    if (isNaN(settings.colCount) || settings.colCount <= 0) {
-      alert('Columns must be a positive number.');
-      return;
-    }
-    if (isNaN(settings.offsetX) || settings.offsetX < 0) {
-      alert('Offset (px) cannot be empty or negative.');
-      return;
-    }
+    const validateSettings = (): boolean => {
+      // Validation for Columns and Offset
+      if (isNaN(settings.colCount) || settings.colCount <= 0) {
+        alert('Columns must be a positive number.');
+        return false;
+      }
+      if (isNaN(settings.offsetX) || settings.offsetX < 0) {
+        alert('Offset (px) cannot be empty or negative.');
+        return false;
+      }
 
-    // Validation for Cropping parameters
-    if (isNaN(settings.cropX) || isNaN(settings.cropY) || isNaN(settings.cropWidth) || isNaN(settings.cropHeight)) {
-      alert('Cropping parameters (X, Y, Width, Height) cannot be empty.');
-      return;
-    }
-    if (settings.cropWidth <= 0 || settings.cropHeight <= 0) {
-      alert('Cropping Width and Height must be positive values.');
-      return;
-    }
-    if (settings.cropX < 0 || settings.cropY < 0) {
-      alert('Cropping X and Y coordinates cannot be negative.');
-      return;
-    }
+      // Validation for Cropping parameters
+      if (isNaN(settings.cropX) || isNaN(settings.cropY) || isNaN(settings.cropWidth) || isNaN(settings.cropHeight)) {
+        alert('Cropping parameters (X, Y, Width, Height) cannot be empty.');
+        return false;
+      }
+      if (settings.cropWidth <= 0 || settings.cropHeight <= 0) {
+        alert('Cropping Width and Height must be positive values.');
+        return false;
+      }
+      if (settings.cropX < 0 || settings.cropY < 0) {
+        alert('Cropping X and Y coordinates cannot be negative.');
+        return false;
+      }
 
-    // Validation for Masking parameters if enabled
-    if (settings.maskEnabled) {
-      if (isNaN(settings.maskX) || isNaN(settings.maskY) || isNaN(settings.maskWidth) || isNaN(settings.maskHeight)) {
-        alert('Masking parameters (X, Y, Width, Height) cannot be empty when enabled.');
-        return;
+      // Validation for Masking parameters if enabled
+      if (settings.maskEnabled) {
+        if (isNaN(settings.maskX) || isNaN(settings.maskY) || isNaN(settings.maskWidth) || isNaN(settings.maskHeight)) {
+          alert('Masking parameters (X, Y, Width, Height) cannot be empty when enabled.');
+          return false;
+        }
+        if (settings.maskWidth <= 0 || settings.maskHeight <= 0) {
+          alert('Masking Width and Height must be positive values when enabled.');
+          return false;
+        }
+        if (settings.maskX < 0 || settings.maskY < 0) {
+          alert('Masking X and Y coordinates cannot be negative when enabled.');
+          return false;
+        }
       }
-      if (settings.maskWidth <= 0 || settings.maskHeight <= 0) {
-        alert('Masking Width and Height must be positive values when enabled.');
-        return;
-      }
-      if (settings.maskX < 0 || settings.maskY < 0) {
-        alert('Masking X and Y coordinates cannot be negative when enabled.');
-        return;
-      }
+      return true;
+    };
+
+    if (!validateSettings()) {
+      return;
     }
 
     setIsProcessing(true);
     setProcessedImageUrl(null);
 
     let cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
+    let currentMaskRect = { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight };
 
-    if (settings.cropAuto) {
-        const THRESHOLD = 40;
-        const ASPECT_LIMIT = 2.1;
+    // Create a single temporary canvas for all intermediate image manipulations
+    const sharedTempCanvas = document.createElement('canvas');
+    const sharedTempCtx = sharedTempCanvas.getContext('2d');
+    if (!sharedTempCtx) {
+        alert('Failed to get shared canvas context.');
+        setIsProcessing(false);
+        return;
+    }
 
-        const getLuminance = (data: Uint8ClampedArray, i: number) => {
-            return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        }
-
-        const getBandSkipX = (width: number, height: number) => {
-            if (width / height > ASPECT_LIMIT) {
-                const logicalW = height * ASPECT_LIMIT;
-                return Math.floor((width - logicalW) / 2) + 1;
-            }
-            return 0;
-        }
-
-        const findLeftToRight = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
-            const y = Math.floor(h / 2);
-            for (let x = skipX + 1; x < w; x++) {
-                const i = (y * w + x);
-                const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i - 1) * 4));
-                if (d > THRESHOLD) {
-                    return { x, y };
-                }
-            }
-            return null;
-        }
-
-        const findRightToLeft = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
-            const y = Math.floor(h / 2);
-            for (let x = w - skipX - 2; x > 0; x--) {
-                const i = (y * w + x);
-                const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i + 1) * 4));
-                if (d > THRESHOLD) {
-                    return { x, y };
-                }
-            }
-            return null;
-        }
-
-        const findTopToBottom = (data: Uint8ClampedArray, w: number, h: number) => {
-            const x = Math.floor(w / 2);
-            for (let y = 1; y < h; y++) {
-                const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y - 1) * w + x) * 4));
-                if (d > THRESHOLD) {
-                    return { x, y };
-                }
-            }
-            return null;
-        }
-
-        const findBottomToTop = (data: Uint8ClampedArray, w: number, h: number) => {
-            const x = Math.floor(w / 2);
-            for (let y = Math.floor(h * 0.95); y > 0; y--) {
-                const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y + 1) * w + x) * 4));
-                if (d > THRESHOLD) {
-                    return { x, y };
-                }
-            }
-            return null;
-        }
-
+    const loadAndDrawFirstImage = async (): Promise<HTMLImageElement | null> => {
+        if (images.length === 0) return null;
         const firstImageFile = images[0];
         const img = new Image();
         img.src = URL.createObjectURL(firstImageFile);
         await new Promise(resolve => img.onload = resolve);
+        sharedTempCanvas.width = img.naturalWidth;
+        sharedTempCanvas.height = img.naturalHeight;
+        sharedTempCtx.drawImage(img, 0, 0);
+        return img;
+    };
 
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = img.width;
-        tempCanvas.height = img.height;
-        const tempCtx = tempCanvas.getContext('2d');
-        if (tempCtx) {
-            tempCtx.drawImage(img, 0, 0);
-            const w = tempCanvas.width, h = tempCanvas.height;
-            const data = tempCtx.getImageData(0, 0, w, h).data;
+    let firstImageLoaded: HTMLImageElement | null = null;
+    if (settings.cropAuto || (settings.maskEnabled && settings.maskAuto)) {
+        firstImageLoaded = await loadAndDrawFirstImage();
+        if (!firstImageLoaded) {
+            setIsProcessing(false);
+            return;
+        }
+    }
+
+    if (settings.cropAuto) {
+        const performAutoCrop = (): boolean => {
+            const THRESHOLD = 40;
+            const ASPECT_LIMIT = 2.1;
+
+            const getLuminance = (data: Uint8ClampedArray, i: number) => {
+                return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            }
+
+            const getBandSkipX = (width: number, height: number) => {
+                if (width / height > ASPECT_LIMIT) {
+                    const logicalW = height * ASPECT_LIMIT;
+                    return Math.floor((width - logicalW) / 2) + 1;
+                }
+                return 0;
+            }
+
+            const findLeftToRight = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
+                const y = Math.floor(h / 2);
+                for (let x = skipX + 1; x < w; x++) {
+                    const i = (y * w + x);
+                    const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i - 1) * 4));
+                    if (d > THRESHOLD) {
+                        return { x, y };
+                    }
+                }
+                return null;
+            }
+
+            const findRightToLeft = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
+                const y = Math.floor(h / 2);
+                for (let x = w - skipX - 2; x > 0; x--) {
+                    const i = (y * w + x);
+                    const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i + 1) * 4));
+                    if (d > THRESHOLD) {
+                        return { x, y };
+                    }
+                }
+                return null;
+            }
+
+            const findTopToBottom = (data: Uint8ClampedArray, w: number, h: number) => {
+                const x = Math.floor(w / 2);
+                for (let y = 1; y < h; y++) {
+                    const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y - 1) * w + x) * 4));
+                    if (d > THRESHOLD) {
+                        return { x, y };
+                    }
+                }
+                return null;
+            }
+
+            const findBottomToTop = (data: Uint8ClampedArray, w: number, h: number) => {
+                const x = Math.floor(w / 2);
+                for (let y = Math.floor(h * 0.95); y > 0; y--) {
+                    const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y + 1) * w + x) * 4));
+                    if (d > THRESHOLD) {
+                        return { x, y };
+                    }
+                }
+                return null;
+            }
+
+            // Use sharedTempCanvas and sharedTempCtx directly
+            const w = sharedTempCanvas.width, h = sharedTempCanvas.height;
+            const data = sharedTempCtx.getImageData(0, 0, w, h).data;
             const skipX = getBandSkipX(w, h);
 
             const left = findLeftToRight(data, w, h, skipX);
@@ -254,14 +288,130 @@ const ImageProcessor: React.FC = () => {
                     height: bottom.y - top.y + 1
                 };
                 setSettings(prev => ({ ...prev, ...cropRect }));
+                return true;
             } else {
                 alert('Failed to detect crop area automatically. Please set it manually.');
                 setSettings(prev => ({ ...prev, cropAuto: false }));
-                setIsProcessing(false);
-                return;
+                return false;
             }
-        } else {
-            alert('Failed to get canvas context.');
+        };
+        if (!performAutoCrop()) {
+            setIsProcessing(false);
+            return;
+        }
+    }
+
+    if (settings.maskEnabled && settings.maskAuto) {
+        const performAutoMask = async (): Promise<boolean> => {
+            if (!firstImageLoaded) {
+                alert('First image not loaded for auto mask.');
+                setSettings(prev => ({ ...prev, maskAuto: false }));
+                return false;
+            }
+
+            setOcrStatus('Starting OCR...');
+            // sharedTempCanvas already has the first image drawn if cropAuto was true, or it will be drawn here if only maskAuto is true.
+            // So, we can directly use sharedTempCanvas for OCR.
+
+            const worker = await Tesseract.createWorker('jpn+eng', 1, {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        setOcrStatus(`Recognizing: ${Math.round(m.progress * 100)}%`);
+                    } else {
+                        setOcrStatus(m.status);
+                    }
+                },
+            });
+
+            await worker.setParameters({
+                tessedit_pageseg_mode: PSM.SPARSE_TEXT, // PSM.SPARSE_TEXT for sparse text
+            });
+
+            try {
+                const ocrResult = await worker.recognize(sharedTempCanvas, {}, { blocks: true });
+
+                if (!ocrResult.data.blocks) {
+                    console.error("'blocks' property is missing in OCR result data.");
+                    throw new Error("Blocks array is not available in OCR result.");
+                }
+
+                console.log("Full OCR text:", ocrResult.data.text); // Log full recognized text
+                const words = ocrResult.data.blocks
+                    .map(block => block.paragraphs
+                        .map(paragraph => paragraph.lines
+                            .map(line => line.words)))
+                    .flat(3);
+
+                console.log("Raw words from OCR:", words);
+
+                if (!words || !Array.isArray(words)) {
+                    console.error("'words' property is missing or not an array after extraction.");
+                    throw new Error("Words array is not available in OCR result.");
+                }
+
+                const lvWords = words.filter(word => word.text && word.text.match(/Lv\.\d+/i));
+
+                let targetLvWord = null;
+                if (lvWords.length > 0) {
+                    const imageCenterX = firstImageLoaded.naturalWidth / 2;
+                    const imageTopSectionY = firstImageLoaded.naturalHeight * 0.4;
+
+                    const potentialLvWords = lvWords.filter(word => {
+                        const bbox = word.bbox;
+                        return bbox.x0 > imageCenterX && bbox.y0 < imageTopSectionY;
+                    });
+
+                    if (potentialLvWords.length > 0) {
+                        targetLvWord = potentialLvWords.reduce((prev, current) => {
+                            if (prev.bbox.y0 === current.bbox.y0) {
+                                return (prev.bbox.x0 < current.bbox.x0) ? prev : current;
+                            }
+                            return (prev.bbox.y0 < current.bbox.y0) ? prev : current;
+                        });
+                    }
+                }
+
+                if (targetLvWord) {
+                    const lvBbox = targetLvWord.bbox;
+
+                    const maskPaddingYTop = 5;
+                    const maskPaddingYBottom = 5;
+                    const maskPaddingXLeft = 5;
+
+                    const finalMaskX = Math.max(0, lvBbox.x0 - maskPaddingXLeft);
+                    const baseTopY = lvBbox.y0; // Masking based only on Lv bbox
+                    const finalMaskY = Math.max(0, baseTopY - maskPaddingYTop);
+                    const baseBottomY = lvBbox.y1; // Masking based only on Lv bbox
+                    const finalMaskHeight = (baseBottomY - baseTopY) + maskPaddingYTop + maskPaddingYBottom;
+                    const finalMaskWidth = firstImageLoaded.naturalWidth - finalMaskX;
+
+                    currentMaskRect = {
+                        x: finalMaskX,
+                        y: finalMaskY,
+                        width: finalMaskWidth,
+                        height: Math.min(finalMaskHeight, firstImageLoaded.naturalHeight - finalMaskY),
+                    };
+                    setSettings(prev => ({ ...prev, ...currentMaskRect })); // settingsも更新しておく
+                    setOcrStatus('Mask area detected.');
+                    return true;
+
+                } else {
+                    alert('Could not find "Lv." text in the upper right. Disabling auto mask mode.');
+                    setSettings(prev => ({ ...prev, maskAuto: false }));
+                    setOcrStatus('');
+                    return false;
+                }
+            } catch (error) {
+                console.error("OCR Error:", error);
+                alert('An error occurred during OCR processing. Disabling auto mask mode.');
+                setSettings(prev => ({ ...prev, maskAuto: false }));
+                setOcrStatus('');
+                return false;
+            } finally {
+                await worker.terminate();
+            }
+        };
+        if (!await performAutoMask()) {
             setIsProcessing(false);
             return;
         }
@@ -269,87 +419,89 @@ const ImageProcessor: React.FC = () => {
 
     const drawRect = { x: 1308 - cropRect.x, y: 209 - cropRect.y, width: 1566 - 1308, height: 247 - 209, color: '#ffe1d8' };
 
-    const processedImages: HTMLCanvasElement[] = await Promise.all(
-      images.map(imageFile => {
+    const processSingleImage = (imageFile: File): Promise<HTMLCanvasElement> => {
         return new Promise<HTMLCanvasElement>((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => {
-            // Create a temporary canvas for the original image to apply mask
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = img.width;
-            tempCanvas.height = img.height;
-            const tempCtx = tempCanvas.getContext('2d');
-            if (!tempCtx) return reject(new Error('Could not get temporary canvas context'));
+            const img = new Image();
+            img.onload = () => {
+                // Use the shared temporary canvas for image manipulation
+                sharedTempCanvas.width = img.width;
+                sharedTempCanvas.height = img.height;
+                sharedTempCtx.drawImage(img, 0, 0);
 
-            // Draw original image onto temporary canvas
-            tempCtx.drawImage(img, 0, 0);
+                // Apply mask if enabled
+                if (settings.maskEnabled) {
+                    sharedTempCtx.fillStyle = settings.maskColor;
+                    sharedTempCtx.fillRect(currentMaskRect.x, currentMaskRect.y, currentMaskRect.width, currentMaskRect.height);
+                }
 
-            // Apply mask if enabled
-            if (settings.maskEnabled) {
-              tempCtx.fillStyle = settings.maskColor;
-              tempCtx.fillRect(settings.maskX, settings.maskY, settings.maskWidth, settings.maskHeight);
-            }
+                // Now, create the final canvas for cropping
+                const finalCanvas = document.createElement('canvas');
+                finalCanvas.width = cropRect.width;
+                finalCanvas.height = cropRect.height;
+                const finalCtx = finalCanvas.getContext('2d');
+                if (!finalCtx) return reject(new Error('Could not get final canvas context'));
 
-            // Now, create the final canvas for cropping
-            const finalCanvas = document.createElement('canvas');
-            finalCanvas.width = cropRect.width;
-            finalCanvas.height = cropRect.height;
-            const finalCtx = finalCanvas.getContext('2d');
-            if (!finalCtx) return reject(new Error('Could not get final canvas context'));
+                // Crop from the shared temporary canvas onto the final canvas
+                finalCtx.drawImage(sharedTempCanvas, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
 
-            // Crop from the temporary canvas onto the final canvas
-            finalCtx.drawImage(tempCanvas, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
+                // Draw rectangle (original feature) - this should be relative to the cropped canvas
+                finalCtx.fillStyle = drawRect.color;
+                finalCtx.fillRect(drawRect.x, drawRect.y, drawRect.width, drawRect.height);
 
-            // Draw rectangle (original feature) - this should be relative to the cropped canvas
-            finalCtx.fillStyle = drawRect.color;
-            finalCtx.fillRect(drawRect.x, drawRect.y, drawRect.width, drawRect.height);
-
-            resolve(finalCanvas);
-          };
-          img.onerror = reject;
-          img.src = URL.createObjectURL(imageFile);
+                resolve(finalCanvas);
+            };
+            img.onerror = reject;
+            img.src = URL.createObjectURL(imageFile);
         });
-      })
+    };
+
+    const processedImages: HTMLCanvasElement[] = await Promise.all(
+      images.map(imageFile => processSingleImage(imageFile))
     );
 
-    if (processedImages.length > 0) {
-      const firstImage = processedImages[0];
-      const imageWidth = firstImage.width;
-      const imageHeight = firstImage.height;
-      const cols = Math.min(settings.colCount, processedImages.length);
-      const rows = Math.ceil(processedImages.length / cols);
+    const createMontage = (): string | null => {
+        if (processedImages.length === 0) {
+            return null;
+        }
+        const firstImage = processedImages[0];
+        const imageWidth = firstImage.width;
+        const imageHeight = firstImage.height;
+        const cols = Math.min(settings.colCount, processedImages.length);
+        const rows = Math.ceil(processedImages.length / cols);
 
-      const montageCanvas = canvasRef.current;
-      if (!montageCanvas) {
-        setIsProcessing(false);
-        return;
-      }
-      const montageCtx = montageCanvas.getContext('2d');
-      if (!montageCtx) {
-        setIsProcessing(false);
-        return;
-      }
+        const montageCanvas = canvasRef.current;
+        if (!montageCanvas) {
+            setIsProcessing(false);
+            return null;
+        }
+        const montageCtx = montageCanvas.getContext('2d');
+        if (!montageCtx) {
+            setIsProcessing(false);
+            return null;
+        }
 
-      montageCanvas.width = (imageWidth * cols) + (settings.offsetX * (cols + 1));
-      montageCanvas.height = (imageHeight * rows) + (settings.offsetY * (rows + 1));
+        montageCanvas.width = (imageWidth * cols) + (settings.offsetX * (cols + 1));
+        montageCanvas.height = (imageHeight * rows) + (settings.offsetY * (rows + 1));
 
 
-      // Background color
-      montageCtx.fillStyle = settings.bgColor;
-      montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
+        // Background color
+        montageCtx.fillStyle = settings.bgColor;
+        montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
-      // Draw images
-      processedImages.forEach((img, index) => {
-        const row = Math.floor(index / cols);
-        const col = index % cols;
-        const x = settings.offsetX + col * (imageWidth + settings.offsetX);
-        const y = settings.offsetY + row * (imageHeight + settings.offsetY);
-        montageCtx.drawImage(img, x, y);
-      });
+        // Draw images
+        processedImages.forEach((img, index) => {
+            const row = Math.floor(index / cols);
+            const col = index % cols;
+            const x = settings.offsetX + col * (imageWidth + settings.offsetX);
+            const y = settings.offsetY + row * (imageHeight + settings.offsetY);
+            montageCtx.drawImage(img, x, y);
+        });
 
-      const url = montageCanvas.toDataURL('image/webp', settings.quality / 100);
-      setProcessedImageUrl(url);
-    }
+        return montageCanvas.toDataURL('image/webp', settings.quality / 100);
+    };
+
+    const url = createMontage();
+    setProcessedImageUrl(url);
 
     setIsProcessing(false);
   };
@@ -426,18 +578,24 @@ const ImageProcessor: React.FC = () => {
                     control={<Switch checked={settings.maskEnabled} onChange={handleSettingChange} name="maskEnabled" />}
                     label="Enable Mask"
                 />
+                {settings.maskEnabled && (
+                    <FormControlLabel
+                        control={<Switch checked={settings.maskAuto} onChange={handleSettingChange} name="maskAuto" />}
+                        label="Enable Auto Mode"
+                    />
+                )}
                 <Grid container spacing={2} sx={{ mt: 1 }}>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask X" type="number" name="maskX" value={settings.maskX} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                        <TextField label="Mask X" type="number" name="maskX" value={settings.maskX} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask Y" type="number" name="maskY" value={settings.maskY} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                        <TextField label="Mask Y" type="number" name="maskY" value={settings.maskY} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask Width" type="number" name="maskWidth" value={settings.maskWidth} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                        <TextField label="Mask Width" type="number" name="maskWidth" value={settings.maskWidth} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask Height" type="number" name="maskHeight" value={settings.maskHeight} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled} />
+                        <TextField label="Mask Height" type="number" name="maskHeight" value={settings.maskHeight} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:12}}>
                         <Typography gutterBottom>Mask Color</Typography>
@@ -481,6 +639,7 @@ const ImageProcessor: React.FC = () => {
                   {isProcessing ? <CircularProgress size={24} /> : 'Process Images'}
                 </Button>
               </Box>
+              {ocrStatus && <Typography sx={{ mt: 1 }}>{ocrStatus}</Typography>}
               {processedImageUrl && (
                 <Box sx={{ mt: 2 }}>
                   <Typography variant="h6" gutterBottom>Result</Typography>
