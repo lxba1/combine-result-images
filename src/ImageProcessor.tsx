@@ -177,24 +177,12 @@ const ImageProcessor: React.FC = () => {
     let cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
     let currentMaskRect = { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight };
 
-    // Create a single temporary canvas for all intermediate image manipulations
-    const sharedTempCanvas = document.createElement('canvas');
-    const sharedTempCtx = sharedTempCanvas.getContext('2d');
-    if (!sharedTempCtx) {
-        alert('Failed to get shared canvas context.');
-        setIsProcessing(false);
-        return;
-    }
-
     const loadAndDrawFirstImage = async (): Promise<HTMLImageElement | null> => {
         if (images.length === 0) return null;
         const firstImageFile = images[0];
         const img = new Image();
         img.src = URL.createObjectURL(firstImageFile);
         await new Promise(resolve => img.onload = resolve);
-        sharedTempCanvas.width = img.naturalWidth;
-        sharedTempCanvas.height = img.naturalHeight;
-        sharedTempCtx.drawImage(img, 0, 0);
         return img;
     };
 
@@ -270,9 +258,20 @@ const ImageProcessor: React.FC = () => {
                 return null;
             }
 
-            // Use sharedTempCanvas and sharedTempCtx directly
-            const w = sharedTempCanvas.width, h = sharedTempCanvas.height;
-            const data = sharedTempCtx.getImageData(0, 0, w, h).data;
+            // Use a temporary canvas for image manipulation within auto-crop
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            if (!tempCtx) {
+                alert('Failed to get temporary canvas context for auto-crop.');
+                return false;
+            }
+
+            tempCanvas.width = firstImageLoaded!.naturalWidth;
+            tempCanvas.height = firstImageLoaded!.naturalHeight;
+            tempCtx.drawImage(firstImageLoaded!, 0, 0);
+
+            const w = tempCanvas.width, h = tempCanvas.height;
+            const data = tempCtx.getImageData(0, 0, w, h).data;
             const skipX = getBandSkipX(w, h);
 
             const left = findLeftToRight(data, w, h, skipX);
@@ -310,8 +309,6 @@ const ImageProcessor: React.FC = () => {
             }
 
             setOcrStatus('Starting OCR...');
-            // sharedTempCanvas already has the first image drawn if cropAuto was true, or it will be drawn here if only maskAuto is true.
-            // So, we can directly use sharedTempCanvas for OCR.
 
             const worker = await Tesseract.createWorker('jpn+eng', 1, {
                 logger: m => {
@@ -328,7 +325,8 @@ const ImageProcessor: React.FC = () => {
             });
 
             try {
-                const ocrResult = await worker.recognize(sharedTempCanvas, {}, { blocks: true });
+                const arrayBuffer = await images[0].arrayBuffer() as any;
+                const ocrResult = await worker.recognize(arrayBuffer, {}, { blocks: true });
 
                 if (!ocrResult.data.blocks) {
                     console.error("'blocks' property is missing in OCR result data.");
@@ -370,6 +368,7 @@ const ImageProcessor: React.FC = () => {
 
                 if (targetLvWord) {
                     const lvBbox = targetLvWord.bbox;
+                    console.log("Detected Lv bbox:", lvBbox); // Log Lv bbox for debugging
 
                     const maskPaddingYTop = 5;
                     const maskPaddingYBottom = 5;
@@ -420,15 +419,19 @@ const ImageProcessor: React.FC = () => {
         return new Promise<HTMLCanvasElement>((resolve, reject) => {
             const img = new Image();
             img.onload = () => {
-                // Use the shared temporary canvas for image manipulation
-                sharedTempCanvas.width = img.width;
-                sharedTempCanvas.height = img.height;
-                sharedTempCtx.drawImage(img, 0, 0);
+                // Create a temporary canvas for image manipulation
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+                if (!tempCtx) return reject(new Error('Could not get temporary canvas context'));
+
+                tempCanvas.width = img.width;
+                tempCanvas.height = img.height;
+                tempCtx.drawImage(img, 0, 0);
 
                 // Apply mask if enabled
                 if (settings.maskEnabled) {
-                    sharedTempCtx.fillStyle = settings.maskColor;
-                    sharedTempCtx.fillRect(currentMaskRect.x, currentMaskRect.y, currentMaskRect.width, currentMaskRect.height);
+                    tempCtx.fillStyle = settings.maskColor;
+                    tempCtx.fillRect(currentMaskRect.x, currentMaskRect.y, currentMaskRect.width, currentMaskRect.height);
                 }
 
                 // Now, create the final canvas for cropping
@@ -438,8 +441,8 @@ const ImageProcessor: React.FC = () => {
                 const finalCtx = finalCanvas.getContext('2d');
                 if (!finalCtx) return reject(new Error('Could not get final canvas context'));
 
-                // Crop from the shared temporary canvas onto the final canvas
-                finalCtx.drawImage(sharedTempCanvas, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
+                // Crop from the temporary canvas onto the final canvas
+                finalCtx.drawImage(tempCanvas, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
 
                 // Draw rectangle (original feature) - this should be relative to the cropped canvas
                 finalCtx.fillStyle = drawRect.color;
