@@ -35,7 +35,7 @@
   "alert_masking_width_height_must_be_positive": "マスキングの幅と高さは正数にしてください。",
   "alert_masking_xy_cannot_be_negative": "マスキングのX座標とY座標は正数にしてください。",
   "alert_failed_to_get_temp_canvas_context_for_auto_crop": "オートモード用の一時的なコンテキストの取得に失敗しました。",
-  "alert_failed_to_detect_crop_area": "マスキング領域の自動検出に失敗しました。手動で設定してください。",
+  "alert_failed_to_detect_crop_area": "マスク領域の自動検出に失敗しました。手動で設定してください。",
   "alert_first_image_not_loaded_for_auto_mask": "マスキングのための最初の画像が読み込まれていません。",
   "alert_could_not_find_lv_text": "右上の「Lv.」テキストが見つかりませんでした。オートモードを無効にします。",
   "alert_ocr_error": "OCR処理中にエラーが発生しました。オートモードを無効にします。",
