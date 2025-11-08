@@ -639,7 +639,7 @@ const ImageProcessor: React.FC = () => {
                   {isProcessing ? <CircularProgress size={24} /> : 'Process Images'}
                 </Button>
               </Box>
-              {ocrStatus && <Typography sx={{ mt: 1 }}>{ocrStatus}</Typography>}
+              {ocrStatus && <Typography sx={{ mt: 1 }} translate="no">{ocrStatus}</Typography>}
               {processedImageUrl && (
                 <Box sx={{ mt: 2 }}>
                   <Typography variant="h6" gutterBottom>Result</Typography>
