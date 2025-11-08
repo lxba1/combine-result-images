@@ -23,4 +23,9 @@ i18n
     },
   });
 
+// Dynamically update the HTML lang attribute when the language changes
+i18n.on('languageChanged', (lng) => {
+  document.documentElement.lang = lng;
+});
+
 export default i18n;
