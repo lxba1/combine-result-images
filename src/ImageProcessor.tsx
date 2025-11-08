@@ -518,7 +518,17 @@ const ImageProcessor: React.FC = () => {
             montageCtx.drawImage(img, x, y);
         });
 
-        return montageCanvas.toDataURL('image/webp', settings.quality / 100);
+        try {
+          const url = montageCanvas.toDataURL('image/webp', settings.quality / 100);
+          if (!url || url === 'data:,') {
+            throw new Error('Generated empty image data.');
+          }
+          return url;
+        } catch (e) {
+          console.error("Failed to generate image:", e);
+          alert(t('alert_image_generation_failed'));
+          return null;
+        }
     };
 
     const url = createMontage();
