@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 
@@ -24,6 +25,8 @@ interface ImageSettings {
 }
 
 const ImageProcessor: React.FC = () => {
+  const { t } = useTranslation();
+
   const [settings, setSettings] = useState<ImageSettings>(() => {
     const savedSettings = localStorage.getItem('imageProcessorSettings');
     if (savedSettings) {
@@ -120,47 +123,47 @@ const ImageProcessor: React.FC = () => {
 
   const processImages = async () => {
     if (images.length === 0) {
-      alert('Please select images first.');
+      alert(t('alert_select_images_first'));
       return;
     }
 
     const validateSettings = (): boolean => {
       // Validation for Columns and Offset
       if (isNaN(settings.colCount) || settings.colCount <= 0) {
-        alert('Columns must be a positive number.');
+        alert(t('alert_columns_must_be_positive'));
         return false;
       }
       if (isNaN(settings.offsetX) || settings.offsetX < 0) {
-        alert('Offset (px) cannot be empty or negative.');
+        alert(t('alert_offset_cannot_be_empty_or_negative'));
         return false;
       }
 
       // Validation for Cropping parameters
       if (isNaN(settings.cropX) || isNaN(settings.cropY) || isNaN(settings.cropWidth) || isNaN(settings.cropHeight)) {
-        alert('Cropping parameters (X, Y, Width, Height) cannot be empty.');
+        alert(t('alert_cropping_params_cannot_be_empty'));
         return false;
       }
       if (settings.cropWidth <= 0 || settings.cropHeight <= 0) {
-        alert('Cropping Width and Height must be positive values.');
+        alert(t('alert_cropping_width_height_must_be_positive'));
         return false;
       }
       if (settings.cropX < 0 || settings.cropY < 0) {
-        alert('Cropping X and Y coordinates cannot be negative.');
+        alert(t('alert_cropping_xy_cannot_be_negative'));
         return false;
       }
 
       // Validation for Masking parameters if enabled
       if (settings.maskEnabled) {
         if (isNaN(settings.maskX) || isNaN(settings.maskY) || isNaN(settings.maskWidth) || isNaN(settings.maskHeight)) {
-          alert('Masking parameters (X, Y, Width, Height) cannot be empty when enabled.');
+          alert(t('alert_masking_params_cannot_be_empty'));
           return false;
         }
         if (settings.maskWidth <= 0 || settings.maskHeight <= 0) {
-          alert('Masking Width and Height must be positive values when enabled.');
+          alert(t('alert_masking_width_height_must_be_positive'));
           return false;
         }
         if (settings.maskX < 0 || settings.maskY < 0) {
-          alert('Masking X and Y coordinates cannot be negative when enabled.');
+          alert(t('alert_masking_xy_cannot_be_negative'));
           return false;
         }
       }
@@ -262,7 +265,7 @@ const ImageProcessor: React.FC = () => {
             const tempCanvas = document.createElement('canvas');
             const tempCtx = tempCanvas.getContext('2d');
             if (!tempCtx) {
-                alert('Failed to get temporary canvas context for auto-crop.');
+                alert(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'));
                 return false;
             }
 
@@ -289,7 +292,7 @@ const ImageProcessor: React.FC = () => {
                 setSettings(prev => ({ ...prev, ...cropRect }));
                 return true;
             } else {
-                alert('Failed to detect crop area automatically. Please set it manually.');
+                alert(t('alert_failed_to_detect_crop_area'));
                 setSettings(prev => ({ ...prev, cropAuto: false }));
                 return false;
             }
@@ -303,19 +306,37 @@ const ImageProcessor: React.FC = () => {
     if (settings.maskEnabled && settings.maskAuto) {
         const performAutoMask = async (): Promise<boolean> => {
             if (!firstImageLoaded) {
-                alert('First image not loaded for auto mask.');
+                alert(t('alert_first_image_not_loaded_for_auto_mask'));
                 setSettings(prev => ({ ...prev, maskAuto: false }));
                 return false;
             }
 
-            setOcrStatus('Starting OCR...');
+            setOcrStatus(t('ocr_status_starting'));
 
             const worker = await Tesseract.createWorker('jpn+eng', 1, {
                 logger: m => {
-                    if (m.status === 'recognizing text') {
-                        setOcrStatus(`Recognizing: ${Math.round(m.progress * 100)}%`);
-                    } else {
-                        setOcrStatus(m.status);
+                    switch (m.status) {
+                        case 'loading tesseract core':
+                            setOcrStatus(t('ocr_status_loading_core'));
+                            break;
+                        case 'initializing tesseract':
+                            setOcrStatus(t('ocr_status_initializing_tesseract'));
+                            break;
+                        case 'initializing api':
+                            setOcrStatus(t('ocr_status_initializing_api'));
+                            break;
+                        case 'loading language traineddata':
+                            setOcrStatus(t('ocr_status_loading_language'));
+                            break;
+                        case 'recognizing text':
+                            setOcrStatus(t('ocr_status_recognizing', { progress: Math.round(m.progress * 100) }));
+                            break;
+                        case 'done':
+                            setOcrStatus(t('ocr_status_done'));
+                            break;
+                        default:
+                            // 未知のステータスは念のためそのまま表示
+                            setOcrStatus(m.status);
                     }
                 },
             });
@@ -388,18 +409,18 @@ const ImageProcessor: React.FC = () => {
                         height: Math.min(finalMaskHeight, firstImageLoaded.naturalHeight - finalMaskY),
                     };
                     setSettings(prev => ({ ...prev, ...currentMaskRect })); // settingsも更新しておく
-                    setOcrStatus('Mask area detected.');
+                    setOcrStatus(t('ocr_status_mask_detected'));
                     return true;
 
                 } else {
-                    alert('Could not find "Lv." text in the upper right. Disabling auto mask mode.');
+                    alert(t('alert_could_not_find_lv_text'));
                     setSettings(prev => ({ ...prev, maskAuto: false }));
                     setOcrStatus('');
                     return false;
                 }
             } catch (error) {
                 console.error("OCR Error:", error);
-                alert('An error occurred during OCR processing. Disabling auto mask mode.');
+                alert(t('alert_ocr_error'));
                 setSettings(prev => ({ ...prev, maskAuto: false }));
                 setOcrStatus('');
                 return false;
@@ -509,24 +530,24 @@ const ImageProcessor: React.FC = () => {
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
       <Typography variant="h4" component="h1" gutterBottom>
-        Image Combiner
+        {t('title')}
       </Typography>
       <Grid container spacing={3}>
         <Grid size={{xs:12, md:4}}>
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>
-                Settings
+                {t('settings')}
               </Typography>
               <Grid container spacing={2}>
                 <Grid size={{xs:12}}>
-                  <TextField label="Columns" type="number" name="colCount" value={settings.colCount} onChange={handleSettingChange} fullWidth />
+                  <TextField label={t('columns')} type="number" name="colCount" value={settings.colCount} onChange={handleSettingChange} fullWidth />
                 </Grid>
                 <Grid size={{xs:12}}>
-                  <TextField label="Offset (px)" type="number" name="offsetX" value={settings.offsetX} onChange={handleSettingChange} fullWidth />
+                  <TextField label={t('offset_px')} type="number" name="offsetX" value={settings.offsetX} onChange={handleSettingChange} fullWidth />
                 </Grid>
                 <Grid size={{xs:12}}>
-                    <Typography gutterBottom>Background Color</Typography>
+                    <Typography gutterBottom>{t('background_color')}</Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center' }}>
                         <Input
                             type="color"
@@ -546,7 +567,7 @@ const ImageProcessor: React.FC = () => {
                     </Box>
                 </Grid>
                 <Grid size={{xs:12}}>
-                    <Typography gutterBottom>Quality</Typography>
+                    <Typography gutterBottom>{t('quality')}</Typography>
                     <Slider name="quality" value={settings.quality} onChange={handleSliderChange('quality')} aria-labelledby="input-slider" min={1} max={100} />
                 </Grid>
               </Grid>
@@ -555,50 +576,50 @@ const ImageProcessor: React.FC = () => {
           <Card sx={{ mt: 3 }}>
             <CardContent>
                 <Typography variant="h5" component="h2" gutterBottom>
-                    Cropping
+                    {t('cropping')}
                 </Typography>
                 <FormControlLabel
                     control={<Switch checked={settings.cropAuto} onChange={handleSettingChange} name="cropAuto" />}
-                    label="Enable Auto Mode"
+                    label={t('enable_auto_mode')}
                 />
                 <Grid container spacing={2} sx={{ mt: 1 }}>
-                    <Grid size={{xs:6}}><TextField label="Crop X" type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                    <Grid size={{xs:6}}><TextField label="Crop Y" type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                    <Grid size={{xs:6}}><TextField label="Crop Width" type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                    <Grid size={{xs:6}}><TextField label="Crop Height" type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                    <Grid size={{xs:6}}><TextField label={t('crop_x')} type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                    <Grid size={{xs:6}}><TextField label={t('crop_y')} type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                    <Grid size={{xs:6}}><TextField label={t('crop_width')} type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                    <Grid size={{xs:6}}><TextField label={t('crop_height')} type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
                 </Grid>
             </CardContent>
           </Card>
           <Card sx={{ mt: 3 }}>
             <CardContent>
                 <Typography variant="h5" component="h2" gutterBottom>
-                    Masking
+                    {t('masking')}
                 </Typography>
                 <FormControlLabel
                     control={<Switch checked={settings.maskEnabled} onChange={handleSettingChange} name="maskEnabled" />}
-                    label="Enable Mask"
+                    label={t('enable_mask')}
                 />
                 {settings.maskEnabled && (
                     <FormControlLabel
                         control={<Switch checked={settings.maskAuto} onChange={handleSettingChange} name="maskAuto" />}
-                        label="Enable Auto Mode"
+                        label={t('enable_auto_mode')}
                     />
                 )}
                 <Grid container spacing={2} sx={{ mt: 1 }}>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask X" type="number" name="maskX" value={settings.maskX} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
+                        <TextField label={t('mask_x')} type="number" name="maskX" value={settings.maskX} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask Y" type="number" name="maskY" value={settings.maskY} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
+                        <TextField label={t('mask_y')} type="number" name="maskY" value={settings.maskY} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask Width" type="number" name="maskWidth" value={settings.maskWidth} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
+                        <TextField label={t('mask_width')} type="number" name="maskWidth" value={settings.maskWidth} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:6}}>
-                        <TextField label="Mask Height" type="number" name="maskHeight" value={settings.maskHeight} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
+                        <TextField label={t('mask_height')} type="number" name="maskHeight" value={settings.maskHeight} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskAuto} />
                     </Grid>
                     <Grid size={{xs:12}}>
-                        <Typography gutterBottom>Mask Color</Typography>
+                        <Typography gutterBottom>{t('mask_color')}</Typography>
                         <Box sx={{ display: 'flex', alignItems: 'center' }}>
                             <Input
                                 type="color"
@@ -627,25 +648,25 @@ const ImageProcessor: React.FC = () => {
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>
-                Upload & Process
+                {t('upload_and_process')}
               </Typography>
               <Button variant="contained" component="label" fullWidth>
-                Upload Images
+                {t('upload_images')}
                 <input type="file" hidden accept="image/png" multiple onChange={handleFileChange} />
               </Button>
-              {images.length > 0 && <Typography sx={{ mt: 1 }}>{images.length} files selected</Typography>}
+              {images.length > 0 && <Typography sx={{ mt: 1 }}>{t('files_selected', { count: images.length })}</Typography>}
               <Box sx={{ my: 2 }}>
                 <Button variant="contained" color="primary" onClick={processImages} disabled={isProcessing || images.length === 0} fullWidth>
-                  {isProcessing ? <CircularProgress size={24} /> : 'Process Images'}
+                  {isProcessing ? <CircularProgress size={24} /> : t('process_images')}
                 </Button>
               </Box>
               {ocrStatus && <Typography sx={{ mt: 1 }} translate="no">{ocrStatus}</Typography>}
               {processedImageUrl && (
                 <Box sx={{ mt: 2 }}>
-                  <Typography variant="h6" gutterBottom>Result</Typography>
+                  <Typography variant="h6" gutterBottom>{t('result')}</Typography>
                   <img src={processedImageUrl} alt="Processed Montage" style={{ maxWidth: '100%', border: '1px solid #ccc', borderRadius: '4px' }} />
                   <Button variant="contained" href={processedImageUrl} download="tile.webp" fullWidth sx={{ mt: 1 }}>
-                    Download Image
+                    {t('download_image')}
                   </Button>
                 </Box>
               )}
@@ -659,4 +680,3 @@ const ImageProcessor: React.FC = () => {
 };
 
 export default ImageProcessor;
-
