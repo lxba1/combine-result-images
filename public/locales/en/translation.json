@@ -49,5 +49,6 @@
   "alert_image_generation_failed": "Failed to generate the final image, possibly due to memory limitations. Please try again with fewer images.",
   "alert_processing_failed": "An unexpected error occurred during processing. Please try again.",
   "alert_canvas_not_ready": "Canvas is not ready. Please try again.",
-  "alert_failed_to_get_context": "Failed to get 2D rendering context from canvas. Please try again."
+  "alert_failed_to_get_context": "Failed to get 2D rendering context from canvas. Please try again.",
+  "alert_image_generation_timeout": "Image generation timed out. This may be due to high memory usage. Please try again with fewer images."
 }
