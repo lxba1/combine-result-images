@@ -78,6 +78,15 @@ const ImageProcessor: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const workerRef = useRef<Tesseract.Worker | null>(null);
+
+  useEffect(() => {
+    // Terminate the worker when the component unmounts
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files) {
@@ -183,310 +192,363 @@ const ImageProcessor: React.FC = () => {
     };
 
     if (!validateSettings()) {
-        setIsProcessing(false);
-        return;
+      return;
     }
 
     setIsProcessing(true);
     setProcessedImageUrl(null);
 
-    let cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
-    let enemyMaskRect = { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight };
-    let selfMaskRect = { x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight };
+    try {
+      let cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
+      let enemyMaskRect = { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight };
+      let selfMaskRect = { x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight };
+      const newSettings: Partial<ImageSettings> = {};
 
-    const loadAndDrawFirstImage = async (): Promise<HTMLImageElement | null> => {
-        if (images.length === 0) return null;
-        const firstImageFile = images[0];
-        const img = new Image();
-        img.src = URL.createObjectURL(firstImageFile);
-        await new Promise(resolve => img.onload = resolve);
-        return img;
-    };
+      const loadAndDrawFirstImage = async (): Promise<HTMLImageElement | null> => {
+          if (images.length === 0) return null;
+          const firstImageFile = images[0];
+          const img = new Image();
+          const objectUrl = URL.createObjectURL(firstImageFile);
+          img.src = objectUrl;
+          await new Promise((resolve, reject) => {
+              img.onload = resolve;
+              img.onerror = reject;
+          });
+          URL.revokeObjectURL(objectUrl); // FIX: Revoke the URL to prevent memory leak
+          return img;
+      };
 
-    let firstImageLoaded: HTMLImageElement | null = null;
-    if (settings.cropAuto || (settings.maskEnabled && settings.maskAuto) || (settings.selfMaskEnabled && settings.selfMaskAuto)) {
-        firstImageLoaded = await loadAndDrawFirstImage();
-        if (!firstImageLoaded) {
-            setIsProcessing(false);
+      let firstImageLoaded: HTMLImageElement | null = null;
+      if (settings.cropAuto || (settings.maskEnabled && settings.maskAuto) || (settings.selfMaskEnabled && settings.selfMaskAuto)) {
+          firstImageLoaded = await loadAndDrawFirstImage();
+          if (!firstImageLoaded) {
+              return;
+          }
+      }
+
+      if (settings.cropAuto && firstImageLoaded) {
+          const performAutoCrop = (): boolean => {
+              const THRESHOLD = 40;
+              const ASPECT_LIMIT = 2.1;
+
+              const getLuminance = (data: Uint8ClampedArray, i: number) => {
+                  return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+              }
+
+              const getBandSkipX = (width: number, height: number) => {
+                  if (width / height > ASPECT_LIMIT) {
+                      const logicalW = height * ASPECT_LIMIT;
+                      return Math.floor((width - logicalW) / 2) + 1;
+                  }
+                  return 0;
+              }
+
+              const findLeftToRight = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
+                  const y = Math.floor(h / 2);
+                  for (let x = skipX + 1; x < w; x++) {
+                      const i = (y * w + x);
+                      const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i - 1) * 4));
+                      if (d > THRESHOLD) {
+                          return { x, y };
+                      }
+                  }
+                  return null;
+              }
+
+              const findRightToLeft = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
+                  const y = Math.floor(h / 2);
+                  for (let x = w - skipX - 2; x > 0; x--) {
+                      const i = (y * w + x);
+                      const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i + 1) * 4));
+                      if (d > THRESHOLD) {
+                          return { x, y };
+                      }
+                  }
+                  return null;
+              }
+
+              const findTopToBottom = (data: Uint8ClampedArray, w: number, h: number) => {
+                  const x = Math.floor(w / 2);
+                  for (let y = 1; y < h; y++) {
+                      const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y - 1) * w + x) * 4));
+                      if (d > THRESHOLD) {
+                          return { x, y };
+                      }
+                  }
+                  return null;
+              }
+
+              const findBottomToTop = (data: Uint8ClampedArray, w: number, h: number) => {
+                  const x = Math.floor(w / 2);
+                  for (let y = Math.floor(h * 0.95); y > 0; y--) {
+                      const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y + 1) * w + x) * 4));
+                      if (d > THRESHOLD) {
+                          return { x, y };
+                      }
+                  }
+                  return null;
+              }
+
+              // Use a temporary canvas for image manipulation within auto-crop
+              const tempCanvas = document.createElement('canvas');
+              const tempCtx = tempCanvas.getContext('2d');
+              if (!tempCtx) {
+                  alert(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'));
+                  return false;
+              }
+
+              tempCanvas.width = firstImageLoaded!.naturalWidth;
+              tempCanvas.height = firstImageLoaded!.naturalHeight;
+              tempCtx.drawImage(firstImageLoaded!, 0, 0);
+
+              const w = tempCanvas.width, h = tempCanvas.height;
+              let data: Uint8ClampedArray | null = tempCtx.getImageData(0, 0, w, h).data;
+              tempCanvas.width = 0; // Deallocate pixel buffer
+              tempCanvas.height = 0; // Deallocate pixel buffer
+
+              const skipX = getBandSkipX(w, h);
+
+              const left = findLeftToRight(data, w, h, skipX);
+              const right = findRightToLeft(data, w, h, skipX);
+              const top = findTopToBottom(data, w, h);
+              const bottom = findBottomToTop(data, w, h);
+
+              data = null; // Explicitly release reference for GC
+
+              if (left && right && top && bottom) {
+                  cropRect = {
+                      x: left.x,
+                      y: top.y,
+                      width: right.x - left.x + 1,
+                      height: bottom.y - top.y + 1
+                  };
+                  Object.assign(newSettings, cropRect);
+                  return true;
+              } else {
+                  alert(t('alert_failed_to_detect_crop_area'));
+                  newSettings.cropAuto = false;
+                  return false;
+              }
+          };
+          if (!performAutoCrop()) {
+            setSettings(prev => ({ ...prev, ...newSettings }));
             return;
-        }
-    }
+          }
+      }
 
-    if (settings.cropAuto && firstImageLoaded) {
-        const performAutoCrop = (): boolean => {
-            const THRESHOLD = 40;
-            const ASPECT_LIMIT = 2.1;
+      if ((settings.maskEnabled && settings.maskAuto) || (settings.selfMaskEnabled && settings.selfMaskAuto)) {
+          const performAutoMask = async (): Promise<boolean> => {
+              if (!firstImageLoaded) {
+                  alert(t('alert_first_image_not_loaded_for_auto_mask'));
+                  return false;
+              }
 
-            const getLuminance = (data: Uint8ClampedArray, i: number) => {
-                return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-            }
+              let worker = workerRef.current;
+              if (!worker) {
+                setOcrStatus(t('ocr_status_starting'));
+                worker = await Tesseract.createWorker('jpn+eng', 1, {
+                    logger: m => {
+                        switch (m.status) {
+                            case 'loading tesseract core':
+                                setOcrStatus(t('ocr_status_loading_core'));
+                                break;
+                            case 'initializing tesseract':
+                                setOcrStatus(t('ocr_status_initializing_tesseract'));
+                                break;
+                            case 'initializing api':
+                                setOcrStatus(t('ocr_status_initializing_api'));
+                                break;
+                            case 'loading language traineddata':
+                                setOcrStatus(t('ocr_status_loading_language'));
+                                break;
+                            case 'recognizing text':
+                                setOcrStatus(t('ocr_status_recognizing', { progress: Math.round(m.progress * 100) }));
+                                break;
+                            case 'done':
+                                setOcrStatus(t('ocr_status_done'));
+                                break;
+                            default:
+                                setOcrStatus(m.status);
+                        }
+                    },
+                });
+                workerRef.current = worker;
+              }
 
-            const getBandSkipX = (width: number, height: number) => {
-                if (width / height > ASPECT_LIMIT) {
-                    const logicalW = height * ASPECT_LIMIT;
-                    return Math.floor((width - logicalW) / 2) + 1;
-                }
-                return 0;
-            }
 
-            const findLeftToRight = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
-                const y = Math.floor(h / 2);
-                for (let x = skipX + 1; x < w; x++) {
-                    const i = (y * w + x);
-                    const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i - 1) * 4));
-                    if (d > THRESHOLD) {
-                        return { x, y };
-                    }
-                }
-                return null;
-            }
+              await worker.setParameters({
+                  tessedit_pageseg_mode: PSM.SPARSE_TEXT,
+              });
 
-            const findRightToLeft = (data: Uint8ClampedArray, w: number, h: number, skipX: number) => {
-                const y = Math.floor(h / 2);
-                for (let x = w - skipX - 2; x > 0; x--) {
-                    const i = (y * w + x);
-                    const d = Math.abs(getLuminance(data, i * 4) - getLuminance(data, (i + 1) * 4));
-                    if (d > THRESHOLD) {
-                        return { x, y };
-                    }
-                }
-                return null;
-            }
+              try {
+                  const arrayBuffer = await images[0].arrayBuffer() as any;
+                  const ocrResult = await worker.recognize(arrayBuffer, {}, { blocks: true });
 
-            const findTopToBottom = (data: Uint8ClampedArray, w: number, h: number) => {
-                const x = Math.floor(w / 2);
-                for (let y = 1; y < h; y++) {
-                    const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y - 1) * w + x) * 4));
-                    if (d > THRESHOLD) {
-                        return { x, y };
-                    }
-                }
-                return null;
-            }
+                  if (!ocrResult?.data?.blocks) {
+                      console.error("OCR did not return a valid blocks array.", ocrResult);
+                      alert(t('alert_ocr_error'));
+                      return false;
+                  }
 
-            const findBottomToTop = (data: Uint8ClampedArray, w: number, h: number) => {
-                const x = Math.floor(w / 2);
-                for (let y = Math.floor(h * 0.95); y > 0; y--) {
-                    const d = Math.abs(getLuminance(data, (y * w + x) * 4) - getLuminance(data, ((y + 1) * w + x) * 4));
-                    if (d > THRESHOLD) {
-                        return { x, y };
-                    }
-                }
-                return null;
-            }
+                  const words = ocrResult.data.blocks
+                      .map(block => block.paragraphs
+                          .map(paragraph => paragraph.lines
+                              .map(line => line.words)))
+                      .flat(3);
 
-            // Use a temporary canvas for image manipulation within auto-crop
-            const tempCanvas = document.createElement('canvas');
-            const tempCtx = tempCanvas.getContext('2d');
-            if (!tempCtx) {
-                alert(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'));
-                return false;
-            }
+                  const imageCenterX = firstImageLoaded.naturalWidth / 2;
+                  const lvWords = words.filter(w => w.text.match(/Lv\.\d+/i));
 
-            tempCanvas.width = firstImageLoaded!.naturalWidth;
-            tempCanvas.height = firstImageLoaded!.naturalHeight;
-            tempCtx.drawImage(firstImageLoaded!, 0, 0);
+                  // Enemy (right side) mask detection
+                  if (settings.maskEnabled && settings.maskAuto) {
+                      const enemyLvWords = lvWords.filter(w => w.bbox.x0 > imageCenterX && w.bbox.y0 < firstImageLoaded.naturalHeight * 0.4);
+                      const targetEnemyLv = enemyLvWords.length > 0 ? enemyLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c)) : null;
 
-            const w = tempCanvas.width, h = tempCanvas.height;
-            const data = tempCtx.getImageData(0, 0, w, h).data;
-            const skipX = getBandSkipX(w, h);
+                      if (targetEnemyLv) {
+                          const { x0, y0, y1 } = targetEnemyLv.bbox;
+                          enemyMaskRect = { x: x0 - 5, y: y0 - 5, width: firstImageLoaded.naturalWidth - (x0 - 5), height: (y1 - y0) + 10 };
+                          Object.assign(newSettings, { maskX: enemyMaskRect.x, maskY: enemyMaskRect.y, maskWidth: enemyMaskRect.width, maskHeight: enemyMaskRect.height });
+                      } else {
+                          alert(t('alert_could_not_find_right_lv'));
+                          newSettings.maskAuto = false;
+                      }
+                  }
 
-            const left = findLeftToRight(data, w, h, skipX);
-            const right = findRightToLeft(data, w, h, skipX);
-            const top = findTopToBottom(data, w, h);
-            const bottom = findBottomToTop(data, w, h);
+                  // Self (left side) mask detection
+                  if (settings.selfMaskEnabled && settings.selfMaskAuto) {
+                      const selfLvWords = lvWords.filter(w => w.bbox.x0 < imageCenterX);
+                      const targetSelfLv = selfLvWords.length > 0 ? selfLvWords.reduce((p, c) => (p.bbox.y0 > c.bbox.y0 ? p : c)) : null;
 
-            if (left && right && top && bottom) {
-                cropRect = {
-                    x: left.x,
-                    y: top.y,
-                    width: right.x - left.x + 1,
-                    height: bottom.y - top.y + 1
-                };
-                setSettings(prev => ({ ...prev, ...cropRect }));
-                return true;
-            } else {
-                alert(t('alert_failed_to_detect_crop_area'));
-                setSettings(prev => ({ ...prev, cropAuto: false }));
-                return false;
-            }
-        };
-        if (!performAutoCrop()) {
-            setIsProcessing(false);
+                      if (targetSelfLv) {
+                          const { x0, y0, y1 } = targetSelfLv.bbox;
+                          selfMaskRect = { x: x0 - 5, y: y0 - 5, width: imageCenterX - (x0 - 5), height: (y1 - y0) + 10 };
+                          Object.assign(newSettings, { selfMaskX: selfMaskRect.x, selfMaskY: selfMaskRect.y, selfMaskWidth: selfMaskRect.width, selfMaskHeight: selfMaskRect.height });
+                      } else {
+                          alert(t('alert_could_not_find_left_lv'));
+                          newSettings.selfMaskAuto = false;
+                      }
+                  }
+                  setOcrStatus(t('ocr_status_mask_detected'));
+                  return true;
+              } catch (error) {
+                  console.error("OCR Error:", error);
+                  alert(t('alert_ocr_error'));
+                  return false;
+              }
+          };
+          if (!await performAutoMask()) {
+            setSettings(prev => ({ ...prev, ...newSettings }));
             return;
-        }
-    }
+          }
+      }
 
-    if ((settings.maskEnabled && settings.maskAuto) || (settings.selfMaskEnabled && settings.selfMaskAuto)) {
-        const performAutoMask = async (): Promise<boolean> => {
-            if (!firstImageLoaded) {
-                alert(t('alert_first_image_not_loaded_for_auto_mask'));
-                return false;
-            }
+      // Batch update settings after all auto-detections
+      if (Object.keys(newSettings).length > 0) {
+        setSettings(prev => ({ ...prev, ...newSettings }));
+      }
 
-            setOcrStatus(t('ocr_status_starting'));
-            
-            const worker = await Tesseract.createWorker('jpn+eng', 1, {
-                logger: m => {
-                    switch (m.status) {
-                        case 'loading tesseract core':
-                            setOcrStatus(t('ocr_status_loading_core'));
-                            break;
-                        case 'initializing tesseract':
-                            setOcrStatus(t('ocr_status_initializing_tesseract'));
-                            break;
-                        case 'initializing api':
-                            setOcrStatus(t('ocr_status_initializing_api'));
-                            break;
-                        case 'loading language traineddata':
-                            setOcrStatus(t('ocr_status_loading_language'));
-                            break;
-                        case 'recognizing text':
-                            setOcrStatus(t('ocr_status_recognizing', { progress: Math.round(m.progress * 100) }));
-                            break;
-                        case 'done':
-                            setOcrStatus(t('ocr_status_done'));
-                            break;
-                        default:
-                            setOcrStatus(m.status);
-                    }
-                },
-            });
+      const finalSettings = { ...settings, ...newSettings };
 
-            await worker.setParameters({
-                tessedit_pageseg_mode: PSM.SPARSE_TEXT,
-            });
+      const processSingleImage = (imageFile: File): Promise<HTMLCanvasElement> => {
+          return new Promise<HTMLCanvasElement>((resolve, reject) => {
+              const img = new Image();
+              const objectUrl = URL.createObjectURL(imageFile);
+              img.src = objectUrl;
+              img.onload = () => {
+                  URL.revokeObjectURL(objectUrl); // Revoke URL after image is drawn to canvas
+                  const tempCanvas = document.createElement('canvas');
+                  const tempCtx = tempCanvas.getContext('2d');
+                  if (!tempCtx) return reject(new Error('Could not get temporary canvas context'));
 
-            try {
-                const arrayBuffer = await images[0].arrayBuffer() as any;
-                const ocrResult = await worker.recognize(arrayBuffer, {}, { blocks: true });
+                  tempCanvas.width = img.width;
+                  tempCanvas.height = img.height;
+                  tempCtx.drawImage(img, 0, 0);
 
-                if (!ocrResult?.data?.blocks) {
-                    console.error("OCR did not return a valid blocks array.", ocrResult);
-                    alert(t('alert_ocr_error'));
-                    return false;
-                }
+                  if (finalSettings.maskEnabled) {
+                      tempCtx.fillStyle = finalSettings.maskColor;
+                      tempCtx.fillRect(enemyMaskRect.x, enemyMaskRect.y, enemyMaskRect.width, enemyMaskRect.height);
+                  }
 
-                const words = ocrResult.data.blocks
-                    .map(block => block.paragraphs
-                        .map(paragraph => paragraph.lines
-                            .map(line => line.words)))
-                    .flat(3);
+                  if (finalSettings.selfMaskEnabled) {
+                      tempCtx.fillStyle = finalSettings.selfMaskColor;
+                      tempCtx.fillRect(selfMaskRect.x, selfMaskRect.y, selfMaskRect.width, selfMaskRect.height);
+                  }
 
-                const imageCenterX = firstImageLoaded.naturalWidth / 2;
-                const lvWords = words.filter(w => w.text.match(/Lv\.\d+/i));
+                  const finalCanvas = document.createElement('canvas');
+                  finalCanvas.width = cropRect.width;
+                  finalCanvas.height = cropRect.height;
+                  const finalCtx = finalCanvas.getContext('2d');
+                  if (!finalCtx) return reject(new Error('Could not get final canvas context'));
+                  finalCtx.drawImage(tempCanvas, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
+                  tempCanvas.width = 0; // Deallocate pixel buffer
+                  tempCanvas.height = 0; // Deallocate pixel buffer
 
-                // Enemy (right side) mask detection
-                if (settings.maskEnabled && settings.maskAuto) {
-                    const enemyLvWords = lvWords.filter(w => w.bbox.x0 > imageCenterX && w.bbox.y0 < firstImageLoaded.naturalHeight * 0.4);
-                    const targetEnemyLv = enemyLvWords.length > 0 ? enemyLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c)) : null;
+                  resolve(finalCanvas);
+              };
 
-                    if (targetEnemyLv) {
-                        const { x0, y0, y1 } = targetEnemyLv.bbox;
-                        enemyMaskRect = { x: x0 - 5, y: y0 - 5, width: firstImageLoaded.naturalWidth - (x0 - 5), height: (y1 - y0) + 10 };
-                        setSettings(prev => ({ ...prev, maskX: enemyMaskRect.x, maskY: enemyMaskRect.y, maskWidth: enemyMaskRect.width, maskHeight: enemyMaskRect.height }));
-                    } else {
-                        alert(t('alert_could_not_find_right_lv'));
-                        setSettings(prev => ({ ...prev, maskAuto: false }));
-                    }
-                }
+              img.onerror = (e) => {
+                URL.revokeObjectURL(objectUrl); // Revoke URL even if load fails
+                reject(e);
+              };
+          });
+      };
 
-                // Self (left side) mask detection
-                if (settings.selfMaskEnabled && settings.selfMaskAuto) {
-                    const selfLvWords = lvWords.filter(w => w.bbox.x0 < imageCenterX);
-                    const targetSelfLv = selfLvWords.length > 0 ? selfLvWords.reduce((p, c) => (p.bbox.y0 > c.bbox.y0 ? p : c)) : null;
+      const createMontage = (processedCanvases: HTMLCanvasElement[]): string | null => {
+          if (processedCanvases.length === 0) return null;
 
-                    if (targetSelfLv) {
-                        const { x0, y0, y1 } = targetSelfLv.bbox;
-                        selfMaskRect = { x: x0 - 5, y: y0 - 5, width: imageCenterX - (x0 - 5), height: (y1 - y0) + 10 };
-                        setSettings(prev => ({ ...prev, selfMaskX: selfMaskRect.x, selfMaskY: selfMaskRect.y, selfMaskWidth: selfMaskRect.width, selfMaskHeight: selfMaskRect.height }));
-                    } else {
-                        alert(t('alert_could_not_find_left_lv'));
-                        setSettings(prev => ({ ...prev, selfMaskAuto: false }));
-                    }
-                }
-                setOcrStatus(t('ocr_status_mask_detected'));
-                return true;
-            } catch (error) {
-                console.error("OCR Error:", error);
-                alert(t('alert_ocr_error'));
-                return false;
-            } finally {
-                await worker.terminate();
-            }
-        };
-        if (!await performAutoMask()) {
-            setIsProcessing(false);
-            return;
-        }
-    }
-
-    const processSingleImage = (imageFile: File): Promise<HTMLCanvasElement> => {
-        return new Promise<HTMLCanvasElement>((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => {
-                const tempCanvas = document.createElement('canvas');
-                const tempCtx = tempCanvas.getContext('2d');
-                if (!tempCtx) return reject(new Error('Could not get temporary canvas context'));
-
-                tempCanvas.width = img.width;
-                tempCanvas.height = img.height;
-                tempCtx.drawImage(img, 0, 0);
-
-                if (settings.maskEnabled) {
-                    tempCtx.fillStyle = settings.maskColor;
-                    tempCtx.fillRect(enemyMaskRect.x, enemyMaskRect.y, enemyMaskRect.width, enemyMaskRect.height);
-                }
-                
-                if (settings.selfMaskEnabled) {
-                    tempCtx.fillStyle = settings.selfMaskColor;
-                    tempCtx.fillRect(selfMaskRect.x, selfMaskRect.y, selfMaskRect.width, selfMaskRect.height);
-                }
-
-                const finalCanvas = document.createElement('canvas');
-                finalCanvas.width = cropRect.width;
-                finalCanvas.height = cropRect.height;
-                const finalCtx = finalCanvas.getContext('2d');
-                if (!finalCtx) return reject(new Error('Could not get final canvas context'));
-                finalCtx.drawImage(tempCanvas, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
-                
-                resolve(finalCanvas);
-            };
-            img.onerror = reject;
-            img.src = URL.createObjectURL(imageFile);
-        });
-    };
-
-    const processedImages: HTMLCanvasElement[] = await Promise.all(images.map(imageFile => processSingleImage(imageFile)));
-
-    const createMontage = (): string | null => {
-        if (processedImages.length === 0) return null;
-        const firstImage = processedImages[0];
-        const montageCanvas = canvasRef.current!;
-        const montageCtx = montageCanvas.getContext('2d')!;
-        montageCanvas.width = (firstImage.width * settings.colCount) + (settings.offsetX * (settings.colCount + 1));
-        montageCanvas.height = (Math.ceil(processedImages.length / settings.colCount) * firstImage.height) + (settings.offsetY * (Math.ceil(processedImages.length / settings.colCount) + 1));
-        montageCtx.fillStyle = settings.bgColor;
-        montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
-        processedImages.forEach((img, index) => {
-            const row = Math.floor(index / settings.colCount);
-            const col = index % settings.colCount;
-            montageCtx.drawImage(img, settings.offsetX + col * (firstImage.width + settings.offsetX), settings.offsetY + row * (firstImage.height + settings.offsetY));
-        });
-        try {
-            const url = montageCanvas.toDataURL('image/webp', settings.quality / 100);
-            if (!url || url === 'data:,') throw new Error('Generated empty image data.');
-            return url;
-        } catch (e) {
-            console.error("Failed to generate image:", e);
-            alert(t('alert_image_generation_failed'));
+          const firstImage = processedCanvases[0];
+          if (!canvasRef.current) {
+            alert(t('alert_canvas_not_ready'));
             return null;
-        }
-    };
+          }
+          const montageCanvas = canvasRef.current;
+          const montageCtx = montageCanvas.getContext('2d');
+          if (!montageCtx) {
+            alert(t('alert_failed_to_get_context'));
+            return null;
+          }
 
-    const url = createMontage();
-    setProcessedImageUrl(url);
-    setIsProcessing(false);
+          montageCanvas.width = (firstImage.width * finalSettings.colCount) + (finalSettings.offsetX * (finalSettings.colCount + 1));
+          montageCanvas.height = (Math.ceil(processedCanvases.length / finalSettings.colCount) * firstImage.height) + (finalSettings.offsetY * (Math.ceil(processedCanvases.length / finalSettings.colCount) + 1));
+          montageCtx.fillStyle = finalSettings.bgColor;
+          montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
+
+          processedCanvases.forEach((img, index) => {
+              const row = Math.floor(index / finalSettings.colCount);
+              const col = index % finalSettings.colCount;
+              montageCtx.drawImage(img, finalSettings.offsetX + col * (firstImage.width + finalSettings.offsetX), finalSettings.offsetY + row * (firstImage.height + finalSettings.offsetY));
+          });
+          try {
+              const url = montageCanvas.toDataURL('image/webp', finalSettings.quality / 100);
+              if (!url || url === 'data:,') throw new Error('Generated empty image data.');
+              return url;
+          } catch (e) {
+              console.error("Failed to generate image:", e);
+              alert(t('alert_image_generation_failed'));
+              return null;
+          }
+      };
+
+      const processedCanvases: HTMLCanvasElement[] = [];
+      for (const imageFile of images) {
+        const canvas = await processSingleImage(imageFile);
+        processedCanvases.push(canvas);
+      }
+      const montageUrl = createMontage(processedCanvases);
+
+      setProcessedImageUrl(montageUrl);
+
+      // Deallocate temporary canvases after montage creation
+      processedCanvases.forEach(canvas => {
+        canvas.width = 0;
+        canvas.height = 0;
+      });
+    } catch (error) {
+      console.error("An unexpected error occurred during image processing:", error);
+      alert(t('alert_processing_failed'));
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
