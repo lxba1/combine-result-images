@@ -88,10 +88,21 @@ const ImageProcessor: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    // This effect manages the lifecycle of the generated object URL.
+    // It runs when the component unmounts or before the effect runs again
+    // (i.e., when processedImageUrl changes).
+    return () => {
+      if (processedImageUrl && processedImageUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(processedImageUrl);
+      }
+    };
+  }, [processedImageUrl]);
+
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files) {
       setImages(Array.from(event.target.files));
-      setProcessedImageUrl(null);
+      setProcessedImageUrl(null); // This will also trigger the cleanup effect for the old URL
     }
   };
 
@@ -101,7 +112,8 @@ const ImageProcessor: React.FC = () => {
 
     if (event.target instanceof HTMLInputElement) {
       if (event.target.type === 'number') {
-        newValue = parseInt(value, 10);
+        // If parseInt results in NaN (e.g., from an empty string), default to 0
+        newValue = parseInt(value, 10) || 0;
       } else if (event.target.type === 'checkbox') {
         newValue = event.target.checked;
       }
@@ -197,6 +209,7 @@ const ImageProcessor: React.FC = () => {
 
     setIsProcessing(true);
     setProcessedImageUrl(null);
+    setOcrStatus(''); // Reset OCR status at the beginning of each run
 
     try {
       let cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
@@ -493,40 +506,63 @@ const ImageProcessor: React.FC = () => {
           });
       };
 
-      const createMontage = (processedCanvases: HTMLCanvasElement[]): string | null => {
-          if (processedCanvases.length === 0) return null;
+      const createMontage = (processedCanvases: HTMLCanvasElement[]): Promise<Blob | null> => {
+          return new Promise((resolve) => {
+              if (processedCanvases.length === 0) {
+                  return resolve(null);
+              }
 
-          const firstImage = processedCanvases[0];
-          if (!canvasRef.current) {
-            alert(t('alert_canvas_not_ready'));
-            return null;
-          }
-          const montageCanvas = canvasRef.current;
-          const montageCtx = montageCanvas.getContext('2d');
-          if (!montageCtx) {
-            alert(t('alert_failed_to_get_context'));
-            return null;
-          }
+              const firstImage = processedCanvases[0];
+              if (!canvasRef.current) {
+                alert(t('alert_canvas_not_ready'));
+                return resolve(null);
+              }
+              const montageCanvas = canvasRef.current;
+              const montageCtx = montageCanvas.getContext('2d');
+              if (!montageCtx) {
+                alert(t('alert_failed_to_get_context'));
+                return resolve(null);
+              }
 
-          montageCanvas.width = (firstImage.width * finalSettings.colCount) + (finalSettings.offsetX * (finalSettings.colCount + 1));
-          montageCanvas.height = (Math.ceil(processedCanvases.length / finalSettings.colCount) * firstImage.height) + (finalSettings.offsetY * (Math.ceil(processedCanvases.length / finalSettings.colCount) + 1));
-          montageCtx.fillStyle = finalSettings.bgColor;
-          montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
+              montageCanvas.width = (firstImage.width * finalSettings.colCount) + (finalSettings.offsetX * (finalSettings.colCount + 1));
+              montageCanvas.height = (Math.ceil(processedCanvases.length / finalSettings.colCount) * firstImage.height) + (finalSettings.offsetY * (Math.ceil(processedCanvases.length / finalSettings.colCount) + 1));
+              montageCtx.fillStyle = finalSettings.bgColor;
+              montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
-          processedCanvases.forEach((img, index) => {
-              const row = Math.floor(index / finalSettings.colCount);
-              const col = index % finalSettings.colCount;
-              montageCtx.drawImage(img, finalSettings.offsetX + col * (firstImage.width + finalSettings.offsetX), finalSettings.offsetY + row * (firstImage.height + finalSettings.offsetY));
+              processedCanvases.forEach((img, index) => {
+                  const row = Math.floor(index / finalSettings.colCount);
+                  const col = index % finalSettings.colCount;
+                  montageCtx.drawImage(img, finalSettings.offsetX + col * (firstImage.width + finalSettings.offsetX), finalSettings.offsetY + row * (firstImage.height + finalSettings.offsetY));
+              });
+
+              let resolved = false;
+              const timeout = setTimeout(() => {
+                if (!resolved) {
+                  resolved = true;
+                  console.error('Blob generation timeout');
+                  alert(t('alert_image_generation_timeout'));
+                  resolve(null);
+                }
+              }, 30000); // 30-second timeout
+
+              montageCanvas.toBlob(
+                  (blob) => {
+                      clearTimeout(timeout);
+                      if (!resolved) {
+                        resolved = true;
+                        if (!blob) {
+                            console.error("Failed to generate blob, possibly due to memory limitations.");
+                            alert(t('alert_image_generation_failed'));
+                            resolve(null);
+                        } else {
+                            resolve(blob);
+                        }
+                      }
+                  },
+                  'image/webp',
+                  finalSettings.quality / 100
+              );
           });
-          try {
-              const url = montageCanvas.toDataURL('image/webp', finalSettings.quality / 100);
-              if (!url || url === 'data:,') throw new Error('Generated empty image data.');
-              return url;
-          } catch (e) {
-              console.error("Failed to generate image:", e);
-              alert(t('alert_image_generation_failed'));
-              return null;
-          }
       };
 
       const processedCanvases: HTMLCanvasElement[] = [];
@@ -534,9 +570,12 @@ const ImageProcessor: React.FC = () => {
         const canvas = await processSingleImage(imageFile);
         processedCanvases.push(canvas);
       }
-      const montageUrl = createMontage(processedCanvases);
+      const montageBlob = await createMontage(processedCanvases);
 
-      setProcessedImageUrl(montageUrl);
+      if (montageBlob) {
+        const objectUrl = URL.createObjectURL(montageBlob);
+        setProcessedImageUrl(objectUrl);
+      }
 
       // Deallocate temporary canvases after montage creation
       processedCanvases.forEach(canvas => {
