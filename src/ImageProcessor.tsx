@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl } from '@mui/material';
+import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 
 interface ImageSettings {
@@ -106,22 +107,19 @@ const ImageProcessor: React.FC = () => {
     }
   };
 
-  const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = event.target;
-    let newValue: string | number | boolean = value;
+  const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number>) => {
+    const name = event.target.name;
+    let newValue: string | number | boolean;
 
-    // Handle Select components which return string values for numbers
-    if (name === 'colCount' || name === 'offsetX') {
-        newValue = parseInt(value as string, 10) || 0; // Cast value to string for parseInt
-    } else if (event.target instanceof HTMLInputElement) {
-      if (event.target.type === 'number') {
-        // If parseInt results in NaN (e.g., from an empty string), default to 0
-        newValue = parseInt(value, 10) || 0;
-      } else if (event.target.type === 'checkbox') {
-        newValue = event.target.checked;
-      }
+    if ('type' in event.target && event.target.type === 'checkbox') { // Checkbox
+        newValue = (event.target as HTMLInputElement).checked;
+    } else if ('type' in event.target && event.target.type === 'number') { // TextField type="number"
+        newValue = parseInt(event.target.value as string, 10) || 0; // Explicitly cast to string
+    } else if (name === 'colCount' || name === 'offsetX') { // Select components
+        newValue = event.target.value as number; // Value is already a number from SelectChangeEvent<number>
+    } else { // Default for other text inputs (e.g., color pickers)
+        newValue = event.target.value;
     }
-
     // Special handling for offsetX to also update offsetY
     if (name === 'offsetX') {
         setSettings(prev => ({
@@ -134,7 +132,7 @@ const ImageProcessor: React.FC = () => {
 
     setSettings(prev => ({
       ...prev,
-      [name]: newValue,
+      [name]: newValue as number, // Ensure it's a number for ImageSettings
     }));
   };
 
