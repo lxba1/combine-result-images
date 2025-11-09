@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel } from '@mui/material';
+import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 
 interface ImageSettings {
@@ -110,13 +110,26 @@ const ImageProcessor: React.FC = () => {
     const { name, value } = event.target;
     let newValue: string | number | boolean = value;
 
-    if (event.target instanceof HTMLInputElement) {
+    // Handle Select components which return string values for numbers
+    if (name === 'colCount' || name === 'offsetX') {
+        newValue = parseInt(value as string, 10) || 0; // Cast value to string for parseInt
+    } else if (event.target instanceof HTMLInputElement) {
       if (event.target.type === 'number') {
         // If parseInt results in NaN (e.g., from an empty string), default to 0
         newValue = parseInt(value, 10) || 0;
       } else if (event.target.type === 'checkbox') {
         newValue = event.target.checked;
       }
+    }
+
+    // Special handling for offsetX to also update offsetY
+    if (name === 'offsetX') {
+        setSettings(prev => ({
+            ...prev,
+            offsetX: newValue as number,
+            offsetY: newValue as number,
+        }));
+        return;
     }
 
     setSettings(prev => ({
@@ -126,10 +139,13 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleSliderChange = (name: string) => (_event: Event, value: number | number[]) => {
-    setSettings(prev => ({
-        ...prev,
-        [name]: value as number,
-    }));
+    const numValue = value as number;
+    setSettings(prev => {
+        if (name === 'offsetX') { // If the offset slider is moved, update both X and Y
+            return { ...prev, offsetX: numValue, offsetY: numValue };
+        }
+        return { ...prev, [name]: numValue };
+    });
   };
 
   const processImages = async () => {
@@ -599,10 +615,28 @@ const ImageProcessor: React.FC = () => {
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>{t('settings')}</Typography>
               <Grid container spacing={2}>
-                <Grid size={{xs:12}}><TextField label={t('columns')} type="number" name="colCount" value={settings.colCount} onChange={handleSettingChange} fullWidth /></Grid>
-                <Grid size={{xs:12}}><TextField label={t('offset_px')} type="number" name="offsetX" value={settings.offsetX} onChange={handleSettingChange} fullWidth /></Grid>
+                <Grid size={{xs:12}}>
+                  <FormControl fullWidth>
+                    <InputLabel>{t('columns')}</InputLabel>
+                    <Select name="colCount" value={settings.colCount} label={t('columns')} onChange={handleSettingChange}>
+                      {[...Array(10)].map((_, i) => (
+                        <MenuItem key={i + 1} value={i + 1}>{i + 1}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid size={{xs:12}}>
+                  <FormControl fullWidth>
+                    <InputLabel>{t('offset_px')}</InputLabel>
+                    <Select name="offsetX" value={settings.offsetX} label={t('offset_px')} onChange={handleSettingChange}>
+                      {[...Array(51)].map((_, i) => (
+                        <MenuItem key={i} value={i}>{i}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
                 <Grid size={{xs:12}}><Typography gutterBottom>{t('background_color')}</Typography><Box sx={{ display: 'flex', alignItems: 'center' }}><Input type="color" name="bgColor" value={settings.bgColor} onChange={handleSettingChange} sx={{ width: 50, height: 40, p: 0, border: 'none', '&::-webkit-color-swatch-wrapper': { p: 0 }, '&::-webkit-color-swatch': { border: 'none' } }} /><TextField variant="outlined" size="small" name="bgColor" value={settings.bgColor} onChange={handleSettingChange} sx={{ ml: 2, flexGrow: 1 }} /></Box></Grid>
-                <Grid size={{xs:12}}><Typography gutterBottom>{t('quality')}</Typography><Slider name="quality" value={settings.quality} onChange={handleSliderChange('quality')} aria-labelledby="input-slider" min={1} max={100} /></Grid>
+                <Grid size={{xs:12}}><Typography gutterBottom>{t('quality')}</Typography><Slider name="quality" value={settings.quality} onChange={handleSliderChange('quality')} aria-labelledby="input-slider" min={1} max={100} valueLabelDisplay="auto" /></Grid>
               </Grid>
             </CardContent>
           </Card>
