@@ -298,7 +298,7 @@ const ImageProcessor: React.FC = () => {
             let worker = workerRef.current;
             if (!worker) {
               setOcrStatus(t('ocr_status_starting'));
-              worker = await Tesseract.createWorker('jpn+eng', 1, { logger: m => { /* logger logic */ } });
+              worker = await Tesseract.createWorker('jpn+eng', 1, { logger: _m => { /* logger logic */ } });
               workerRef.current = worker;
             }
             await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
