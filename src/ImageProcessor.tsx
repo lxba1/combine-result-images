@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
+import packageJson from '../package.json';
 
 interface ImageSettings {
   colCount: number;
@@ -481,7 +482,10 @@ const ImageProcessor: React.FC = () => {
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-      <Typography variant="h4" component="h1" gutterBottom>{t('title')}</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
+        <Typography variant="h4" component="h1">{t('title')}</Typography>
+        <Typography variant="caption" color="text.secondary">v{packageJson.version}</Typography>
+      </Box>
       <Grid container spacing={3}>
         <Grid size={{xs:12, md:4}}>
           <Card>
