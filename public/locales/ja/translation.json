@@ -50,5 +50,6 @@
   "alert_processing_failed": "処理中に予期せぬエラーが発生しました。もう一度お試しください。",
   "alert_canvas_not_ready": "Canvasが準備できていません。もう一度お試しください。",
   "alert_failed_to_get_context": "Canvasから2D描画コンテキストの取得に失敗しました。もう一度お試しください。",
-  "alert_image_generation_timeout": "画像の生成がタイムアウトしました。メモリ使用量が多い可能性があります。画像の枚数を減らして再度お試しください。"
+  "alert_image_generation_timeout": "画像の生成がタイムアウトしました。メモリ使用量が多い可能性があります。画像の枚数を減らして再度お試しください。",
+  "alert_canvas_too_large": "合成される画像のサイズが大きすぎます ({{maxPixels}}ピクセル以上)。画像の枚数を減らすか、クロップ設定を調整してください。"
 }
