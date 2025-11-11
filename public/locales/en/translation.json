@@ -51,5 +51,6 @@
   "alert_canvas_not_ready": "Canvas is not ready. Please try again.",
   "alert_failed_to_get_context": "Failed to get 2D rendering context from canvas. Please try again.",
   "alert_image_generation_timeout": "Image generation timed out. This may be due to high memory usage. Please try again with fewer images.",
-  "alert_canvas_too_large": "The resulting image is too large (over {{maxPixels}} pixels). Please reduce the number of images or adjust cropping settings."
+  "alert_canvas_too_large": "The resulting image is too large (over {{maxPixels}} pixels). Please reduce the number of images or adjust cropping settings.",
+  "status_releasing_memory": "Releasing memory..."
 }

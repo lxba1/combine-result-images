@@ -152,6 +152,8 @@ const ImageProcessor: React.FC = () => {
       return await createImageBitmap(file);
     } catch (error) {
       console.warn("createImageBitmap failed, falling back to Image element:", error);
+      // Add a delay before retrying to let the browser recover
+      await new Promise(resolve => setTimeout(resolve, 200));
       // Retry with an alternative path if createImageBitmap fails
       const url = URL.createObjectURL(file);
       try {
@@ -211,6 +213,9 @@ const ImageProcessor: React.FC = () => {
     setProcessedImageUrl(null);
     setOcrStatus('');
 
+    // Add a short delay to allow the UI to update (e.g., show spinner) before blocking the main thread.
+    await new Promise(resolve => setTimeout(resolve, 200));
+
     let firstImageBitmap: ImageBitmap | null = null;
     let reusableTempCanvas: HTMLCanvasElement | null = null;
     let reusableTempCtx: CanvasRenderingContext2D | null = null;
@@ -224,7 +229,6 @@ const ImageProcessor: React.FC = () => {
           firstImageBitmap = await loadAndDrawFirstImage();
           if (!firstImageBitmap) return;
       }
-
       if (settings.cropAuto && firstImageBitmap) {
         const performAutoCrop = (firstImageBitmap: ImageBitmap): boolean => {
             const w = firstImageBitmap.width;
@@ -473,8 +477,12 @@ const ImageProcessor: React.FC = () => {
         reusableTempCanvas.width = 1;
         reusableTempCanvas.height = 1;
       }
+      if (workerRef.current) { // Reinitialize worker for a clean state
+        await workerRef.current.reinitialize('jpn+eng', 1);
+      }
+      setOcrStatus(t('status_releasing_memory'));
       // Add a small delay to allow GC to run before re-enabling the button
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 5000));
       setOcrStatus(''); // Clear OCR status message
       setIsProcessing(false);
     }
