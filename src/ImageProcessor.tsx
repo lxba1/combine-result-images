@@ -77,6 +77,7 @@ const ImageProcessor: React.FC = () => {
 
   const [images, setImages] = useState<File[]>([]);
   const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
+  const [downloadFilename, setDownloadFilename] = useState<string>('tile.webp');
   const [isProcessing, setIsProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -443,6 +444,12 @@ const ImageProcessor: React.FC = () => {
       const montageBlob = await new Promise<Blob | null>(resolve => montageCanvas.toBlob(resolve, 'image/webp', finalSettings.quality / 100));
 
       if (montageBlob) {
+        const getTimestamp = () => {
+          const d = new Date();
+          const pad = (n: number) => n.toString().padStart(2, '0');
+          return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+        };
+        setDownloadFilename(`tile-${getTimestamp()}.webp`);
         setProcessedImageUrl(URL.createObjectURL(montageBlob));
         montageCanvas.width = 1;
         montageCanvas.height = 1;
@@ -585,7 +592,7 @@ const ImageProcessor: React.FC = () => {
                 <Box sx={{ mt: 2 }}>
                   <Typography variant="h6" gutterBottom>{t('result')}</Typography>
                   <img src={processedImageUrl} alt="Processed Montage" style={{ maxWidth: '100%', border: '1px solid #ccc', borderRadius: '4px' }} />
-                  <Button variant="contained" href={processedImageUrl} download="tile.webp" fullWidth sx={{ mt: 1 }}>
+                  <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth sx={{ mt: 1 }}>
                     {t('download_image')}
                   </Button>
                 </Box>
