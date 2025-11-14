@@ -1,7 +1,7 @@
 {
   "name": "combine-result-images",
   "private": true,
-  "version": "0.9.3",
+  "version": "0.9.4",
   "type": "module",
   "homepage": "https://lxba1.github.io/combine-result-images",
   "scripts": {
