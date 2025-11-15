@@ -160,7 +160,11 @@ const ImageProcessor: React.FC = () => {
       try {
         const img = new Image();
         img.decoding = 'async';
-        await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = rej; img.src = url; });
+        await new Promise<void>((res, rej) => {
+          img.onload = () => res();
+          img.onerror = () => rej(new Error(`Failed to load image from object URL`));
+          img.src = url;
+        });
         const c = document.createElement('canvas');
         c.width = img.naturalWidth; c.height = img.naturalHeight;
         const ctx = c.getContext('2d', { willReadFrequently: true, alpha: false })!;
@@ -301,16 +305,12 @@ const ImageProcessor: React.FC = () => {
       }
       if ((settings.maskEnabled && settings.maskAuto) || (settings.selfMaskEnabled && settings.selfMaskAuto)) {
         const performAutoMask = async (firstImageBitmap: ImageBitmap): Promise<boolean> => {
-            let worker = workerRef.current;
-            if (!worker) {
-              setOcrStatus(t('ocr_status_starting'));
-              worker = await Tesseract.createWorker('jpn+eng', 1, { logger: _m => { /* logger logic */ } });
-              workerRef.current = worker;
-            }
+            setOcrStatus(t('ocr_status_starting'));
+            const worker = await Tesseract.createWorker('jpn+eng', 1, { logger: _m => { /* logger logic */ } });
+            workerRef.current = worker;
+
             await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
             try {
-                const W = firstImageBitmap.width, H = firstImageBitmap.height;
-                const centerX = Math.floor(W / 2);
                 const scratch = document.createElement('canvas');
                 const sctx = scratch.getContext('2d', { willReadFrequently: true, alpha: false })!;
 
@@ -324,33 +324,77 @@ const ImageProcessor: React.FC = () => {
                     .map(w => ({ ...w, bbox: { x0: w.bbox.x0 + sx, y0: w.bbox.y0 + sy, x1: w.bbox.x1 + sx, y1: w.bbox.y1 + sy } }));
                 }
 
-                // Left-top 40%
-                const wordsLeftTop = await recognizeROI(0, 0, centerX, Math.floor(H * 0.4));
-                // Right-top 40%
-                const wordsRightTop = await recognizeROI(centerX, 0, W - centerX, Math.floor(H * 0.4));
+                // Optimized search area
+                const searchY = cropRect.y + Math.floor(cropRect.height * 0.1);
+                const searchHeight = Math.floor(cropRect.height * 0.11); // Search the 10%-21% band
+                const quarterWidth = Math.floor(cropRect.width / 4);
+
+                // Recognize Self Area (Q2)
+                const selfWords = await recognizeROI(
+                    cropRect.x + quarterWidth,
+                    searchY,
+                    quarterWidth,
+                    searchHeight
+                );
+
+                // Recognize Enemy Area (Q4)
+                const enemyWords = await recognizeROI(
+                    cropRect.x + (quarterWidth * 3),
+                    searchY,
+                    quarterWidth,
+                    searchHeight
+                );
                 scratch.width = scratch.height = 1; // Deallocate scratch canvas
 
-                const words = [...wordsLeftTop, ...wordsRightTop];
-                const lvWords = words.filter(w => /Lv\.\d+/i.test(w.text));
-
+                const PADDING = 5;
                 if (settings.maskEnabled && settings.maskAuto) {
-                    const enemyLvWords = lvWords.filter(w => w.bbox.x0 > centerX);
-                    const target = enemyLvWords.length > 0 ? enemyLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c)) : null;
-                    if (target) {
+                    const enemyLvWords = enemyWords.filter(w => /Lv\.\d+/i.test(w.text));
+                    if (enemyLvWords.length > 0) {
+                        const target = enemyLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c));
                         const { x0, y0, y1 } = target.bbox;
-                        enemyMaskRect = { x: x0 - 5, y: y0 - 5, width: W - (x0 - 5), height: (y1 - y0) + 10 };
+
+                        const desiredX = x0 - PADDING;
+                        const desiredY = y0 - PADDING;
+                        const desiredRight = cropRect.x + cropRect.width; // For enemy-mask, it extends to the right edge
+                        const desiredBottom = y1 + PADDING;
+
+                        const finalX = Math.max(cropRect.x, desiredX);
+                        const finalY = Math.max(cropRect.y, desiredY);
+                        const finalRight = desiredRight;
+                        const finalBottom = Math.min(cropRect.y + cropRect.height, desiredBottom);
+
+                        const finalWidth = Math.max(0, finalRight - finalX);
+                        const finalHeight = Math.max(0, finalBottom - finalY);
+
+                        enemyMaskRect = { x: finalX, y: finalY, width: finalWidth, height: finalHeight };
                         Object.assign(newSettings, { maskX: enemyMaskRect.x, maskY: enemyMaskRect.y, maskWidth: enemyMaskRect.width, maskHeight: enemyMaskRect.height });
                     } else { newSettings.maskAuto = false; }
                 }
                 if (settings.selfMaskEnabled && settings.selfMaskAuto) {
-                    const selfLvWords = lvWords.filter(w => w.bbox.x0 < centerX);
-                    const target = selfLvWords.length > 0 ? selfLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c)) : null;
-                    if (target) {
+                    const selfLvWords = selfWords.filter(w => /Lv\.\d+/i.test(w.text));
+                    if (selfLvWords.length > 0) {
+                        const target = selfLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c));
                         const { x0, y0, y1 } = target.bbox;
-                        selfMaskRect = { x: x0 - 5, y: y0 - 5, width: centerX - (x0 - 5), height: (y1 - y0) + 10 };
+                        const cropCenterX = cropRect.x + Math.floor(cropRect.width / 2);
+
+                        const desiredX = x0 - PADDING;
+                        const desiredY = y0 - PADDING;
+                        const desiredRight = cropCenterX; // For self-mask, it extends to the center
+                        const desiredBottom = y1 + PADDING;
+
+                        const finalX = Math.max(cropRect.x, desiredX);
+                        const finalY = Math.max(cropRect.y, desiredY);
+                        const finalRight = desiredRight;
+                        const finalBottom = Math.min(cropRect.y + cropRect.height, desiredBottom);
+
+                        const finalWidth = Math.max(0, finalRight - finalX);
+                        const finalHeight = Math.max(0, finalBottom - finalY);
+
+                        selfMaskRect = { x: finalX, y: finalY, width: finalWidth, height: finalHeight };
                         Object.assign(newSettings, { selfMaskX: selfMaskRect.x, selfMaskY: selfMaskRect.y, selfMaskWidth: selfMaskRect.width, selfMaskHeight: selfMaskRect.height });
                     } else { newSettings.selfMaskAuto = false; }
                 }
+
                 setOcrStatus(t('ocr_status_mask_detected'));
                 return true;
             } catch (e) { console.error(e); alert(t('alert_ocr_error')); return false; }
@@ -484,8 +528,9 @@ const ImageProcessor: React.FC = () => {
         reusableTempCanvas.width = 1;
         reusableTempCanvas.height = 1;
       }
-      if (workerRef.current) { // Reinitialize worker for a clean state
-        await workerRef.current.reinitialize('jpn+eng', 1);
+      if (workerRef.current) {
+        await workerRef.current.terminate();
+        workerRef.current = null;
       }
       setOcrStatus(t('status_releasing_memory'));
       // Add a small delay to allow GC to run before re-enabling the button
