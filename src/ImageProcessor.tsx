@@ -238,7 +238,7 @@ const ImageProcessor: React.FC = () => {
         const performAutoCrop = (firstImageBitmap: ImageBitmap): boolean => {
             const w = firstImageBitmap.width;
             const h = firstImageBitmap.height;
-            const THRESHOLD = 40;
+            const THRESHOLD = 60;
             const getLuminance = (d: Uint8ClampedArray, i: number) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
 
             // 1. Create a small canvas for the horizontal center line
@@ -271,14 +271,30 @@ const ImageProcessor: React.FC = () => {
                 const ASPECT_LIMIT = 2.1;
                 const skipX = w / h > ASPECT_LIMIT ? Math.floor((w - h * ASPECT_LIMIT) / 2) + 1 : 0;
                 for (let x = isRight ? w - skipX - 2 : skipX + 1; isRight ? x > 0 : x < w; isRight ? x-- : x++) {
-                    if (Math.abs(getLuminance(hData, x * 4) - getLuminance(hData, (x + (isRight ? 1 : -1)) * 4)) > THRESHOLD) return x;
+                    const currentL = getLuminance(hData, x * 4);
+                    const prevL = getLuminance(hData, (x + (isRight ? 1 : -1)) * 4);
+
+                    if (Math.abs(currentL - prevL) > THRESHOLD && currentL > 200) return x;
                 }
                 return null;
             };
 
+            /*
             const findVEdge = (isBottom: boolean): number | null => {
                 for (let y = isBottom ? Math.floor(h * 0.95) : 1; isBottom ? y > 0 : y < h; isBottom ? y-- : y++) {
                     if (Math.abs(getLuminance(vData, y * 4) - getLuminance(vData, (y + (isBottom ? 1 : -1)) * 4)) > THRESHOLD) return y;
+                }
+                return null;
+            };
+            */
+
+            const findVEdge = (isBottom: boolean): number | null => {
+                const startY = isBottom ? Math.floor(h * 0.95) : 1;
+                for (let y = startY; isBottom ? y > 0 : y < h; isBottom ? y-- : y++) {
+                    const currentL = getLuminance(vData, y * 4);
+                    const prevL = getLuminance(vData, (y + (isBottom ? 1 : -1)) * 4);
+
+                    if (Math.abs(currentL - prevL) > THRESHOLD && currentL > 200) return y;
                 }
                 return null;
             };
