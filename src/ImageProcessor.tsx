@@ -238,7 +238,6 @@ const ImageProcessor: React.FC = () => {
         const performAutoCrop = (firstImageBitmap: ImageBitmap): boolean => {
             const w = firstImageBitmap.width;
             const h = firstImageBitmap.height;
-            const THRESHOLD = 60;
             const getLuminance = (d: Uint8ClampedArray, i: number) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
 
             // 1. Create a small canvas for the horizontal center line
@@ -267,52 +266,54 @@ const ImageProcessor: React.FC = () => {
             const vData = vCtx.getImageData(0, 0, 1, h).data;
             vCanvas.width = vCanvas.height = 1; // Deallocate
 
-            const findHEdge = (isRight: boolean): number | null => {
+            const findHEdge = (isRight: boolean, currentThreshold: number): number | null => {
                 const ASPECT_LIMIT = 2.1;
                 const skipX = w / h > ASPECT_LIMIT ? Math.floor((w - h * ASPECT_LIMIT) / 2) + 1 : 0;
                 for (let x = isRight ? w - skipX - 2 : skipX + 1; isRight ? x > 0 : x < w; isRight ? x-- : x++) {
-                    const currentL = getLuminance(hData, x * 4);
-                    const prevL = getLuminance(hData, (x + (isRight ? 1 : -1)) * 4);
-
-                    if (Math.abs(currentL - prevL) > THRESHOLD && currentL > 200) return x;
+                    if (Math.abs(getLuminance(hData, x * 4) - getLuminance(hData, (x + (isRight ? 1 : -1)) * 4)) > currentThreshold) return x;
                 }
                 return null;
             };
 
-            /*
-            const findVEdge = (isBottom: boolean): number | null => {
+            const findVEdge = (isBottom: boolean, currentThreshold: number): number | null => {
                 for (let y = isBottom ? Math.floor(h * 0.95) : 1; isBottom ? y > 0 : y < h; isBottom ? y-- : y++) {
-                    if (Math.abs(getLuminance(vData, y * 4) - getLuminance(vData, (y + (isBottom ? 1 : -1)) * 4)) > THRESHOLD) return y;
-                }
-                return null;
-            };
-            */
-
-            const findVEdge = (isBottom: boolean): number | null => {
-                const startY = isBottom ? Math.floor(h * 0.95) : 1;
-                for (let y = startY; isBottom ? y > 0 : y < h; isBottom ? y-- : y++) {
-                    const currentL = getLuminance(vData, y * 4);
-                    const prevL = getLuminance(vData, (y + (isBottom ? 1 : -1)) * 4);
-
-                    if (Math.abs(currentL - prevL) > THRESHOLD && currentL > 200) return y;
+                    if (Math.abs(getLuminance(vData, y * 4) - getLuminance(vData, (y + (isBottom ? 1 : -1)) * 4)) > currentThreshold) return y;
                 }
                 return null;
             };
 
-            const left = findHEdge(false);
-            const right = findHEdge(true);
-            const top = findVEdge(false);
-            const bottom = findVEdge(true);
-
-            if (left !== null && right !== null && top !== null && bottom !== null) {
-                cropRect = { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
-                Object.assign(newSettings, cropRect);
+            const plausible = (r: {x:number; y:number; width:number; height:number}) => {
+                if (r.width < w * 0.65) return false;
+                if (r.height < h * 0.50) return false;
+                if (r.y + r.height > h * 0.95 + 2) return false;
+                const aspect = r.width / r.height;
+                if (aspect < 1.05 || aspect > 2.7) return false;
                 return true;
-            } else {
-                alert(t('alert_failed_to_detect_crop_area'));
-                newSettings.cropAuto = false;
-                return false;
+            };
+
+            const thresholds = [100, 80, 60, 40];
+
+            for (const t of thresholds) {
+                const left = findHEdge(false, t);
+                const right = findHEdge(true, t);
+                const top = findVEdge(false, t);
+                const bottom = findVEdge(true, t);
+
+                if (left !== null && right !== null && top !== null && bottom !== null) {
+                    const rect = { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+
+                    if (plausible(rect)) {
+                        cropRect = rect;
+                        Object.assign(newSettings, cropRect);
+                        //console.log(`Auto crop matched at threshold: ${t}`);
+                        return true;
+                    }
+                }
             }
+
+            alert(t('alert_failed_to_detect_crop_area'));
+            newSettings.cropAuto = false;
+            return false;
         };
         if (!performAutoCrop(firstImageBitmap)) {
           setSettings(prev => ({ ...prev, ...newSettings }));
