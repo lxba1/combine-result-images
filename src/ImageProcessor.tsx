@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material';
-import Tesseract, { PSM } from 'tesseract.js';
+import Tesseract, { PSM, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
 import packageJson from '../package.json';
 
 interface ImageSettings {
@@ -325,8 +325,8 @@ const ImageProcessor: React.FC = () => {
             setOcrStatus(t('ocr_status_starting'));
             const worker = await Tesseract.createWorker('jpn+eng', 1, { logger: _m => { /* logger logic */ } });
             workerRef.current = worker;
-
             await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+
             try {
                 const scratch = document.createElement('canvas');
                 const sctx = scratch.getContext('2d', { willReadFrequently: true, alpha: false })!;
@@ -337,8 +337,10 @@ const ImageProcessor: React.FC = () => {
                   sctx.drawImage(firstImageBitmap, sx, sy, sw, sh, 0, 0, sw, sh);
                   const { data } = await worker!.recognize(scratch, {}, { blocks: true });
                   return (data?.blocks ?? [])
-                    .flatMap(b => b.paragraphs).flatMap(p => p.lines).flatMap(l => l.words)
-                    .map(w => ({ ...w, bbox: { x0: w.bbox.x0 + sx, y0: w.bbox.y0 + sy, x1: w.bbox.x1 + sx, y1: w.bbox.y1 + sy } }));
+                    .flatMap((b: Block) => b.paragraphs)
+                    .flatMap((p: Paragraph) => p.lines)
+                    .flatMap((l: Line) => l.words)
+                    .map((w: Word) => ({ ...w, bbox: { x0: w.bbox.x0 + sx, y0: w.bbox.y0 + sy, x1: w.bbox.x1 + sx, y1: w.bbox.y1 + sy } }));
                 }
 
                 // Optimized search area
@@ -365,9 +367,9 @@ const ImageProcessor: React.FC = () => {
 
                 const PADDING = 5;
                 if (settings.maskEnabled && settings.maskAuto) {
-                    const enemyLvWords = enemyWords.filter(w => /Lv\.\d+/i.test(w.text));
+                    const enemyLvWords = enemyWords.filter((w: Word) => /Lv\.\d+/i.test(w.text));
                     if (enemyLvWords.length > 0) {
-                        const target = enemyLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c));
+                        const target = enemyLvWords.reduce((p: Word, c: Word) => (p.bbox.y0 < c.bbox.y0 ? p : c));
                         const { x0, y0, y1 } = target.bbox;
 
                         const desiredX = x0 - PADDING;
@@ -388,9 +390,9 @@ const ImageProcessor: React.FC = () => {
                     } else { newSettings.maskAuto = false; }
                 }
                 if (settings.selfMaskEnabled && settings.selfMaskAuto) {
-                    const selfLvWords = selfWords.filter(w => /Lv\.\d+/i.test(w.text));
+                    const selfLvWords = selfWords.filter((w: Word) => /Lv\.\d+/i.test(w.text));
                     if (selfLvWords.length > 0) {
-                        const target = selfLvWords.reduce((p, c) => (p.bbox.y0 < c.bbox.y0 ? p : c));
+                        const target = selfLvWords.reduce((p: Word, c: Word) => (p.bbox.y0 < c.bbox.y0 ? p : c));
                         const { x0, y0, y1 } = target.bbox;
                         const cropCenterX = cropRect.x + Math.floor(cropRect.width / 2);
 
