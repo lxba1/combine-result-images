@@ -1,5 +1,6 @@
 {
   "title": "Image Combiner",
+  "language": "言語",
   "theme_mode": "テーマ",
   "theme_system": "システム",
   "theme_light": "ライト",
@@ -41,6 +42,11 @@
   "enable": "有効化",
   "color": "色",
   "self_mask": "セルフマスク",
+  "reset_settings": "設定を初期値に戻す",
+  "reset_settings_confirm_title": "設定を初期値に戻しますか？",
+  "reset_settings_confirm_message": "レイアウト・クロップ・マスク・セルフマスクの設定がすべて初期値に戻ります（選択中の画像・テーマ・言語は維持されます）。",
+  "cancel": "キャンセル",
+  "reset": "リセット",
   "upload_and_process": "画像選択 & 処理",
   "upload_images": "画像を選択",
   "files_selected": "{{count}} ファイル選択中",

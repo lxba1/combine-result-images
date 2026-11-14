@@ -3,6 +3,8 @@ import { initReactI18next } from 'react-i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
 import HttpApi from 'i18next-http-backend';
 
+export const LANGUAGE_STORAGE_KEY = 'i18nextLng';
+
 i18n
   .use(HttpApi) // loads translations from your server
   .use(LanguageDetector) // detect user language
@@ -12,7 +14,8 @@ i18n
     fallbackLng: 'en',
     debug: true, // Set to false in production
     detection: {
-      order: ['navigator'],
+      order: ['localStorage', 'navigator'],
+      lookupLocalStorage: LANGUAGE_STORAGE_KEY,
       caches: [],
     },
     backend: {

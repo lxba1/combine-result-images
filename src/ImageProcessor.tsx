@@ -1,14 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment } from '@mui/material';
+import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions } from '@mui/material';
 import { useColorScheme, styled } from '@mui/material/styles';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon } from '@mui/icons-material';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
 import packageJson from '../package.json';
+import { LANGUAGE_STORAGE_KEY } from './i18n';
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 type RatioRect = { rx0: number; ry0: number; rx1: number; ry1: number };
+
+const isRatioRectEqual = (a: RatioRect, b: RatioRect) =>
+  Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
+  Math.abs(a.rx1 - b.rx1) < 0.0001 && Math.abs(a.ry1 - b.ry1) < 0.0001;
 
 const MASK_PRESETS: Record<string, RatioRect> = {
   name:  { rx0: 0.785, ry0: 0.14, rx1: 1.0,  ry1: 0.2 },
@@ -81,6 +86,122 @@ interface ImageSettings {
   selfMaskRatioRect: RatioRect;
 }
 
+const DEFAULT_SETTINGS: ImageSettings = {
+  colCount: 2,
+  offsetX: 8,
+  offsetY: 8,
+  sortOrder: 'date_asc',
+  bgColor: '#000000',
+  outputFormat: 'webp',
+  quality: 80,
+  webpMethod: 6,
+  cropX: 31,
+  cropY: 117,
+  cropWidth: 1538,
+  cropHeight: 665,
+  cropAuto: true,
+  maskEnabled: false,
+  maskMode: 'ratio',
+  maskX: 0,
+  maskY: 0,
+  maskWidth: 100,
+  maskHeight: 100,
+  maskColor: '#FFFFFF',
+  maskRatioRect: MASK_PRESETS.name,
+  selfMaskEnabled: false,
+  selfMaskMode: 'ratio',
+  selfMaskX: 0,
+  selfMaskY: 0,
+  selfMaskWidth: 100,
+  selfMaskHeight: 100,
+  selfMaskColor: '#FFFFFF',
+  selfMaskRatioRect: SELF_MASK_PRESETS.name,
+};
+
+const createDefaultSettings = (): ImageSettings => ({
+  ...DEFAULT_SETTINGS,
+  maskRatioRect: { ...DEFAULT_SETTINGS.maskRatioRect },
+  selfMaskRatioRect: { ...DEFAULT_SETTINGS.selfMaskRatioRect },
+});
+
+const areSettingsDefault = (current: ImageSettings): boolean =>
+  (Object.keys(DEFAULT_SETTINGS) as (keyof ImageSettings)[]).every((key) => {
+    if (key === 'maskRatioRect' || key === 'selfMaskRatioRect') {
+      return isRatioRectEqual(current[key], DEFAULT_SETTINGS[key]);
+    }
+    return current[key] === DEFAULT_SETTINGS[key];
+  });
+
+interface HeaderMenuOption<T extends string> {
+  value: T;
+  label: string;
+  icon?: React.ReactElement;
+}
+
+interface HeaderMenuButtonProps<T extends string> {
+  menuId: string;
+  label: string;
+  tooltip: string;
+  icon: React.ReactElement;
+  value: T;
+  options: HeaderMenuOption<T>[];
+  onSelect: (value: T) => void;
+}
+
+/** Compact icon button with an anchored dropdown menu for header preferences. */
+function HeaderMenuButton<T extends string>({
+  menuId,
+  label,
+  tooltip,
+  icon,
+  value,
+  options,
+  onSelect,
+}: HeaderMenuButtonProps<T>) {
+  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const showIconColumn = options.some((option) => Boolean(option.icon));
+
+  return (
+    <>
+      <Tooltip title={tooltip}>
+        <IconButton
+          size="small"
+          onClick={(event) => setAnchorEl(event.currentTarget)}
+          aria-label={label}
+          aria-controls={anchorEl ? menuId : undefined}
+          aria-haspopup="true"
+          aria-expanded={Boolean(anchorEl)}
+          sx={{ border: 1, borderColor: 'divider' }}
+        >
+          {icon}
+        </IconButton>
+      </Tooltip>
+      <Menu
+        id={menuId}
+        anchorEl={anchorEl}
+        open={Boolean(anchorEl)}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        {options.map((option) => (
+          <MenuItem
+            key={option.value}
+            selected={value === option.value}
+            onClick={() => {
+              onSelect(option.value);
+              setAnchorEl(null);
+            }}
+          >
+            {showIconColumn && <ListItemIcon>{option.icon ?? null}</ListItemIcon>}
+            <ListItemText>{option.label}</ListItemText>
+          </MenuItem>
+        ))}
+      </Menu>
+    </>
+  );
+}
+
 type ThemeMode = 'system' | 'light' | 'dark';
 
 const THEME_MODES: { value: ThemeMode; labelKey: string; icon: React.ReactElement }[] = [
@@ -93,49 +214,64 @@ const THEME_MODES: { value: ThemeMode; labelKey: string; icon: React.ReactElemen
 const ThemeModeButton: React.FC = () => {
   const { t } = useTranslation();
   const { mode, setMode } = useColorScheme();
-  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
   const currentMode: ThemeMode = mode ?? 'system';
   const currentOption = THEME_MODES.find((option) => option.value === currentMode) ?? THEME_MODES[0];
 
   return (
-    <>
-      <Tooltip title={`${t('theme_mode')}: ${t(currentOption.labelKey)}`}>
-        <IconButton
-          size="small"
-          onClick={(event) => setAnchorEl(event.currentTarget)}
-          aria-label={t('theme_mode')}
-          aria-controls={anchorEl ? 'theme-mode-menu' : undefined}
-          aria-haspopup="true"
-          aria-expanded={Boolean(anchorEl)}
-          sx={{ border: 1, borderColor: 'divider' }}
-        >
-          {currentOption.icon}
-        </IconButton>
-      </Tooltip>
-      <Menu
-        id="theme-mode-menu"
-        anchorEl={anchorEl}
-        open={Boolean(anchorEl)}
-        onClose={() => setAnchorEl(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-      >
-        {THEME_MODES.map((option) => (
-          <MenuItem
-            key={option.value}
-            selected={currentMode === option.value}
-            onClick={() => {
-              setMode(option.value);
-              setAnchorEl(null);
-            }}
-          >
-            <ListItemIcon>{option.icon}</ListItemIcon>
-            <ListItemText>{t(option.labelKey)}</ListItemText>
-          </MenuItem>
-        ))}
-      </Menu>
-    </>
+    <HeaderMenuButton
+      menuId="theme-mode-menu"
+      label={t('theme_mode')}
+      tooltip={`${t('theme_mode')}: ${t(currentOption.labelKey)}`}
+      icon={currentOption.icon}
+      value={currentMode}
+      options={THEME_MODES.map((option) => ({
+        value: option.value,
+        label: t(option.labelKey),
+        icon: option.icon,
+      }))}
+      onSelect={(nextMode) => setMode(nextMode)}
+    />
+  );
+};
+
+type SupportedLanguage = 'ja' | 'en';
+
+const LANGUAGE_OPTIONS: { value: SupportedLanguage; label: string }[] = [
+  { value: 'ja', label: '日本語' },
+  { value: 'en', label: 'English' },
+];
+
+/** Compact header menu button for manually switching the UI language and persisting it. */
+const LanguageButton: React.FC = () => {
+  const { t, i18n } = useTranslation();
+
+  const currentLanguage: SupportedLanguage = i18n.resolvedLanguage === 'ja' ? 'ja' : 'en';
+  const currentOption = LANGUAGE_OPTIONS.find((option) => option.value === currentLanguage) ?? LANGUAGE_OPTIONS[0];
+
+  const handleSelectLanguage = (lng: SupportedLanguage) => {
+    try {
+      localStorage.setItem(LANGUAGE_STORAGE_KEY, lng);
+    } catch (error) {
+      console.warn('Failed to persist language selection:', error);
+    }
+    void i18n.changeLanguage(lng);
+  };
+
+  return (
+    <HeaderMenuButton
+      menuId="language-menu"
+      label={t('language')}
+      tooltip={`${t('language')}: ${currentOption.label}`}
+      icon={<LanguageIcon fontSize="small" />}
+      value={currentLanguage}
+      options={LANGUAGE_OPTIONS.map((option) => ({
+        value: option.value,
+        label: option.label,
+        icon: option.value === currentLanguage ? <CheckIcon fontSize="small" /> : undefined,
+      }))}
+      onSelect={handleSelectLanguage}
+    />
   );
 };
 
@@ -309,12 +445,8 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
 };
 
 const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>): string => {
-  const isMatch = (a: RatioRect, b: RatioRect) =>
-    Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
-    Math.abs(a.rx1 - b.rx1) < 0.0001 && Math.abs(a.ry1 - b.ry1) < 0.0001;
-
   for (const [key, val] of Object.entries(presets)) {
-    if (isMatch(current, val)) return key;
+    if (isRatioRectEqual(current, val)) return key;
   }
   return 'custom';
 };
@@ -457,38 +589,8 @@ const ImageProcessor: React.FC = () => {
   const { t } = useTranslation();
 
   const [settings, setSettings] = useState<ImageSettings>(() => {
+    const defaults = createDefaultSettings();
     const savedSettings = localStorage.getItem('imageProcessorSettings');
-    const defaults: ImageSettings = {
-      colCount: 2,
-      offsetX: 8,
-      offsetY: 8,
-      sortOrder: 'date_asc',
-      bgColor: '#000000',
-      outputFormat: 'webp',
-      quality: 80,
-      webpMethod: 6,
-      cropX: 31,
-      cropY: 117,
-      cropWidth: 1538,
-      cropHeight: 665,
-      cropAuto: true,
-      maskEnabled: false,
-      maskMode: 'ratio',
-      maskX: 0,
-      maskY: 0,
-      maskWidth: 100,
-      maskHeight: 100,
-      maskColor: '#FFFFFF',
-      maskRatioRect: MASK_PRESETS.name,
-      selfMaskEnabled: false,
-      selfMaskMode: 'ratio',
-      selfMaskX: 0,
-      selfMaskY: 0,
-      selfMaskWidth: 100,
-      selfMaskHeight: 100,
-      selfMaskColor: '#FFFFFF',
-      selfMaskRatioRect: SELF_MASK_PRESETS.name,
-    };
     if (savedSettings) {
       try {
         const parsed = JSON.parse(savedSettings);
@@ -549,9 +651,17 @@ const ImageProcessor: React.FC = () => {
   const [downloadFilename, setDownloadFilename] = useState<string>('tile.webp');
   const [isProcessing, setIsProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workerRef = useRef<Tesseract.Worker | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+
+  const isDefaultSettings = areSettingsDefault(settings);
+
+  const handleResetSettings = () => {
+    setSettings(createDefaultSettings());
+    setResetDialogOpen(false);
+  };
 
   useEffect(() => {
     // Terminate the worker when the component unmounts
@@ -1075,7 +1185,10 @@ const ImageProcessor: React.FC = () => {
           <Typography variant="h4" component="h1">{t('title')}</Typography>
           <Typography variant="caption" color="text.secondary">v{packageJson.version}</Typography>
         </Box>
-        <ThemeModeButton />
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <LanguageButton />
+          <ThemeModeButton />
+        </Box>
       </Box>
       <Grid container spacing={3}>
         <Grid size={{ xs: 12, md: 5, lg: 4 }}>
@@ -1217,6 +1330,19 @@ const ImageProcessor: React.FC = () => {
             onRatioSliderChange={(axis) => handleRatioSliderChange('selfMaskRatioRect', axis)}
             onPresetChange={handlePresetChange('selfMaskRatioRect')}
           />
+          <Box sx={{ mt: 2 }}>
+            <Button
+              variant="outlined"
+              color="inherit"
+              fullWidth
+              startIcon={<RestartAltIcon />}
+              disabled={isDefaultSettings}
+              onClick={() => setResetDialogOpen(true)}
+              sx={{ '&:not(.Mui-disabled)': { color: 'text.secondary', borderColor: 'divider' } }}
+            >
+              {t('reset_settings')}
+            </Button>
+          </Box>
         </Grid>
         <Grid size={{ xs: 12, md: 7, lg: 8 }}>
           <Card>
@@ -1273,6 +1399,25 @@ const ImageProcessor: React.FC = () => {
           </Card>
         </Grid>
       </Grid>
+      <Dialog
+        open={resetDialogOpen}
+        onClose={() => setResetDialogOpen(false)}
+        aria-labelledby="reset-settings-dialog-title"
+        aria-describedby="reset-settings-dialog-description"
+      >
+        <DialogTitle id="reset-settings-dialog-title">{t('reset_settings_confirm_title')}</DialogTitle>
+        <DialogContent>
+          <DialogContentText id="reset-settings-dialog-description">
+            {t('reset_settings_confirm_message')}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResetDialogOpen(false)}>{t('cancel')}</Button>
+          <Button onClick={handleResetSettings} color="error" variant="contained">
+            {t('reset')}
+          </Button>
+        </DialogActions>
+      </Dialog>
       <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
     </Container>
   );

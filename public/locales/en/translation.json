@@ -1,5 +1,6 @@
 {
   "title": "Image Combiner",
+  "language": "Language",
   "theme_mode": "Theme",
   "theme_system": "System",
   "theme_light": "Light",
@@ -41,6 +42,11 @@
   "enable": "Enable",
   "color": "Color",
   "self_mask": "Self Mask",
+  "reset_settings": "Reset to defaults",
+  "reset_settings_confirm_title": "Reset settings to defaults?",
+  "reset_settings_confirm_message": "All layout, cropping, and masking settings will be restored to their defaults. Selected images, theme, and language will be kept.",
+  "cancel": "Cancel",
+  "reset": "Reset",
   "upload_and_process": "Select & Process",
   "upload_images": "Select Images",
   "files_selected": "{{count}} files selected",
