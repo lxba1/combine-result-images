@@ -191,6 +191,123 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({ label, name, valu
   />
 );
 
+interface NumericTextFieldProps {
+  label: string;
+  name: string;
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  disabled?: boolean;
+  onCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
+}
+
+/**
+ * Uncontrolled-while-focused numeric input so users can clear or type decimals cleanly,
+ * clamping and normalizing to [min, max] on blur or Enter.
+ */
+const NumericTextField: React.FC<NumericTextFieldProps> = ({
+  label,
+  name,
+  value,
+  min,
+  max,
+  step = 1,
+  integer = false,
+  disabled = false,
+  onCommit,
+}) => {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const isFocusedRef = useRef(false);
+  const isDirtyRef = useRef(false);
+  const preEditValueRef = useRef(value);
+
+  const normalize = (num: number): number => {
+    let next = integer ? Math.round(num) : Math.round(num * 10000) / 10000;
+    if (min !== undefined) next = Math.max(min, next);
+    if (max !== undefined) next = Math.min(max, next);
+    return next;
+  };
+
+  useEffect(() => {
+    if (disabled) {
+      isFocusedRef.current = false;
+      isDirtyRef.current = false;
+    }
+    if ((!isFocusedRef.current || !isDirtyRef.current) && inputRef.current) {
+      inputRef.current.value = String(value);
+      preEditValueRef.current = value;
+    }
+  }, [value, disabled]);
+
+  const handleFocus = () => {
+    isFocusedRef.current = true;
+    isDirtyRef.current = false;
+    preEditValueRef.current = value;
+  };
+
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    isDirtyRef.current = true;
+    const raw = event.target.value;
+    if (raw === '') return;
+
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return;
+
+    const withinBounds =
+      (min === undefined || parsed >= min) &&
+      (max === undefined || parsed <= max);
+    if (!isFocusedRef.current || withinBounds) {
+      onCommit(name, normalize(parsed), { finalize: !isFocusedRef.current });
+    }
+  };
+
+  const commitDraft = () => {
+    const raw = inputRef.current?.value ?? '';
+    const parsed = raw.trim() === '' ? preEditValueRef.current : Number(raw);
+    const next = Number.isFinite(parsed) ? normalize(parsed) : normalize(preEditValueRef.current);
+    preEditValueRef.current = next;
+    isDirtyRef.current = false;
+    if (inputRef.current) {
+      inputRef.current.value = String(next);
+    }
+    onCommit(name, next, { finalize: true });
+  };
+
+  const handleBlur = () => {
+    isFocusedRef.current = false;
+    commitDraft();
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      commitDraft();
+    }
+  };
+
+  return (
+    <TextField
+      label={label}
+      type="number"
+      size="small"
+      fullWidth
+      name={name}
+      defaultValue={value}
+      disabled={disabled}
+      inputRef={inputRef}
+      onFocus={handleFocus}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
+      slotProps={{
+        inputLabel: { shrink: true },
+        htmlInput: { min, max, step },
+      }}
+    />
+  );
+};
+
 const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>): string => {
   const isMatch = (a: RatioRect, b: RatioRect) =>
     Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
@@ -216,6 +333,7 @@ interface MaskAccordionProps {
   colorName: 'maskColor' | 'selfMaskColor';
   colorValue: string;
   onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
+  onNumericCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
   onRatioSliderChange: (axis: 'horizontal' | 'vertical') => (event: Event, value: number | number[]) => void;
   onPresetChange: (event: SelectChangeEvent<string>) => void;
 }
@@ -235,6 +353,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   colorName,
   colorValue,
   onSettingChange,
+  onNumericCommit,
   onRatioSliderChange,
   onPresetChange,
 }) => {
@@ -293,7 +412,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                   <Box sx={{ px: 1 }}>
                     <Slider
                       size="small"
-                      value={[ratioRect.rx0, ratioRect.rx1]}
+                      value={[Math.min(ratioRect.rx0, ratioRect.rx1), Math.max(ratioRect.rx0, ratioRect.rx1)]}
                       onChange={onRatioSliderChange('horizontal')}
                       valueLabelDisplay="auto"
                       min={0}
@@ -305,7 +424,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                   <Box sx={{ px: 1 }}>
                     <Slider
                       size="small"
-                      value={[ratioRect.ry0, ratioRect.ry1]}
+                      value={[Math.min(ratioRect.ry0, ratioRect.ry1), Math.max(ratioRect.ry0, ratioRect.ry1)]}
                       onChange={onRatioSliderChange('vertical')}
                       valueLabelDisplay="auto"
                       min={0}
@@ -314,17 +433,17 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                     />
                   </Box>
                 </Grid>
-                <Grid size={{ xs: 6 }}><TextField label={t('ratio_left')} type="number" size="small" name={`${ratioKey}.rx0`} value={ratioRect.rx0} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
-                <Grid size={{ xs: 6 }}><TextField label={t('ratio_top')} type="number" size="small" name={`${ratioKey}.ry0`} value={ratioRect.ry0} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
-                <Grid size={{ xs: 6 }}><TextField label={t('ratio_right')} type="number" size="small" name={`${ratioKey}.rx1`} value={ratioRect.rx1} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
-                <Grid size={{ xs: 6 }}><TextField label={t('ratio_bottom')} type="number" size="small" name={`${ratioKey}.ry1`} value={ratioRect.ry1} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
               </>
             ) : (
               <>
-                <Grid size={{ xs: 6 }}><TextField label={t('x')} type="number" size="small" name={`${rectPrefix}X`} value={rectValues.x} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
-                <Grid size={{ xs: 6 }}><TextField label={t('y')} type="number" size="small" name={`${rectPrefix}Y`} value={rectValues.y} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
-                <Grid size={{ xs: 6 }}><TextField label={t('width')} type="number" size="small" name={`${rectPrefix}Width`} value={rectValues.width} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
-                <Grid size={{ xs: 6 }}><TextField label={t('height')} type="number" size="small" name={`${rectPrefix}Height`} value={rectValues.height} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name={`${rectPrefix}X`} value={rectValues.x} min={0} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name={`${rectPrefix}Y`} value={rectValues.y} min={0} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name={`${rectPrefix}Width`} value={rectValues.width} min={1} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name={`${rectPrefix}Height`} value={rectValues.height} min={1} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
               </>
             )}
           </Grid>
@@ -371,17 +490,52 @@ const ImageProcessor: React.FC = () => {
       selfMaskRatioRect: SELF_MASK_PRESETS.name,
     };
     if (savedSettings) {
-      const parsed = JSON.parse(savedSettings);
-      // Migration for old settings
-      if (parsed.maskAuto !== undefined) {
-        parsed.maskMode = parsed.maskAuto ? 'ocr' : 'manual';
-        delete parsed.maskAuto;
+      try {
+        const parsed = JSON.parse(savedSettings);
+        // Migration for old settings
+        if (parsed.maskAuto !== undefined) {
+          parsed.maskMode = parsed.maskAuto ? 'ocr' : 'manual';
+          delete parsed.maskAuto;
+        }
+        if (parsed.selfMaskAuto !== undefined) {
+          parsed.selfMaskMode = parsed.selfMaskAuto ? 'ocr' : 'manual';
+          delete parsed.selfMaskAuto;
+        }
+        const merged: ImageSettings = { ...defaults, ...parsed };
+        const clampRatioRect = (rect: RatioRect): RatioRect => {
+          const rx0 = clamp01(Number.isFinite(rect?.rx0) ? rect.rx0 : 0);
+          const ry0 = clamp01(Number.isFinite(rect?.ry0) ? rect.ry0 : 0);
+          const rx1 = clamp01(Number.isFinite(rect?.rx1) ? rect.rx1 : 1);
+          const ry1 = clamp01(Number.isFinite(rect?.ry1) ? rect.ry1 : 1);
+          return {
+            rx0: Math.min(rx0, rx1),
+            ry0: Math.min(ry0, ry1),
+            rx1: Math.max(rx0, rx1),
+            ry1: Math.max(ry0, ry1),
+          };
+        };
+        const toNonNegativeInt = (v: unknown, fallback: number, min = 0) =>
+          typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.round(v)) : fallback;
+        return {
+          ...merged,
+          cropX: toNonNegativeInt(merged.cropX, defaults.cropX, 0),
+          cropY: toNonNegativeInt(merged.cropY, defaults.cropY, 0),
+          cropWidth: toNonNegativeInt(merged.cropWidth, defaults.cropWidth, 1),
+          cropHeight: toNonNegativeInt(merged.cropHeight, defaults.cropHeight, 1),
+          maskX: toNonNegativeInt(merged.maskX, defaults.maskX, 0),
+          maskY: toNonNegativeInt(merged.maskY, defaults.maskY, 0),
+          maskWidth: toNonNegativeInt(merged.maskWidth, defaults.maskWidth, 1),
+          maskHeight: toNonNegativeInt(merged.maskHeight, defaults.maskHeight, 1),
+          selfMaskX: toNonNegativeInt(merged.selfMaskX, defaults.selfMaskX, 0),
+          selfMaskY: toNonNegativeInt(merged.selfMaskY, defaults.selfMaskY, 0),
+          selfMaskWidth: toNonNegativeInt(merged.selfMaskWidth, defaults.selfMaskWidth, 1),
+          selfMaskHeight: toNonNegativeInt(merged.selfMaskHeight, defaults.selfMaskHeight, 1),
+          maskRatioRect: clampRatioRect(merged.maskRatioRect),
+          selfMaskRatioRect: clampRatioRect(merged.selfMaskRatioRect),
+        };
+      } catch {
+        return defaults;
       }
-      if (parsed.selfMaskAuto !== undefined) {
-        parsed.selfMaskMode = parsed.selfMaskAuto ? 'ocr' : 'manual';
-        delete parsed.selfMaskAuto;
-      }
-      return { ...defaults, ...parsed };
     }
     return defaults;
   });
@@ -419,10 +573,35 @@ const ImageProcessor: React.FC = () => {
   }, [processedImageUrl]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files) {
-      setImages(Array.from(event.target.files));
+    const files = event.target.files;
+    if (files && files.length > 0) {
+      setImages(Array.from(files));
       setProcessedImageUrl(null); // This will also trigger the cleanup effect for the old URL
     }
+    // Reset input value so picking the exact same file(s) again still triggers onChange
+    event.target.value = '';
+  };
+
+  const handleNumericSettingCommit = (name: string, newValue: number, options?: { finalize?: boolean }) => {
+    if (name.startsWith('maskRatioRect.') || name.startsWith('selfMaskRatioRect.')) {
+      const [parent, key] = name.split('.') as ['maskRatioRect' | 'selfMaskRatioRect', keyof RatioRect];
+      setSettings(prev => {
+        const nextRect = { ...prev[parent], [key]: newValue };
+        if (options?.finalize) {
+          if (key === 'rx0') nextRect.rx1 = Math.max(nextRect.rx1, newValue);
+          if (key === 'rx1') nextRect.rx0 = Math.min(nextRect.rx0, newValue);
+          if (key === 'ry0') nextRect.ry1 = Math.max(nextRect.ry1, newValue);
+          if (key === 'ry1') nextRect.ry0 = Math.min(nextRect.ry0, newValue);
+        }
+        return { ...prev, [parent]: nextRect };
+      });
+      return;
+    }
+
+    setSettings(prev => ({
+      ...prev,
+      [name]: newValue,
+    }));
   };
 
   const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => {
@@ -431,13 +610,6 @@ const ImageProcessor: React.FC = () => {
 
     if ('type' in event.target && event.target.type === 'checkbox') { // Checkbox
         newValue = (event.target as HTMLInputElement).checked;
-    } else if ('type' in event.target && event.target.type === 'number') { // TextField type="number"
-        // Handle float for ratio inputs, int for pixels
-        if (name.includes('RatioRect')) {
-             newValue = parseFloat(event.target.value as string) || 0;
-        } else {
-             newValue = parseInt(event.target.value as string, 10) || 0;
-        }
     } else if (name === 'colCount' || name === 'offsetX') { // Select components with numeric values
         newValue = event.target.value as number;
     } else { // Default for other text inputs (e.g., color pickers) or string selects
@@ -457,21 +629,9 @@ const ImageProcessor: React.FC = () => {
         setProcessedImageUrl(null);
     }
 
-    if (name.startsWith('maskRatioRect.') || name.startsWith('selfMaskRatioRect.')) {
-        const [parent, key] = name.split('.');
-        setSettings(prev => ({
-            ...prev,
-            [parent]: {
-                ...(prev[parent as keyof ImageSettings] as RatioRect),
-                [key]: newValue as number
-            }
-        }));
-        return;
-    }
-
     setSettings(prev => ({
       ...prev,
-      [name]: newValue as number, // Ensure it's a number for ImageSettings
+      [name]: newValue,
     }));
   };
 
@@ -1012,10 +1172,10 @@ const ImageProcessor: React.FC = () => {
             <AccordionDetails>
               <FormControlLabel control={<Switch checked={settings.cropAuto} onChange={handleSettingChange} name="cropAuto" />} label={t('auto_mode')} />
               <Grid container spacing={2} sx={{ mt: 1 }}>
-                <Grid size={{xs:6}}><TextField label={t('x')} type="number" size="small" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                <Grid size={{xs:6}}><TextField label={t('y')} type="number" size="small" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                <Grid size={{xs:6}}><TextField label={t('width')} type="number" size="small" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                <Grid size={{xs:6}}><TextField label={t('height')} type="number" size="small" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name="cropWidth" value={settings.cropWidth} min={1} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name="cropHeight" value={settings.cropHeight} min={1} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
               </Grid>
             </AccordionDetails>
           </Accordion>
@@ -1034,6 +1194,7 @@ const ImageProcessor: React.FC = () => {
             colorName="maskColor"
             colorValue={settings.maskColor}
             onSettingChange={handleSettingChange}
+            onNumericCommit={handleNumericSettingCommit}
             onRatioSliderChange={(axis) => handleRatioSliderChange('maskRatioRect', axis)}
             onPresetChange={handlePresetChange('maskRatioRect')}
           />
@@ -1052,6 +1213,7 @@ const ImageProcessor: React.FC = () => {
             colorName="selfMaskColor"
             colorValue={settings.selfMaskColor}
             onSettingChange={handleSettingChange}
+            onNumericCommit={handleNumericSettingCommit}
             onRatioSliderChange={(axis) => handleRatioSliderChange('selfMaskRatioRect', axis)}
             onPresetChange={handlePresetChange('selfMaskRatioRect')}
           />
