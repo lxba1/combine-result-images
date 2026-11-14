@@ -1028,7 +1028,7 @@ const ImageProcessor: React.FC = () => {
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" gutterBottom>{t('upload_and_process')}</Typography>
-              <Button variant="contained" component="label" fullWidth startIcon={<AddPhotoIcon />}>
+              <Button variant="contained" component="label" fullWidth size="large" startIcon={<AddPhotoIcon />}>
                 {t('upload_images')}
                 <input type="file" hidden accept="image/png, image/jpeg" multiple onChange={handleFileChange} />
               </Button>
@@ -1042,9 +1042,8 @@ const ImageProcessor: React.FC = () => {
                   fullWidth
                   size="large"
                   startIcon={!isProcessing && <PlayArrow />}
-                  sx={{ py: 1.5, fontWeight: 'bold', fontSize: '1.1rem' }}
                 >
-                  {isProcessing ? <CircularProgress size={26} color="inherit" /> : t('process_images')}
+                  {isProcessing ? <CircularProgress size={24} color="inherit" /> : t('process_images')}
                 </Button>
               </Box>
               {ocrStatus && <Typography sx={{ mt: 1 }} translate="no">{ocrStatus}</Typography>}
@@ -1063,7 +1062,7 @@ const ImageProcessor: React.FC = () => {
                       borderRadius: 1,
                     }}
                   />
-                  <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth sx={{ mt: 1 }} startIcon={<DownloadIcon />}>
+                  <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth size="large" sx={{ mt: 1 }} startIcon={<DownloadIcon />}>
                     {t('download_image')}
                   </Button>
                 </Box>
