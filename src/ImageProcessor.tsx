@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip } from '@mui/material';
-import { useColorScheme } from '@mui/material/styles';
+import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment } from '@mui/material';
+import { useColorScheme, styled } from '@mui/material/styles';
 import { PlayArrow, ExpandMore as ExpandMoreIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
@@ -139,64 +139,200 @@ const ThemeModeButton: React.FC = () => {
   );
 };
 
+const isValidHexColor = (value: string) => /^#[0-9a-fA-F]{6}$/.test(value);
+
+const ColorSwatchInput = styled('input')({
+  width: 22,
+  height: 22,
+  padding: 0,
+  border: '1px solid rgba(128, 128, 128, 0.45)',
+  borderRadius: 4,
+  backgroundColor: 'transparent',
+  cursor: 'pointer',
+  flexShrink: 0,
+  display: 'block',
+  '&::-webkit-color-swatch-wrapper': { padding: 0 },
+  '&::-webkit-color-swatch': { border: 'none', borderRadius: 3 },
+  '&::-moz-color-swatch': { border: 'none', borderRadius: 3 },
+});
+
 interface ColorSettingFieldProps {
   label: string;
   name: string;
   value: string;
   onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
-  centered?: boolean;
 }
 
-/** Color swatch and hex input pair with theme-adaptive borders so black and white stay visible. */
-const ColorSettingField: React.FC<ColorSettingFieldProps> = ({ label, name, value, onChange, centered = false }) => (
-  <>
-    <Typography gutterBottom>{label}</Typography>
-    <Box sx={{ display: 'flex', alignItems: 'center' }}>
-      <Input
-        type="color"
-        name={name}
-        value={value}
-        onChange={onChange}
-        disableUnderline
-        inputProps={{ 'aria-label': label }}
-        sx={{
-          width: 50,
-          height: 40,
-          p: '2px',
-          borderRadius: 1,
-          border: 1,
-          borderColor: 'divider',
-          bgcolor: 'background.paper',
-          cursor: 'pointer',
-          '& input': {
-            p: 0,
-            height: '100%',
-            cursor: 'pointer',
-            borderRadius: '4px',
-          },
-          '& input::-webkit-color-swatch-wrapper': { p: 0 },
-          '& input::-webkit-color-swatch': {
-            border: '1px solid rgba(128, 128, 128, 0.45)',
-            borderRadius: '4px',
-          },
-          '& input::-moz-color-swatch': {
-            border: '1px solid rgba(128, 128, 128, 0.45)',
-            borderRadius: '4px',
-          },
-        }}
-      />
-      <TextField
-        variant="outlined"
-        size="small"
-        name={name}
-        value={value}
-        onChange={onChange}
-        sx={{ ml: 2, flexGrow: 1 }}
-        inputProps={centered ? { style: { textAlign: 'center' } } : undefined}
-      />
-    </Box>
-  </>
+/** Compact outlined hex color field with an inline clickable color swatch. */
+const ColorSettingField: React.FC<ColorSettingFieldProps> = ({ label, name, value, onChange }) => (
+  <TextField
+    label={label}
+    variant="outlined"
+    size="small"
+    fullWidth
+    name={name}
+    value={value}
+    onChange={onChange}
+    slotProps={{
+      input: {
+        startAdornment: (
+          <InputAdornment position="start">
+            <ColorSwatchInput
+              type="color"
+              name={name}
+              value={isValidHexColor(value) ? value : '#000000'}
+              onChange={onChange}
+              aria-label={label}
+            />
+          </InputAdornment>
+        ),
+      },
+    }}
+  />
 );
+
+const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>): string => {
+  const isMatch = (a: RatioRect, b: RatioRect) =>
+    Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
+    Math.abs(a.rx1 - b.rx1) < 0.0001 && Math.abs(a.ry1 - b.ry1) < 0.0001;
+
+  for (const [key, val] of Object.entries(presets)) {
+    if (isMatch(current, val)) return key;
+  }
+  return 'custom';
+};
+
+interface MaskAccordionProps {
+  title: string;
+  enabledName: 'maskEnabled' | 'selfMaskEnabled';
+  enabled: boolean;
+  modeName: 'maskMode' | 'selfMaskMode';
+  mode: MaskMode;
+  ratioKey: 'maskRatioRect' | 'selfMaskRatioRect';
+  ratioRect: RatioRect;
+  presets: Record<string, RatioRect>;
+  rectPrefix: 'mask' | 'selfMask';
+  rectValues: { x: number; y: number; width: number; height: number };
+  colorName: 'maskColor' | 'selfMaskColor';
+  colorValue: string;
+  onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
+  onRatioSliderChange: (axis: 'horizontal' | 'vertical') => (event: Event, value: number | number[]) => void;
+  onPresetChange: (event: SelectChangeEvent<string>) => void;
+}
+
+/** Shared settings accordion for target and self masking controls with compact 2-column pairing. */
+const MaskAccordion: React.FC<MaskAccordionProps> = ({
+  title,
+  enabledName,
+  enabled,
+  modeName,
+  mode,
+  ratioKey,
+  ratioRect,
+  presets,
+  rectPrefix,
+  rectValues,
+  colorName,
+  colorValue,
+  onSettingChange,
+  onRatioSliderChange,
+  onPresetChange,
+}) => {
+  const { t } = useTranslation();
+
+  return (
+    <Accordion sx={{ mt: 2 }}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
+          <Typography variant="h6">{title}</Typography>
+          <Typography variant="caption" color={enabled ? 'primary' : 'text.secondary'}>
+            {enabled ? t(`mode_${mode}`) : 'OFF'}
+          </Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <FormControlLabel
+          control={<Switch checked={enabled} onChange={onSettingChange} name={enabledName} />}
+          label={t('enable')}
+        />
+        {enabled && (
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid size={{ xs: 6 }}>
+              <FormControl fullWidth size="small">
+                <InputLabel id={`${modeName}-label`}>{t('mode')}</InputLabel>
+                <Select labelId={`${modeName}-label`} name={modeName} value={mode} label={t('mode')} onChange={onSettingChange}>
+                  <MenuItem value="manual">{t('mode_manual')}</MenuItem>
+                  <MenuItem value="ratio">{t('mode_ratio')}</MenuItem>
+                  <MenuItem value="ocr">{t('mode_ocr')}</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid size={{ xs: 6 }}>
+              <ColorSettingField label={t('color')} name={colorName} value={colorValue} onChange={onSettingChange} />
+            </Grid>
+            {mode === 'ratio' ? (
+              <>
+                <Grid size={{ xs: 12 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id={`${ratioKey}-preset-label`}>{t('preset')}</InputLabel>
+                    <Select
+                      labelId={`${ratioKey}-preset-label`}
+                      value={getActivePreset(ratioRect, presets)}
+                      label={t('preset')}
+                      onChange={onPresetChange}
+                    >
+                      <MenuItem value="custom" disabled sx={{ fontStyle: 'italic' }}>{t('preset_custom')}</MenuItem>
+                      <MenuItem value="name">{t('preset_name')}</MenuItem>
+                      <MenuItem value="title">{t('preset_title')}</MenuItem>
+                      <MenuItem value="full">{t('preset_full')}</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Typography variant="body2" color="text.secondary" gutterBottom>{t('range_horizontal')}</Typography>
+                  <Box sx={{ px: 1 }}>
+                    <Slider
+                      size="small"
+                      value={[ratioRect.rx0, ratioRect.rx1]}
+                      onChange={onRatioSliderChange('horizontal')}
+                      valueLabelDisplay="auto"
+                      min={0}
+                      max={1}
+                      step={0.001}
+                    />
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }} gutterBottom>{t('range_vertical')}</Typography>
+                  <Box sx={{ px: 1 }}>
+                    <Slider
+                      size="small"
+                      value={[ratioRect.ry0, ratioRect.ry1]}
+                      onChange={onRatioSliderChange('vertical')}
+                      valueLabelDisplay="auto"
+                      min={0}
+                      max={1}
+                      step={0.001}
+                    />
+                  </Box>
+                </Grid>
+                <Grid size={{ xs: 6 }}><TextField label={t('ratio_left')} type="number" size="small" name={`${ratioKey}.rx0`} value={ratioRect.rx0} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
+                <Grid size={{ xs: 6 }}><TextField label={t('ratio_top')} type="number" size="small" name={`${ratioKey}.ry0`} value={ratioRect.ry0} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
+                <Grid size={{ xs: 6 }}><TextField label={t('ratio_right')} type="number" size="small" name={`${ratioKey}.rx1`} value={ratioRect.rx1} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
+                <Grid size={{ xs: 6 }}><TextField label={t('ratio_bottom')} type="number" size="small" name={`${ratioKey}.ry1`} value={ratioRect.ry1} onChange={onSettingChange} fullWidth inputProps={{ step: 0.01 }} /></Grid>
+              </>
+            ) : (
+              <>
+                <Grid size={{ xs: 6 }}><TextField label={t('x')} type="number" size="small" name={`${rectPrefix}X`} value={rectValues.x} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
+                <Grid size={{ xs: 6 }}><TextField label={t('y')} type="number" size="small" name={`${rectPrefix}Y`} value={rectValues.y} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
+                <Grid size={{ xs: 6 }}><TextField label={t('width')} type="number" size="small" name={`${rectPrefix}Width`} value={rectValues.width} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
+                <Grid size={{ xs: 6 }}><TextField label={t('height')} type="number" size="small" name={`${rectPrefix}Height`} value={rectValues.height} onChange={onSettingChange} fullWidth disabled={mode === 'ocr'} /></Grid>
+              </>
+            )}
+          </Grid>
+        )}
+      </AccordionDetails>
+    </Accordion>
+  );
+};
 
 const ImageProcessor: React.FC = () => {
   const { t } = useTranslation();
@@ -370,18 +506,6 @@ const ImageProcessor: React.FC = () => {
             [parent]: { ...presets[presetKey] }
         }));
     }
-  };
-
-  const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>): string => {
-      // Simple equality check with tolerance could be better, but strict match is fine for presets
-      const isMatch = (a: RatioRect, b: RatioRect) =>
-          Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
-          Math.abs(a.rx1 - b.rx1) < 0.0001 && Math.abs(a.ry1 - b.ry1) < 0.0001;
-
-      for (const [key, val] of Object.entries(presets)) {
-          if (isMatch(current, val)) return key;
-      }
-      return 'custom';
   };
 
   async function decodeFirst(file: File): Promise<ImageBitmap> {
@@ -794,42 +918,42 @@ const ImageProcessor: React.FC = () => {
         <ThemeModeButton />
       </Box>
       <Grid container spacing={3}>
-        <Grid size={{xs:12, md:4}}>
+        <Grid size={{ xs: 12, md: 5, lg: 4 }}>
           <Accordion>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
                 <Typography variant="h6">{t('settings')}</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  {t('columns')}: {settings.colCount}, {t('quality')}: {settings.quality}%
+                  {t('columns')}: {settings.colCount}, {settings.outputFormat === 'png' ? 'PNG' : `${t('quality')}: ${settings.quality}%`}
                 </Typography>
               </Box>
             </AccordionSummary>
             <AccordionDetails>
               <Grid container spacing={2}>
-                <Grid size={{xs:12}}>
-                  <FormControl fullWidth>
-                    <InputLabel>{t('columns')}</InputLabel>
-                    <Select name="colCount" value={settings.colCount} label={t('columns')} onChange={handleSettingChange}>
+                <Grid size={{ xs: 6 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="col-count-label">{t('columns')}</InputLabel>
+                    <Select labelId="col-count-label" name="colCount" value={settings.colCount} label={t('columns')} onChange={handleSettingChange}>
                       {[...Array(10)].map((_, i) => (
                         <MenuItem key={i + 1} value={i + 1}>{i + 1}</MenuItem>
                       ))}
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{xs:12}}>
-                  <FormControl fullWidth>
-                    <InputLabel>{t('offset_px')}</InputLabel>
-                    <Select name="offsetX" value={settings.offsetX} label={t('offset_px')} onChange={handleSettingChange}>
+                <Grid size={{ xs: 6 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="offset-label">{t('offset_px')}</InputLabel>
+                    <Select labelId="offset-label" name="offsetX" value={settings.offsetX} label={t('offset_px')} onChange={handleSettingChange}>
                       {[...Array(51)].map((_, i) => (
                         <MenuItem key={i} value={i}>{i}</MenuItem>
                       ))}
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{xs:12}}>
-                  <FormControl fullWidth>
-                    <InputLabel>{t('sort_order')}</InputLabel>
-                    <Select name="sortOrder" value={settings.sortOrder} label={t('sort_order')} onChange={handleSettingChange}>
+                <Grid size={{ xs: 12 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="sort-order-label">{t('sort_order')}</InputLabel>
+                    <Select labelId="sort-order-label" name="sortOrder" value={settings.sortOrder} label={t('sort_order')} onChange={handleSettingChange}>
                       <MenuItem value="date_asc">{t('sort_date_asc')}</MenuItem>
                       <MenuItem value="date_desc">{t('sort_date_desc')}</MenuItem>
                       <MenuItem value="name_asc">{t('sort_name_asc')}</MenuItem>
@@ -838,18 +962,40 @@ const ImageProcessor: React.FC = () => {
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{xs:12}}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} onChange={handleSettingChange} /></Grid>
-                <Grid size={{xs:12}}>
-                  <FormControl fullWidth>
-                    <InputLabel>{t('output_format')}</InputLabel>
-                    <Select name="outputFormat" value={settings.outputFormat} label={t('output_format')} onChange={handleSettingChange}>
+                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} onChange={handleSettingChange} /></Grid>
+                <Grid size={{ xs: 6 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="output-format-label">{t('output_format')}</InputLabel>
+                    <Select labelId="output-format-label" name="outputFormat" value={settings.outputFormat} label={t('output_format')} onChange={handleSettingChange}>
                       <MenuItem value="webp">WebP</MenuItem>
                       <MenuItem value="png">PNG</MenuItem>
                       <MenuItem value="jpeg">JPEG</MenuItem>
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{xs:12}}><Typography gutterBottom>{t('quality')}</Typography><Slider name="quality" value={settings.quality} onChange={handleSliderChange('quality')} aria-labelledby="input-slider" min={1} max={100} valueLabelDisplay="auto" /></Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Typography
+                    id="quality-slider-label"
+                    variant="body2"
+                    color={settings.outputFormat === 'png' ? 'text.disabled' : 'text.secondary'}
+                    gutterBottom
+                  >
+                    {t('quality')}: {settings.quality}%
+                  </Typography>
+                  <Box sx={{ px: 1 }}>
+                    <Slider
+                      size="small"
+                      name="quality"
+                      value={settings.quality}
+                      onChange={handleSliderChange('quality')}
+                      aria-labelledby="quality-slider-label"
+                      min={1}
+                      max={100}
+                      valueLabelDisplay="auto"
+                      disabled={settings.outputFormat === 'png'}
+                    />
+                  </Box>
+                </Grid>
               </Grid>
             </AccordionDetails>
           </Accordion>
@@ -864,176 +1010,66 @@ const ImageProcessor: React.FC = () => {
               </Box>
             </AccordionSummary>
             <AccordionDetails>
-                <FormControlLabel control={<Switch checked={settings.cropAuto} onChange={handleSettingChange} name="cropAuto" />} label={t('auto_mode')} />
-                <Grid container spacing={2} sx={{ mt: 1 }}>
-                    <Grid size={{xs:6}}><TextField label={t('x')} type="number" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                    <Grid size={{xs:6}}><TextField label={t('y')} type="number" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                    <Grid size={{xs:6}}><TextField label={t('width')} type="number" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                    <Grid size={{xs:6}}><TextField label={t('height')} type="number" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
-                </Grid>
+              <FormControlLabel control={<Switch checked={settings.cropAuto} onChange={handleSettingChange} name="cropAuto" />} label={t('auto_mode')} />
+              <Grid container spacing={2} sx={{ mt: 1 }}>
+                <Grid size={{xs:6}}><TextField label={t('x')} type="number" size="small" name="cropX" value={settings.cropX} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                <Grid size={{xs:6}}><TextField label={t('y')} type="number" size="small" name="cropY" value={settings.cropY} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                <Grid size={{xs:6}}><TextField label={t('width')} type="number" size="small" name="cropWidth" value={settings.cropWidth} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+                <Grid size={{xs:6}}><TextField label={t('height')} type="number" size="small" name="cropHeight" value={settings.cropHeight} onChange={handleSettingChange} fullWidth disabled={settings.cropAuto} /></Grid>
+              </Grid>
             </AccordionDetails>
           </Accordion>
 
-          <Accordion sx={{ mt: 2 }}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
-                <Typography variant="h6">{t('masking')}</Typography>
-                <Typography variant="caption" color={settings.maskEnabled ? "primary" : "text.secondary"}>
-                  {settings.maskEnabled ? t(`mode_${settings.maskMode}`) : t('enable') + ': OFF'}
-                </Typography>
-              </Box>
-            </AccordionSummary>
-            <AccordionDetails>
-                <FormControlLabel control={<Switch checked={settings.maskEnabled} onChange={handleSettingChange} name="maskEnabled" />} label={t('enable')} />
-                {settings.maskEnabled && (
-                  <FormControl fullWidth size="small" sx={{ mt: 1 }}>
-                    <InputLabel>{t('mode')}</InputLabel>
-                    <Select name="maskMode" value={settings.maskMode} label={t('mode')} onChange={handleSettingChange} sx={{ '& .MuiSelect-select': { textAlign: 'center', display: 'flex', justifyContent: 'center' } }}>
-                      <MenuItem value="manual" sx={{ justifyContent: 'center' }}>{t('mode_manual')}</MenuItem>
-                      <MenuItem value="ratio" sx={{ justifyContent: 'center' }}>{t('mode_ratio')}</MenuItem>
-                      <MenuItem value="ocr" sx={{ justifyContent: 'center' }}>{t('mode_ocr')}</MenuItem>
-                    </Select>
-                  </FormControl>
-                )}
-                {settings.maskEnabled && settings.maskMode === 'ratio' && (
-                  <Box sx={{ mt: 2, px: 1 }}>
-                    <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-                      <InputLabel>{t('preset')}</InputLabel>
-                      <Select
-                        value={getActivePreset(settings.maskRatioRect, MASK_PRESETS)}
-                        label={t('preset')}
-                        onChange={handlePresetChange('maskRatioRect')}
-                        sx={{ '& .MuiSelect-select': { textAlign: 'center' } }}
-                      >
-                        <MenuItem value="custom" disabled sx={{ justifyContent: 'center', fontStyle: 'italic' }}>{t('preset_custom')}</MenuItem>
-                        <MenuItem value="name" sx={{ justifyContent: 'center' }}>{t('preset_name')}</MenuItem>
-                        <MenuItem value="title" sx={{ justifyContent: 'center' }}>{t('preset_title')}</MenuItem>
-                        <MenuItem value="full" sx={{ justifyContent: 'center' }}>{t('preset_full')}</MenuItem>
-                      </Select>
-                    </FormControl>
-                    <Typography variant="caption" gutterBottom>{t('range_horizontal')}</Typography>
-                    <Slider
-                      value={[settings.maskRatioRect.rx0, settings.maskRatioRect.rx1]}
-                      onChange={handleRatioSliderChange('maskRatioRect', 'horizontal')}
-                      valueLabelDisplay="auto"
-                      min={0} max={1} step={0.001}
-                    />
-                    <Typography variant="caption" gutterBottom>{t('range_vertical')}</Typography>
-                    <Slider
-                      value={[settings.maskRatioRect.ry0, settings.maskRatioRect.ry1]}
-                      onChange={handleRatioSliderChange('maskRatioRect', 'vertical')}
-                      valueLabelDisplay="auto"
-                      min={0} max={1} step={0.001}
-                    />
-                    <Grid container spacing={2} sx={{ mt: 0 }}>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_left')} type="number" name="maskRatioRect.rx0" value={settings.maskRatioRect.rx0} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_top')} type="number" name="maskRatioRect.ry0" value={settings.maskRatioRect.ry0} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_right')} type="number" name="maskRatioRect.rx1" value={settings.maskRatioRect.rx1} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_bottom')} type="number" name="maskRatioRect.ry1" value={settings.maskRatioRect.ry1} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                    </Grid>
-                  </Box>
-                )}
-                {settings.maskEnabled && settings.maskMode !== 'ratio' && (
-                  <Grid container spacing={2} sx={{ mt: 1 }}>
-                      <Grid size={{xs:6}}><TextField label={t('x')} type="number" name="maskX" value={settings.maskX} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('y')} type="number" name="maskY" value={settings.maskY} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('width')} type="number" name="maskWidth" value={settings.maskWidth} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('height')} type="number" name="maskHeight" value={settings.maskHeight} onChange={handleSettingChange} fullWidth disabled={!settings.maskEnabled || settings.maskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                  </Grid>
-                )}
-                {settings.maskEnabled && (
-                  <Box sx={{ mt: 2 }}>
-                    <ColorSettingField label={t('color')} name="maskColor" value={settings.maskColor} onChange={handleSettingChange} centered />
-                  </Box>
-                )}
-            </AccordionDetails>
-          </Accordion>
+          <MaskAccordion
+            title={t('masking')}
+            enabledName="maskEnabled"
+            enabled={settings.maskEnabled}
+            modeName="maskMode"
+            mode={settings.maskMode}
+            ratioKey="maskRatioRect"
+            ratioRect={settings.maskRatioRect}
+            presets={MASK_PRESETS}
+            rectPrefix="mask"
+            rectValues={{ x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight }}
+            colorName="maskColor"
+            colorValue={settings.maskColor}
+            onSettingChange={handleSettingChange}
+            onRatioSliderChange={(axis) => handleRatioSliderChange('maskRatioRect', axis)}
+            onPresetChange={handlePresetChange('maskRatioRect')}
+          />
 
-          <Accordion sx={{ mt: 2 }}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
-                <Typography variant="h6">{t('self_mask')}</Typography>
-                <Typography variant="caption" color={settings.selfMaskEnabled ? "primary" : "text.secondary"}>
-                  {settings.selfMaskEnabled ? t(`mode_${settings.selfMaskMode}`) : t('enable') + ': OFF'}
-                </Typography>
-              </Box>
-            </AccordionSummary>
-            <AccordionDetails>
-                <FormControlLabel control={<Switch checked={settings.selfMaskEnabled} onChange={handleSettingChange} name="selfMaskEnabled" />} label={t('enable')} />
-                {settings.selfMaskEnabled && (
-                  <FormControl fullWidth size="small" sx={{ mt: 1 }}>
-                    <InputLabel>{t('mode')}</InputLabel>
-                    <Select name="selfMaskMode" value={settings.selfMaskMode} label={t('mode')} onChange={handleSettingChange} sx={{ '& .MuiSelect-select': { textAlign: 'center', display: 'flex', justifyContent: 'center' } }}>
-                      <MenuItem value="manual" sx={{ justifyContent: 'center' }}>{t('mode_manual')}</MenuItem>
-                      <MenuItem value="ratio" sx={{ justifyContent: 'center' }}>{t('mode_ratio')}</MenuItem>
-                      <MenuItem value="ocr" sx={{ justifyContent: 'center' }}>{t('mode_ocr')}</MenuItem>
-                    </Select>
-                  </FormControl>
-                )}
-                {settings.selfMaskEnabled && settings.selfMaskMode === 'ratio' && (
-                  <Box sx={{ mt: 2, px: 1 }}>
-                    <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-                      <InputLabel>{t('preset')}</InputLabel>
-                      <Select
-                        value={getActivePreset(settings.selfMaskRatioRect, SELF_MASK_PRESETS)}
-                        label={t('preset')}
-                        onChange={handlePresetChange('selfMaskRatioRect')}
-                        sx={{ '& .MuiSelect-select': { textAlign: 'center' } }}
-                      >
-                        <MenuItem value="custom" disabled sx={{ justifyContent: 'center', fontStyle: 'italic' }}>{t('preset_custom')}</MenuItem>
-                        <MenuItem value="name" sx={{ justifyContent: 'center' }}>{t('preset_name')}</MenuItem>
-                        <MenuItem value="title" sx={{ justifyContent: 'center' }}>{t('preset_title')}</MenuItem>
-                        <MenuItem value="full" sx={{ justifyContent: 'center' }}>{t('preset_full')}</MenuItem>
-                      </Select>
-                    </FormControl>
-                    <Typography variant="caption" gutterBottom>{t('range_horizontal')}</Typography>
-                    <Slider
-                      value={[settings.selfMaskRatioRect.rx0, settings.selfMaskRatioRect.rx1]}
-                      onChange={handleRatioSliderChange('selfMaskRatioRect', 'horizontal')}
-                      valueLabelDisplay="auto"
-                      min={0} max={1} step={0.001}
-                    />
-                    <Typography variant="caption" gutterBottom>{t('range_vertical')}</Typography>
-                    <Slider
-                      value={[settings.selfMaskRatioRect.ry0, settings.selfMaskRatioRect.ry1]}
-                      onChange={handleRatioSliderChange('selfMaskRatioRect', 'vertical')}
-                      valueLabelDisplay="auto"
-                      min={0} max={1} step={0.001}
-                    />
-                    <Grid container spacing={2} sx={{ mt: 0 }}>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_left')} type="number" name="selfMaskRatioRect.rx0" value={settings.selfMaskRatioRect.rx0} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_top')} type="number" name="selfMaskRatioRect.ry0" value={settings.selfMaskRatioRect.ry0} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_right')} type="number" name="selfMaskRatioRect.rx1" value={settings.selfMaskRatioRect.rx1} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('ratio_bottom')} type="number" name="selfMaskRatioRect.ry1" value={settings.selfMaskRatioRect.ry1} onChange={handleSettingChange} fullWidth inputProps={{ step: 0.01, style: { textAlign: 'center' } }} /></Grid>
-                    </Grid>
-                  </Box>
-                )}
-                {settings.selfMaskEnabled && settings.selfMaskMode !== 'ratio' && (
-                  <Grid container spacing={2} sx={{ mt: 1 }}>
-                      <Grid size={{xs:6}}><TextField label={t('x')} type="number" name="selfMaskX" value={settings.selfMaskX} onChange={handleSettingChange} fullWidth disabled={!settings.selfMaskEnabled || settings.selfMaskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('y')} type="number" name="selfMaskY" value={settings.selfMaskY} onChange={handleSettingChange} fullWidth disabled={!settings.selfMaskEnabled || settings.selfMaskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('width')} type="number" name="selfMaskWidth" value={settings.selfMaskWidth} onChange={handleSettingChange} fullWidth disabled={!settings.selfMaskEnabled || settings.selfMaskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                      <Grid size={{xs:6}}><TextField label={t('height')} type="number" name="selfMaskHeight" value={settings.selfMaskHeight} onChange={handleSettingChange} fullWidth disabled={!settings.selfMaskEnabled || settings.selfMaskMode === 'ocr'} inputProps={{ style: { textAlign: 'center' } }} /></Grid>
-                  </Grid>
-                )}
-                {settings.selfMaskEnabled && (
-                  <Box sx={{ mt: 2 }}>
-                    <ColorSettingField label={t('color')} name="selfMaskColor" value={settings.selfMaskColor} onChange={handleSettingChange} centered />
-                  </Box>
-                )}
-            </AccordionDetails>
-          </Accordion>
+          <MaskAccordion
+            title={t('self_mask')}
+            enabledName="selfMaskEnabled"
+            enabled={settings.selfMaskEnabled}
+            modeName="selfMaskMode"
+            mode={settings.selfMaskMode}
+            ratioKey="selfMaskRatioRect"
+            ratioRect={settings.selfMaskRatioRect}
+            presets={SELF_MASK_PRESETS}
+            rectPrefix="selfMask"
+            rectValues={{ x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight }}
+            colorName="selfMaskColor"
+            colorValue={settings.selfMaskColor}
+            onSettingChange={handleSettingChange}
+            onRatioSliderChange={(axis) => handleRatioSliderChange('selfMaskRatioRect', axis)}
+            onPresetChange={handlePresetChange('selfMaskRatioRect')}
+          />
         </Grid>
-        <Grid size={{xs:12, md:8}}>
+        <Grid size={{ xs: 12, md: 7, lg: 8 }}>
           <Card>
             <CardContent>
-              <Typography variant="h5" component="h2" gutterBottom>{t('upload_and_process')}</Typography>
+              <Typography variant="h5" component="h2" sx={{ mb: 2 }}>{t('upload_and_process')}</Typography>
               <Button variant="contained" component="label" fullWidth size="large" startIcon={<AddPhotoIcon />}>
                 {t('upload_images')}
                 <input type="file" hidden accept="image/png, image/jpeg" multiple onChange={handleFileChange} />
               </Button>
-              {images.length > 0 && <Typography sx={{ mt: 1 }}>{t('files_selected', { count: images.length })}</Typography>}
-              <Box sx={{ my: 2 }}>
+              {images.length > 0 && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  {t('files_selected', { count: images.length })}
+                </Typography>
+              )}
+              <Box sx={{ mt: 2 }}>
                 <Button
                   variant="contained"
                   color="primary"
@@ -1046,9 +1082,13 @@ const ImageProcessor: React.FC = () => {
                   {isProcessing ? <CircularProgress size={24} color="inherit" /> : t('process_images')}
                 </Button>
               </Box>
-              {ocrStatus && <Typography sx={{ mt: 1 }} translate="no">{ocrStatus}</Typography>}
+              {ocrStatus && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }} translate="no">
+                  {ocrStatus}
+                </Typography>
+              )}
               {processedImageUrl && (
-                <Box sx={{ mt: 2, overflowAnchor: 'none' }} ref={resultRef}>
+                <Box sx={{ mt: 3, overflowAnchor: 'none' }} ref={resultRef}>
                   <Typography variant="h6" gutterBottom>{t('result')}</Typography>
                   <Box
                     component="img"
@@ -1062,7 +1102,7 @@ const ImageProcessor: React.FC = () => {
                       borderRadius: 1,
                     }}
                   />
-                  <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth size="large" sx={{ mt: 1 }} startIcon={<DownloadIcon />}>
+                  <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth size="large" sx={{ mt: 2 }} startIcon={<DownloadIcon />}>
                     {t('download_image')}
                   </Button>
                 </Box>
