@@ -275,7 +275,7 @@ const ImageProcessor: React.FC = () => {
       return bitmap;
     } catch (error) {
       console.error("Failed to decode first image even with fallback:", error);
-      throw new Error('First image failed to load.');
+      throw new Error('First image failed to load.', { cause: error });
     }
   };
 
