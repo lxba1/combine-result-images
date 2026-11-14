@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails } from '@mui/material';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon } from '@mui/icons-material';
+import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Input, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip } from '@mui/material';
+import { useColorScheme } from '@mui/material/styles';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
 import packageJson from '../package.json';
@@ -53,6 +54,123 @@ interface ImageSettings {
   selfMaskColor: string;
   selfMaskRatioRect: RatioRect;
 }
+
+type ThemeMode = 'system' | 'light' | 'dark';
+
+const THEME_MODES: { value: ThemeMode; labelKey: string; icon: React.ReactElement }[] = [
+  { value: 'system', labelKey: 'theme_system', icon: <SystemModeIcon fontSize="small" /> },
+  { value: 'light', labelKey: 'theme_light', icon: <LightModeIcon fontSize="small" /> },
+  { value: 'dark', labelKey: 'theme_dark', icon: <DarkModeIcon fontSize="small" /> },
+];
+
+/** Compact header menu button for switching between system, light, and dark modes. */
+const ThemeModeButton: React.FC = () => {
+  const { t } = useTranslation();
+  const { mode, setMode } = useColorScheme();
+  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+
+  const currentMode: ThemeMode = mode ?? 'system';
+  const currentOption = THEME_MODES.find((option) => option.value === currentMode) ?? THEME_MODES[0];
+
+  return (
+    <>
+      <Tooltip title={`${t('theme_mode')}: ${t(currentOption.labelKey)}`}>
+        <IconButton
+          size="small"
+          onClick={(event) => setAnchorEl(event.currentTarget)}
+          aria-label={t('theme_mode')}
+          aria-controls={anchorEl ? 'theme-mode-menu' : undefined}
+          aria-haspopup="true"
+          aria-expanded={Boolean(anchorEl)}
+          sx={{ border: 1, borderColor: 'divider' }}
+        >
+          {currentOption.icon}
+        </IconButton>
+      </Tooltip>
+      <Menu
+        id="theme-mode-menu"
+        anchorEl={anchorEl}
+        open={Boolean(anchorEl)}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        {THEME_MODES.map((option) => (
+          <MenuItem
+            key={option.value}
+            selected={currentMode === option.value}
+            onClick={() => {
+              setMode(option.value);
+              setAnchorEl(null);
+            }}
+          >
+            <ListItemIcon>{option.icon}</ListItemIcon>
+            <ListItemText>{t(option.labelKey)}</ListItemText>
+          </MenuItem>
+        ))}
+      </Menu>
+    </>
+  );
+};
+
+interface ColorSettingFieldProps {
+  label: string;
+  name: string;
+  value: string;
+  onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  centered?: boolean;
+}
+
+/** Color swatch and hex input pair with theme-adaptive borders so black and white stay visible. */
+const ColorSettingField: React.FC<ColorSettingFieldProps> = ({ label, name, value, onChange, centered = false }) => (
+  <>
+    <Typography gutterBottom>{label}</Typography>
+    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+      <Input
+        type="color"
+        name={name}
+        value={value}
+        onChange={onChange}
+        disableUnderline
+        inputProps={{ 'aria-label': label }}
+        sx={{
+          width: 50,
+          height: 40,
+          p: '2px',
+          borderRadius: 1,
+          border: 1,
+          borderColor: 'divider',
+          bgcolor: 'background.paper',
+          cursor: 'pointer',
+          '& input': {
+            p: 0,
+            height: '100%',
+            cursor: 'pointer',
+            borderRadius: '4px',
+          },
+          '& input::-webkit-color-swatch-wrapper': { p: 0 },
+          '& input::-webkit-color-swatch': {
+            border: '1px solid rgba(128, 128, 128, 0.45)',
+            borderRadius: '4px',
+          },
+          '& input::-moz-color-swatch': {
+            border: '1px solid rgba(128, 128, 128, 0.45)',
+            borderRadius: '4px',
+          },
+        }}
+      />
+      <TextField
+        variant="outlined"
+        size="small"
+        name={name}
+        value={value}
+        onChange={onChange}
+        sx={{ ml: 2, flexGrow: 1 }}
+        inputProps={centered ? { style: { textAlign: 'center' } } : undefined}
+      />
+    </Box>
+  </>
+);
 
 const ImageProcessor: React.FC = () => {
   const { t } = useTranslation();
@@ -640,9 +758,12 @@ const ImageProcessor: React.FC = () => {
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, pb: 20, minHeight: '100vh' }}>
-      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
-        <Typography variant="h4" component="h1">{t('title')}</Typography>
-        <Typography variant="caption" color="text.secondary">v{packageJson.version}</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+          <Typography variant="h4" component="h1">{t('title')}</Typography>
+          <Typography variant="caption" color="text.secondary">v{packageJson.version}</Typography>
+        </Box>
+        <ThemeModeButton />
       </Box>
       <Grid container spacing={3}>
         <Grid size={{xs:12, md:4}}>
@@ -677,7 +798,7 @@ const ImageProcessor: React.FC = () => {
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{xs:12}}><Typography gutterBottom>{t('background_color')}</Typography><Box sx={{ display: 'flex', alignItems: 'center' }}><Input type="color" name="bgColor" value={settings.bgColor} onChange={handleSettingChange} sx={{ width: 50, height: 40, p: 0, border: 'none', '&::-webkit-color-swatch-wrapper': { p: 0 }, '&::-webkit-color-swatch': { border: 'none' } }} /><TextField variant="outlined" size="small" name="bgColor" value={settings.bgColor} onChange={handleSettingChange} sx={{ ml: 2, flexGrow: 1 }} /></Box></Grid>
+                <Grid size={{xs:12}}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} onChange={handleSettingChange} /></Grid>
                 <Grid size={{xs:12}}>
                   <FormControl fullWidth>
                     <InputLabel>{t('output_format')}</InputLabel>
@@ -782,11 +903,7 @@ const ImageProcessor: React.FC = () => {
                 )}
                 {settings.maskEnabled && (
                   <Box sx={{ mt: 2 }}>
-                    <Typography gutterBottom>{t('color')}</Typography>
-                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                      <Input type="color" name="maskColor" value={settings.maskColor} onChange={handleSettingChange} sx={{ width: 50, height: 40, p: 0, border: 'none', '&::-webkit-color-swatch-wrapper': { p: 0 }, '&::-webkit-color-swatch': { border: 'none' } }} />
-                      <TextField variant="outlined" size="small" name="maskColor" value={settings.maskColor} onChange={handleSettingChange} sx={{ ml: 2, flexGrow: 1 }} inputProps={{ style: { textAlign: 'center' } }} />
-                    </Box>
+                    <ColorSettingField label={t('color')} name="maskColor" value={settings.maskColor} onChange={handleSettingChange} centered />
                   </Box>
                 )}
             </AccordionDetails>
@@ -861,11 +978,7 @@ const ImageProcessor: React.FC = () => {
                 )}
                 {settings.selfMaskEnabled && (
                   <Box sx={{ mt: 2 }}>
-                    <Typography gutterBottom>{t('color')}</Typography>
-                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                      <Input type="color" name="selfMaskColor" value={settings.selfMaskColor} onChange={handleSettingChange} sx={{ width: 50, height: 40, p: 0, border: 'none', '&::-webkit-color-swatch-wrapper': { p: 0 }, '&::-webkit-color-swatch': { border: 'none' } }} />
-                      <TextField variant="outlined" size="small" name="selfMaskColor" value={settings.selfMaskColor} onChange={handleSettingChange} sx={{ ml: 2, flexGrow: 1 }} inputProps={{ style: { textAlign: 'center' } }} />
-                    </Box>
+                    <ColorSettingField label={t('color')} name="selfMaskColor" value={settings.selfMaskColor} onChange={handleSettingChange} centered />
                   </Box>
                 )}
             </AccordionDetails>
@@ -898,7 +1011,18 @@ const ImageProcessor: React.FC = () => {
               {processedImageUrl && (
                 <Box sx={{ mt: 2, overflowAnchor: 'none' }} ref={resultRef}>
                   <Typography variant="h6" gutterBottom>{t('result')}</Typography>
-                  <img src={processedImageUrl} alt="Processed Montage" style={{ maxWidth: '100%', border: '1px solid #ccc', borderRadius: '4px' }} />
+                  <Box
+                    component="img"
+                    src={processedImageUrl}
+                    alt="Processed Montage"
+                    sx={{
+                      display: 'block',
+                      maxWidth: '100%',
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                    }}
+                  />
                   <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth sx={{ mt: 1 }} startIcon={<DownloadIcon />}>
                     {t('download_image')}
                   </Button>

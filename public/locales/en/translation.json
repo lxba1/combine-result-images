@@ -1,5 +1,9 @@
 {
   "title": "Image Combiner",
+  "theme_mode": "Theme",
+  "theme_system": "System",
+  "theme_light": "Light",
+  "theme_dark": "Dark",
   "settings": "Settings",
   "columns": "Columns",
   "offset_px": "Offset (px)",
