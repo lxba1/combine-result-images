@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions } from '@mui/material';
+import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
 import { useColorScheme, styled } from '@mui/material/styles';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon } from '@mui/icons-material';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
 import packageJson from '../package.json';
@@ -52,6 +52,30 @@ const sortImageFiles = (files: File[], sortOrder: SortOrder): File[] => {
         return 0;
     }
   });
+};
+
+/** Creates a lightweight 24-hour local timestamp formatter, omitting the current year to save space. */
+const createFileTimestampFormatter = (locale?: string) => {
+  const currentYear = new Date().getFullYear();
+  const baseOptions: Intl.DateTimeFormatOptions = {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    hourCycle: 'h23',
+  };
+  const sameYearFmt = new Intl.DateTimeFormat(locale, baseOptions);
+  const otherYearFmt = new Intl.DateTimeFormat(locale, { year: '2-digit', ...baseOptions });
+
+  return (timestamp: number): string => {
+    if (!Number.isFinite(timestamp) || timestamp <= 0) {
+      return '';
+    }
+    const date = new Date(timestamp);
+    return (date.getFullYear() === currentYear ? sameYearFmt : otherYearFmt).format(date);
+  };
 };
 
 interface ImageSettings {
@@ -586,7 +610,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
 };
 
 const ImageProcessor: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const [settings, setSettings] = useState<ImageSettings>(() => {
     const defaults = createDefaultSettings();
@@ -647,6 +671,7 @@ const ImageProcessor: React.FC = () => {
   }, [settings]);
 
   const [images, setImages] = useState<File[]>([]);
+  const [fileListExpanded, setFileListExpanded] = useState(true);
   const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string>('tile.webp');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -682,6 +707,17 @@ const ImageProcessor: React.FC = () => {
     };
   }, [processedImageUrl]);
 
+  const orderedImages = useMemo(
+    () => sortImageFiles(images, settings.sortOrder),
+    [images, settings.sortOrder]
+  );
+
+  const activeLocale = i18n.resolvedLanguage || i18n.language || undefined;
+  const formatFileTimestamp = useMemo(
+    () => createFileTimestampFormatter(activeLocale),
+    [activeLocale]
+  );
+
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files && files.length > 0) {
@@ -690,6 +726,20 @@ const ImageProcessor: React.FC = () => {
     }
     // Reset input value so picking the exact same file(s) again still triggers onChange
     event.target.value = '';
+  };
+
+  const handleClearImages = () => {
+    setImages([]);
+    setProcessedImageUrl(null);
+    setFileListExpanded(true);
+  };
+
+  const handleRemoveImage = (targetFile: File) => {
+    if (images.length <= 1) {
+      setFileListExpanded(true);
+    }
+    setImages((prev) => prev.filter((file) => file !== targetFile));
+    setProcessedImageUrl(null);
   };
 
   const handleNumericSettingCommit = (name: string, newValue: number, options?: { finalize?: boolean }) => {
@@ -858,8 +908,6 @@ const ImageProcessor: React.FC = () => {
       let enemyMaskRect = { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight };
       let selfMaskRect = { x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight };
       const newSettings: Partial<ImageSettings> = {};
-
-      const orderedImages = sortImageFiles(images, settings.sortOrder);
 
       const needsFirstImage = settings.cropAuto ||
         (settings.maskEnabled && (settings.maskMode === 'ratio' || settings.maskMode === 'ocr')) ||
@@ -1353,9 +1401,123 @@ const ImageProcessor: React.FC = () => {
                 <input type="file" hidden accept="image/png, image/jpeg" multiple onChange={handleFileChange} />
               </Button>
               {images.length > 0 && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {t('files_selected', { count: images.length })}
-                </Typography>
+                <Box sx={{ mt: 1.5 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                    <Button
+                      size="small"
+                      color="inherit"
+                      onClick={() => setFileListExpanded((prev) => !prev)}
+                      endIcon={fileListExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                      aria-expanded={fileListExpanded}
+                      sx={{
+                        color: 'text.secondary',
+                        textTransform: 'none',
+                        px: 1,
+                        py: 0.25,
+                        minWidth: 0,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {t('files_selected', { count: images.length })}
+                    </Button>
+                    <Button
+                      size="small"
+                      color="inherit"
+                      startIcon={<DeleteOutlineIcon fontSize="small" />}
+                      onClick={handleClearImages}
+                      disabled={isProcessing}
+                      sx={{
+                        color: 'text.secondary',
+                        textTransform: 'none',
+                        px: 1,
+                        py: 0.25,
+                        minWidth: 0,
+                        '&:hover': { color: 'error.main' },
+                      }}
+                    >
+                      {t('clear')}
+                    </Button>
+                  </Box>
+                  <Collapse in={fileListExpanded}>
+                    <Box
+                      component="ol"
+                      sx={{
+                        mt: 0.75,
+                        mb: 0,
+                        p: 0,
+                        listStyle: 'none',
+                        maxHeight: 200,
+                        overflowY: 'auto',
+                        border: 1,
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                        bgcolor: 'background.default',
+                      }}
+                    >
+                      {orderedImages.map((file, index) => (
+                        <Box
+                          component="li"
+                          key={`${file.name}-${file.lastModified}-${file.size}-${index}`}
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
+                            px: 1.25,
+                            py: 0.5,
+                            borderBottom: index < orderedImages.length - 1 ? 1 : 0,
+                            borderColor: 'divider',
+                          }}
+                        >
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{
+                              minWidth: '2.5ch',
+                              textAlign: 'right',
+                              flexShrink: 0,
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
+                            {index + 1}.
+                          </Typography>
+                          <Typography
+                            variant="body2"
+                            noWrap
+                            title={file.name}
+                            sx={{ flex: 1, minWidth: 0 }}
+                          >
+                            {file.name}
+                          </Typography>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{
+                              flexShrink: 0,
+                              whiteSpace: 'nowrap',
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
+                            {formatFileTimestamp(file.lastModified)}
+                          </Typography>
+                          <IconButton
+                            size="small"
+                            aria-label={t('remove_file', { name: file.name })}
+                            onClick={() => handleRemoveImage(file)}
+                            disabled={isProcessing}
+                            sx={{
+                              p: 0.25,
+                              flexShrink: 0,
+                              color: 'text.secondary',
+                              '&:hover': { color: 'error.main' },
+                            }}
+                          >
+                            <CloseIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Box>
+                      ))}
+                    </Box>
+                  </Collapse>
+                </Box>
               )}
               <Box sx={{ mt: 2 }}>
                 <Button

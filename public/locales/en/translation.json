@@ -50,6 +50,8 @@
   "upload_and_process": "Select & Process",
   "upload_images": "Select Images",
   "files_selected": "{{count}} files selected",
+  "clear": "Clear",
+  "remove_file": "Remove {{name}}",
   "process_images": "Process Images",
   "result": "Result",
   "download_image": "Save Image",
