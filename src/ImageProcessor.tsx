@@ -23,11 +23,37 @@ const SELF_MASK_PRESETS: Record<string, RatioRect> = {
 };
 
 type MaskMode = 'manual' | 'ratio' | 'ocr';
+type SortOrder = 'date_asc' | 'date_desc' | 'name_asc' | 'name_desc' | 'none';
+
+const compareFileNames = (a: File, b: File) =>
+  a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+
+/** Returns image files ordered according to the selected sort mode without mutating the source array. */
+const sortImageFiles = (files: File[], sortOrder: SortOrder): File[] => {
+  if (sortOrder === 'none') {
+    return files;
+  }
+  return [...files].sort((a, b) => {
+    switch (sortOrder) {
+      case 'date_asc':
+        return (a.lastModified - b.lastModified) || compareFileNames(a, b);
+      case 'date_desc':
+        return (b.lastModified - a.lastModified) || compareFileNames(b, a);
+      case 'name_asc':
+        return compareFileNames(a, b);
+      case 'name_desc':
+        return compareFileNames(b, a);
+      default:
+        return 0;
+    }
+  });
+};
 
 interface ImageSettings {
   colCount: number;
   offsetX: number;
   offsetY: number;
+  sortOrder: SortOrder;
   bgColor: string;
   outputFormat: 'webp' | 'png' | 'jpeg';
   quality: number;
@@ -181,6 +207,7 @@ const ImageProcessor: React.FC = () => {
       colCount: 2,
       offsetX: 8,
       offsetY: 8,
+      sortOrder: 'date_asc',
       bgColor: '#000000',
       outputFormat: 'webp',
       quality: 80,
@@ -385,9 +412,8 @@ const ImageProcessor: React.FC = () => {
     }
   }
 
-  const loadAndDrawFirstImage = async (): Promise<ImageBitmap | null> => {
-    if (images.length === 0) return null;
-    const firstImageFile = images[0];
+  const loadAndDrawFirstImage = async (firstImageFile?: File): Promise<ImageBitmap | null> => {
+    if (!firstImageFile) return null;
     try {
       const bitmap = await decodeFirst(firstImageFile); // Call decodeFirst
       return bitmap;
@@ -439,12 +465,14 @@ const ImageProcessor: React.FC = () => {
       let selfMaskRect = { x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight };
       const newSettings: Partial<ImageSettings> = {};
 
+      const orderedImages = sortImageFiles(images, settings.sortOrder);
+
       const needsFirstImage = settings.cropAuto ||
         (settings.maskEnabled && (settings.maskMode === 'ratio' || settings.maskMode === 'ocr')) ||
         (settings.selfMaskEnabled && (settings.selfMaskMode === 'ratio' || settings.selfMaskMode === 'ocr'));
 
       if (needsFirstImage) {
-          firstImageBitmap = await loadAndDrawFirstImage();
+          firstImageBitmap = await loadAndDrawFirstImage(orderedImages[0]);
           if (!firstImageBitmap) return;
       }
       if (settings.cropAuto && firstImageBitmap) {
@@ -630,7 +658,7 @@ const ImageProcessor: React.FC = () => {
       if (!montageCtx) throw new Error(t('alert_failed_to_get_context'));
 
       montageCanvas.width = (cropRect.width * finalSettings.colCount) + (finalSettings.offsetX * (finalSettings.colCount + 1));
-      montageCanvas.height = (Math.ceil(images.length / finalSettings.colCount) * cropRect.height) + (finalSettings.offsetY * (Math.ceil(images.length / finalSettings.colCount) + 1));
+      montageCanvas.height = (Math.ceil(orderedImages.length / finalSettings.colCount) * cropRect.height) + (finalSettings.offsetY * (Math.ceil(orderedImages.length / finalSettings.colCount) + 1));
 
       // const maxPixels = 16_777_216; // Approximately 4096x4096
       // if (montageCanvas.width * montageCanvas.height > maxPixels) {
@@ -640,8 +668,8 @@ const ImageProcessor: React.FC = () => {
       montageCtx.fillStyle = finalSettings.bgColor;
       montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
-      for (let i = 0; i < images.length; i++) {
-        const imageFile = images[i];
+      for (let i = 0; i < orderedImages.length; i++) {
+        const imageFile = orderedImages[i];
         const row = Math.floor(i / finalSettings.colCount);
         const col = i % finalSettings.colCount;
         const drawX = finalSettings.offsetX + col * (cropRect.width + finalSettings.offsetX);
@@ -795,6 +823,18 @@ const ImageProcessor: React.FC = () => {
                       {[...Array(51)].map((_, i) => (
                         <MenuItem key={i} value={i}>{i}</MenuItem>
                       ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid size={{xs:12}}>
+                  <FormControl fullWidth>
+                    <InputLabel>{t('sort_order')}</InputLabel>
+                    <Select name="sortOrder" value={settings.sortOrder} label={t('sort_order')} onChange={handleSettingChange}>
+                      <MenuItem value="date_asc">{t('sort_date_asc')}</MenuItem>
+                      <MenuItem value="date_desc">{t('sort_date_desc')}</MenuItem>
+                      <MenuItem value="name_asc">{t('sort_name_asc')}</MenuItem>
+                      <MenuItem value="name_desc">{t('sort_name_desc')}</MenuItem>
+                      <MenuItem value="none">{t('sort_none')}</MenuItem>
                     </Select>
                   </FormControl>
                 </Grid>
