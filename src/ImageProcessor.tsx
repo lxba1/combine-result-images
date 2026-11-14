@@ -604,7 +604,9 @@ const ImageProcessor: React.FC = () => {
       // Best-effort cleanup before reloading
       try {
         workerRef.current?.terminate();
-      } catch {}
+      } catch (cleanupError) {
+        console.warn('Failed to terminate OCR worker during cleanup:', cleanupError);
+      }
       if (reusableTempCanvas) {
         reusableTempCanvas.width = 1;
         reusableTempCanvas.height = 1;
