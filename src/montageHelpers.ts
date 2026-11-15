@@ -210,6 +210,81 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
   }
 };
 
+export interface MontageCanvasLike<B extends BitmapLike> {
+  width: number;
+  height: number;
+  getContext: (
+    contextId: '2d',
+    options?: CanvasRenderingContext2DSettings
+  ) => MontageContextLike<B> | null;
+  toBlob: (
+    callback: (blob: Blob | null) => void,
+    type?: string,
+    quality?: number
+  ) => void;
+}
+
+export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
+  extends Omit<RenderMontageTilesOptions<F, B>, 'montageCtx'> {
+  dimensions: ImageDimensions;
+  bgColor: string;
+  mimeType: string;
+  quality: number;
+  createCanvas?: () => MontageCanvasLike<B>;
+}
+
+export type RenderMontageToBlobResult =
+  | { status: 'ok'; blob: Blob }
+  | { status: 'allocation_failed' }
+  | { status: 'context_failed' }
+  | { status: 'encode_failed' };
+
+/**
+ * Allocates an offscreen detached canvas, renders the full montage onto it, encodes the output
+ * Blob, and immediately shrinks the canvas to 1x1 before returning so the backing store and
+ * 2D context can be GC-reclaimed without retaining a DOM `<canvas>`.
+ */
+export const renderMontageToBlob = async <F, B extends BitmapLike>({
+  dimensions,
+  bgColor,
+  mimeType,
+  quality,
+  createCanvas = () => document.createElement('canvas') as unknown as MontageCanvasLike<B>,
+  ...tileOptions
+}: RenderMontageToBlobOptions<F, B>): Promise<RenderMontageToBlobResult> => {
+  const montageCanvas = createCanvas();
+  try {
+    const montageCtx = montageCanvas.getContext('2d', { alpha: false });
+    if (!montageCtx) {
+      return { status: 'context_failed' };
+    }
+
+    montageCanvas.width = dimensions.width;
+    montageCanvas.height = dimensions.height;
+    if (montageCanvas.width !== dimensions.width || montageCanvas.height !== dimensions.height) {
+      return { status: 'allocation_failed' };
+    }
+
+    montageCtx.fillStyle = bgColor;
+    montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
+
+    await renderMontageTiles({
+      ...tileOptions,
+      montageCtx,
+    });
+
+    const montageBlob = await new Promise<Blob | null>((resolve) =>
+      montageCanvas.toBlob(resolve, mimeType, quality)
+    );
+    return montageBlob ? { status: 'ok', blob: montageBlob } : { status: 'encode_failed' };
+  } finally {
+    if (montageCanvas.width !== 1 || montageCanvas.height !== 1) {
+      montageCanvas.width = 1;
+      montageCanvas.height = 1;
+    }
+  }
+};
+
 export interface NamedFileLike {
   name: string;
 }

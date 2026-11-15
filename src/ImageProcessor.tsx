@@ -41,7 +41,7 @@ import {
   ImageResolutionMismatchError,
   decodeImageWithFallback,
   prepareMontagePlan,
-  renderMontageTiles,
+  renderMontageToBlob,
   resolveOutputExtension,
   type ImageDimensions,
 } from './montageHelpers.ts';
@@ -655,7 +655,6 @@ const ImageProcessor: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -964,31 +963,21 @@ const ImageProcessor: React.FC = () => {
         }
       }
 
-      const montageCanvas = canvasRef.current;
-      if (!montageCanvas) throw new Error(t('alert_canvas_not_ready'));
-      const montageCtx = montageCanvas.getContext('2d', { alpha: false });
-      if (!montageCtx) throw new Error(t('alert_failed_to_get_context'));
+      let mimeType = 'image/webp';
+      if (finalSettings.outputFormat === 'png') mimeType = 'image/png';
+      else if (finalSettings.outputFormat === 'jpeg') mimeType = 'image/jpeg';
 
-      montageCanvas.width = sizeEval.width;
-      montageCanvas.height = sizeEval.height;
-      if (montageCanvas.width !== sizeEval.width || montageCanvas.height !== sizeEval.height) {
-        montageCanvas.width = 1;
-        montageCanvas.height = 1;
-        alert(t('alert_image_generation_failed'));
-        return;
-      }
-
-      montageCtx.fillStyle = finalSettings.bgColor;
-      montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
-
-      await renderMontageTiles<File, ImageBitmap>({
+      const renderResult = await renderMontageToBlob<File, ImageBitmap>({
+        dimensions: sizeEval,
+        bgColor: finalSettings.bgColor,
+        mimeType,
+        quality: finalSettings.quality / 100,
         files: orderedImages,
         colCount: finalSettings.colCount,
         offsetX: finalSettings.offsetX,
         offsetY: finalSettings.offsetY,
         cropRect,
         masks: tileMasks,
-        montageCtx,
         expectedDimensions,
         getFileName: (file) => file.name,
         decodeImage: (file, index) => {
@@ -1001,24 +990,26 @@ const ImageProcessor: React.FC = () => {
         },
       });
 
-      let mimeType = 'image/webp';
-      if (finalSettings.outputFormat === 'png') mimeType = 'image/png';
-      else if (finalSettings.outputFormat === 'jpeg') mimeType = 'image/jpeg';
-
-      const montageBlob = await new Promise<Blob | null>(resolve => montageCanvas.toBlob(resolve, mimeType, finalSettings.quality / 100));
-
-      if (montageBlob) {
-        const getTimestamp = () => {
-          const d = new Date();
-          const pad = (n: number) => n.toString().padStart(2, '0');
-          return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-        };
-        const ext = resolveOutputExtension(montageBlob.type, finalSettings.outputFormat);
-        setDownloadFilename(`tile-${getTimestamp()}.${ext}`);
-        setProcessedImageUrl(URL.createObjectURL(montageBlob));
-      } else {
+      if (renderResult.status === 'context_failed') {
+        throw new Error(t('alert_failed_to_get_context'));
+      }
+      if (renderResult.status === 'allocation_failed') {
+        alert(t('alert_image_generation_failed'));
+        return;
+      }
+      if (renderResult.status === 'encode_failed') {
         throw new Error(t('alert_image_generation_failed'));
       }
+
+      const montageBlob = renderResult.blob;
+      const getTimestamp = () => {
+        const d = new Date();
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+      };
+      const ext = resolveOutputExtension(montageBlob.type, finalSettings.outputFormat);
+      setDownloadFilename(`tile-${getTimestamp()}.${ext}`);
+      setProcessedImageUrl(URL.createObjectURL(montageBlob));
 
     } catch (error) {
       if (error instanceof ImageDecodeError) {
@@ -1054,10 +1045,6 @@ const ImageProcessor: React.FC = () => {
       window.location.reload();
     } finally {
       releaseFirstImageBitmap();
-      if (canvasRef.current && (canvasRef.current.width !== 1 || canvasRef.current.height !== 1)) {
-        canvasRef.current.width = 1;
-        canvasRef.current.height = 1;
-      }
       await releaseOcrResources(ocrAbortRef, ocrSessionRef);
       setOcrStatus(t('status_releasing_memory'));
       // Add a small delay to allow GC to run before re-enabling the button
@@ -1460,7 +1447,6 @@ const ImageProcessor: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
-      <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
     </Container>
   );
 };

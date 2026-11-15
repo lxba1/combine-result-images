@@ -7,6 +7,7 @@ import {
   decodeImageWithFallback,
   prepareMontagePlan,
   renderMontageTiles,
+  renderMontageToBlob,
   resolveOutputExtension,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
@@ -877,5 +878,195 @@ describe('prepareMontagePlan', () => {
     const updated = { ...initial, ...plan.settingsPatch };
     assert.equal(updated.cropWidth, 1846);
     assert.equal(areSettingsDefault(updated), true);
+  });
+});
+
+describe('renderMontageToBlob', () => {
+  const createMockOutputCanvas = ({
+    initialWidth = 300,
+    initialHeight = 150,
+    returnNullContext = false,
+    clampWidth = null,
+    toBlobResult = new Blob(['webp-bytes'], { type: 'image/webp' }),
+  } = {}) => {
+    const events = [];
+    let currentWidth = initialWidth;
+    let currentHeight = initialHeight;
+
+    const ctx = {
+      _fillStyle: '',
+      get fillStyle() {
+        return this._fillStyle;
+      },
+      set fillStyle(v) {
+        this._fillStyle = v;
+      },
+      fillRect(x, y, w, h) {
+        events.push(`fillRect:${this._fillStyle}:${x},${y},${w}x${h}`);
+      },
+      drawImage(_img, _sx, _sy, _sw, _sh, dx, dy, dw, dh) {
+        events.push(`drawImage:${dx},${dy},${dw}x${dh}`);
+      },
+    };
+
+    const canvas = {
+      get width() {
+        return currentWidth;
+      },
+      set width(v) {
+        currentWidth = clampWidth !== null && v > clampWidth ? clampWidth : v;
+        events.push(`width=${currentWidth}`);
+      },
+      get height() {
+        return currentHeight;
+      },
+      set height(v) {
+        currentHeight = v;
+        events.push(`height=${currentHeight}`);
+      },
+      getContext(id, options) {
+        events.push(`getContext:${id}:${JSON.stringify(options)}`);
+        return returnNullContext ? null : ctx;
+      },
+      toBlob(cb, type, quality) {
+        events.push(`toBlob:${type}:${quality}`);
+        cb(toBlobResult);
+      },
+    };
+
+    return { canvas, events };
+  };
+
+  it('allocates offscreen canvas, renders tiles, encodes blob, and shrinks canvas to 1x1 before resolving', async () => {
+    const expectedBlob = new Blob(['webp-data'], { type: 'image/webp' });
+    const mock = createMockOutputCanvas({ toBlobResult: expectedBlob });
+    let bitmapClosed = 0;
+
+    const result = await renderMontageToBlob({
+      dimensions: { width: 100, height: 80 },
+      bgColor: '#123456',
+      mimeType: 'image/webp',
+      quality: 0.85,
+      createCanvas: () => mock.canvas,
+      files: [{ name: 'tile1.png' }],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 100, height: 80 },
+      masks: [],
+      expectedDimensions: { width: 1920, height: 1080 },
+      getFileName: (f) => f.name,
+      yieldFrame: async () => {},
+      decodeImage: async () => ({
+        width: 1920,
+        height: 1080,
+        close: () => {
+          bitmapClosed += 1;
+        },
+      }),
+    });
+
+    assert.equal(result.status, 'ok');
+    assert.equal(result.blob, expectedBlob);
+    assert.equal(bitmapClosed, 1);
+    // Canvas must already be shrunk to 1x1 before the returned promise resolves to callers.
+    assert.equal(mock.canvas.width, 1);
+    assert.equal(mock.canvas.height, 1);
+    assert.deepEqual(mock.events, [
+      'getContext:2d:{"alpha":false}',
+      'width=100',
+      'height=80',
+      'fillRect:#123456:0,0,100x80',
+      'drawImage:0,0,100x80',
+      'toBlob:image/webp:0.85',
+      'width=1',
+      'height=1',
+    ]);
+  });
+
+  it('shrinks canvas to 1x1 across context, allocation, encode, and tile decode failures', async () => {
+    const nullCtxMock = createMockOutputCanvas({ returnNullContext: true });
+    const nullCtxResult = await renderMontageToBlob({
+      dimensions: { width: 200, height: 100 },
+      bgColor: '#000000',
+      mimeType: 'image/png',
+      quality: 1,
+      createCanvas: () => nullCtxMock.canvas,
+      files: [],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 200, height: 100 },
+      masks: [],
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(nullCtxResult.status, 'context_failed');
+    assert.equal(nullCtxMock.canvas.width, 1);
+    assert.equal(nullCtxMock.canvas.height, 1);
+
+    const clampedMock = createMockOutputCanvas({ clampWidth: 32767 });
+    const clampedResult = await renderMontageToBlob({
+      dimensions: { width: 40000, height: 100 },
+      bgColor: '#000000',
+      mimeType: 'image/png',
+      quality: 1,
+      createCanvas: () => clampedMock.canvas,
+      files: [],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 100, height: 100 },
+      masks: [],
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(clampedResult.status, 'allocation_failed');
+    assert.equal(clampedMock.canvas.width, 1);
+    assert.equal(clampedMock.canvas.height, 1);
+    assert.ok(!clampedMock.events.some((e) => e.startsWith('toBlob:')));
+
+    const nullBlobMock = createMockOutputCanvas({ toBlobResult: null });
+    const nullBlobResult = await renderMontageToBlob({
+      dimensions: { width: 100, height: 100 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.9,
+      createCanvas: () => nullBlobMock.canvas,
+      files: [],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 100, height: 100 },
+      masks: [],
+      yieldFrame: async () => {},
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(nullBlobResult.status, 'encode_failed');
+    assert.equal(nullBlobMock.canvas.width, 1);
+    assert.equal(nullBlobMock.canvas.height, 1);
+
+    const thrownMock = createMockOutputCanvas();
+    await assert.rejects(
+      () =>
+        renderMontageToBlob({
+          dimensions: { width: 100, height: 100 },
+          bgColor: '#000000',
+          mimeType: 'image/webp',
+          quality: 0.9,
+          createCanvas: () => thrownMock.canvas,
+          files: [{ name: 'bad.png' }],
+          colCount: 1,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 100, height: 100 },
+          masks: [],
+          getFileName: (f) => f.name,
+          decodeImage: async () => {
+            throw new ImageDecodeError('bad.png');
+          },
+        }),
+      (err) => err instanceof ImageDecodeError && err.fileName === 'bad.png'
+    );
+    assert.equal(thrownMock.canvas.width, 1);
+    assert.equal(thrownMock.canvas.height, 1);
   });
 });
