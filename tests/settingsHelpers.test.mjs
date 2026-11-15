@@ -9,12 +9,15 @@ import {
   MAX_WEBP_DIMENSION,
   MIN_COL_COUNT,
   MIN_OFFSET_PX,
+  SETTINGS_STORAGE_KEY,
   areSettingsDefault,
   createDefaultSettings,
   cropRectToSettings,
   evaluateMontageCanvasSize,
+  loadSettingsFromStorage,
   normalizeHexColor,
   parseSavedSettings,
+  saveSettingsToStorage,
 } from '../src/settingsHelpers.ts';
 
 describe('cropRectToSettings', () => {
@@ -246,5 +249,77 @@ describe('evaluateMontageCanvasSize', () => {
       evaluateMontageCanvasSize(2, { width: Number.MAX_SAFE_INTEGER, height: 100 }, { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'png' }).status,
       'invalid'
     );
+  });
+});
+
+describe('loadSettingsFromStorage and saveSettingsToStorage', () => {
+  it('loads valid settings and falls back to defaults when localStorage access or getItem throws', () => {
+    const valid = loadSettingsFromStorage(() => ({
+      getItem: (key) => (key === SETTINGS_STORAGE_KEY ? JSON.stringify({ colCount: 4 }) : null),
+      setItem: () => {},
+    }));
+    assert.equal(valid.colCount, 4);
+
+    assert.deepEqual(loadSettingsFromStorage(() => null), DEFAULT_SETTINGS);
+
+    const originalWarn = console.warn;
+    let warnCount = 0;
+    console.warn = () => {
+      warnCount++;
+    };
+    try {
+      const getterBlocked = loadSettingsFromStorage(() => {
+        throw new Error('SecurityError: storage access denied');
+      });
+      assert.deepEqual(getterBlocked, DEFAULT_SETTINGS);
+
+      const getItemBlocked = loadSettingsFromStorage(() => ({
+        getItem: () => {
+          throw new Error('SecurityError: blocked');
+        },
+        setItem: () => {},
+      }));
+      assert.deepEqual(getItemBlocked, DEFAULT_SETTINGS);
+      assert.equal(warnCount, 2);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('persists serialized settings and returns false cleanly when setItem or storage access throws', () => {
+    const written = new Map();
+    const ok = saveSettingsToStorage(createDefaultSettings(), () => ({
+      getItem: () => null,
+      setItem: (k, v) => {
+        written.set(k, v);
+      },
+    }));
+    assert.equal(ok, true);
+    assert.equal(JSON.parse(written.get(SETTINGS_STORAGE_KEY)).colCount, DEFAULT_SETTINGS.colCount);
+
+    assert.equal(saveSettingsToStorage(createDefaultSettings(), () => null), false);
+
+    const originalWarn = console.warn;
+    let warnCount = 0;
+    console.warn = () => {
+      warnCount++;
+    };
+    try {
+      const quotaExceeded = saveSettingsToStorage(createDefaultSettings(), () => ({
+        getItem: () => null,
+        setItem: () => {
+          throw new Error('QuotaExceededError');
+        },
+      }));
+      assert.equal(quotaExceeded, false);
+
+      const storageDenied = saveSettingsToStorage(createDefaultSettings(), () => {
+        throw new Error('SecurityError');
+      });
+      assert.equal(storageDenied, false);
+      assert.equal(warnCount, 2);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });

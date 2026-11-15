@@ -37,8 +37,9 @@ import {
   cropRectToSettings,
   evaluateMontageCanvasSize,
   isRatioRectEqual,
+  loadSettingsFromStorage,
   normalizeHexColor,
-  parseSavedSettings,
+  saveSettingsToStorage,
 } from './settingsHelpers.ts';
 import { detectAutoCropFromImage } from './cropHelpers.ts';
 import { buildTileMaskRects, renderMontageTiles } from './montageHelpers.ts';
@@ -639,12 +640,10 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
 const ImageProcessor: React.FC = () => {
   const { t, i18n } = useTranslation();
 
-  const [settings, setSettings] = useState<ImageSettings>(() =>
-    parseSavedSettings(localStorage.getItem('imageProcessorSettings'))
-  );
+  const [settings, setSettings] = useState<ImageSettings>(() => loadSettingsFromStorage());
 
   useEffect(() => {
-    localStorage.setItem('imageProcessorSettings', JSON.stringify(settings));
+    saveSettingsToStorage(settings);
   }, [settings]);
 
   const [images, setImages] = useState<File[]>([]);

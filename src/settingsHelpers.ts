@@ -331,3 +331,55 @@ export const evaluateMontageCanvasSize = (
 
   return { width, height, pixels, status: 'ok' };
 };
+
+export interface StorageLike {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+}
+
+export const SETTINGS_STORAGE_KEY = 'imageProcessorSettings';
+
+const resolveDefaultStorage = (): StorageLike | null => {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Loads and sanitizes persisted settings from Web Storage, returning defaults
+ * if storage access is denied (e.g., SecurityError) or unavailable.
+ */
+export const loadSettingsFromStorage = (
+  getStorage: () => StorageLike | null = resolveDefaultStorage,
+  key: string = SETTINGS_STORAGE_KEY
+): ImageSettings => {
+  try {
+    const storage = getStorage();
+    return parseSavedSettings(storage ? storage.getItem(key) : null);
+  } catch (error) {
+    console.warn('Failed to load settings from localStorage:', error);
+    return createDefaultSettings();
+  }
+};
+
+/**
+ * Persists settings to Web Storage, returning `false` without throwing
+ * when storage access is denied or quota is exceeded.
+ */
+export const saveSettingsToStorage = (
+  settings: ImageSettings,
+  getStorage: () => StorageLike | null = resolveDefaultStorage,
+  key: string = SETTINGS_STORAGE_KEY
+): boolean => {
+  try {
+    const storage = getStorage();
+    if (!storage) return false;
+    storage.setItem(key, JSON.stringify(settings));
+    return true;
+  } catch (error) {
+    console.warn('Failed to persist settings to localStorage:', error);
+    return false;
+  }
+};
