@@ -188,6 +188,50 @@ describe('hex color normalization and default comparison', () => {
 
     assert.equal(areSettingsDefault(withUppercaseWhite), true);
   });
+
+  it('ignores auto-computed pixel coordinates while preserving manual-mode and user option diffs in areSettingsDefault', () => {
+    // Auto-crop on non-1600x900 images populates cropX/Y/W/H via settingsPatch
+    const afterAutoCrop = {
+      ...createDefaultSettings(),
+      cropAuto: true,
+      cropX: 37,
+      cropY: 140,
+      cropWidth: 1846,
+      cropHeight: 798,
+    };
+    assert.equal(areSettingsDefault(afterAutoCrop), true);
+
+    // Turning off auto-crop is a user modification even if crop coords match defaults
+    assert.equal(areSettingsDefault({ ...createDefaultSettings(), cropAuto: false }), false);
+
+    // Mask/self-mask pixel coords written by ratio/ocr runs are ignored when disabled
+    const afterDisabledAutoMasks = {
+      ...createDefaultSettings(),
+      maskEnabled: false,
+      maskMode: 'ratio',
+      maskX: 1207,
+      maskY: 93,
+      maskWidth: 330,
+      maskHeight: 40,
+      selfMaskEnabled: false,
+      selfMaskMode: 'ratio',
+      selfMaskX: 414,
+      selfMaskY: 93,
+      selfMaskWidth: 355,
+      selfMaskHeight: 40,
+    };
+    assert.equal(areSettingsDefault(afterDisabledAutoMasks), true);
+
+    // Changing mask mode away from default (even while disabled) or enabling a mask stays non-default
+    assert.equal(areSettingsDefault({ ...createDefaultSettings(), maskMode: 'ocr' }), false);
+    assert.equal(areSettingsDefault({ ...createDefaultSettings(), selfMaskMode: 'manual' }), false);
+    assert.equal(areSettingsDefault({ ...createDefaultSettings(), maskEnabled: true }), false);
+    assert.equal(areSettingsDefault({ ...createDefaultSettings(), selfMaskEnabled: true }), false);
+    assert.equal(
+      areSettingsDefault({ ...createDefaultSettings(), maskColor: '#000000' }),
+      false
+    );
+  });
 });
 
 describe('evaluateMontageCanvasSize', () => {

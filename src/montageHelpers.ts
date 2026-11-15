@@ -544,14 +544,14 @@ export const prepareMontagePlan = async ({
   if (settings.cropAuto) {
     const autoCropResult = detectAutoCrop();
     if (autoCropResult.status !== 'ok') {
+      const isContextError = autoCropResult.status === 'context_error';
       return {
         status: 'abort',
-        settingsPatch: { cropAuto: false },
+        // Context errors are transient runtime failures, so preserve cropAuto for retries;
+        // only switch to manual mode when auto-crop border detection finds no bounds.
+        settingsPatch: isContextError ? {} : { cropAuto: false },
         alert: {
-          kind:
-            autoCropResult.status === 'context_error'
-              ? 'auto_crop_context_error'
-              : 'auto_crop_not_found',
+          kind: isContextError ? 'auto_crop_context_error' : 'auto_crop_not_found',
         },
       };
     }

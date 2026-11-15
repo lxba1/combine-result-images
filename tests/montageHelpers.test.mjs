@@ -9,7 +9,7 @@ import {
   renderMontageTiles,
   resolveOutputExtension,
 } from '../src/montageHelpers.ts';
-import { createDefaultSettings } from '../src/settingsHelpers.ts';
+import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
 
 function createMockTempCanvas({ returnNullContext = false, throwOnDraw = false } = {}) {
   const widthWrites = [];
@@ -869,5 +869,48 @@ describe('prepareMontagePlan', () => {
     ]);
     assert.equal(plan.finalSettings.maskX, 0);
     assert.equal(plan.finalSettings.maskY, 100);
+  });
+
+  it('preserves cropAuto on context_error while disabling cropAuto only on not_found', async () => {
+    const baseSettings = createDefaultSettings();
+
+    const contextErrorPlan = await prepareMontagePlan({
+      settings: baseSettings,
+      imageSize: { width: 1920, height: 1080 },
+      detectAutoCrop: () => ({ status: 'context_error' }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+    assert.equal(contextErrorPlan.status, 'abort');
+    assert.deepEqual(contextErrorPlan.alert, { kind: 'auto_crop_context_error' });
+    assert.deepEqual(contextErrorPlan.settingsPatch, {});
+    assert.equal({ ...baseSettings, ...contextErrorPlan.settingsPatch }.cropAuto, true);
+
+    const notFoundPlan = await prepareMontagePlan({
+      settings: baseSettings,
+      imageSize: { width: 1920, height: 1080 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+    assert.equal(notFoundPlan.status, 'abort');
+    assert.deepEqual(notFoundPlan.alert, { kind: 'auto_crop_not_found' });
+    assert.deepEqual(notFoundPlan.settingsPatch, { cropAuto: false });
+  });
+
+  it('keeps areSettingsDefault true after applying auto-crop settingsPatch for non-1600x900 images', async () => {
+    const initial = createDefaultSettings();
+    const plan = await prepareMontagePlan({
+      settings: initial,
+      imageSize: { width: 1920, height: 1080 },
+      detectAutoCrop: () => ({
+        status: 'ok',
+        rect: { x: 37, y: 140, width: 1846, height: 798 },
+      }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+
+    assert.equal(plan.status, 'ok');
+    const updated = { ...initial, ...plan.settingsPatch };
+    assert.equal(updated.cropWidth, 1846);
+    assert.equal(areSettingsDefault(updated), true);
   });
 });

@@ -118,8 +118,54 @@ export const createDefaultSettings = (): ImageSettings => ({
   selfMaskRatioRect: { ...DEFAULT_SETTINGS.selfMaskRatioRect },
 });
 
+const CROP_COORD_KEYS = new Set<keyof ImageSettings>([
+  'cropX',
+  'cropY',
+  'cropWidth',
+  'cropHeight',
+]);
+const MASK_COORD_KEYS = new Set<keyof ImageSettings>([
+  'maskX',
+  'maskY',
+  'maskWidth',
+  'maskHeight',
+]);
+const SELF_MASK_COORD_KEYS = new Set<keyof ImageSettings>([
+  'selfMaskX',
+  'selfMaskY',
+  'selfMaskWidth',
+  'selfMaskHeight',
+]);
+
+const isAutoManagedPixelCoordKey = (
+  key: keyof ImageSettings,
+  current: ImageSettings
+): boolean => {
+  if (current.cropAuto && CROP_COORD_KEYS.has(key)) {
+    return true;
+  }
+  if ((!current.maskEnabled || current.maskMode !== 'manual') && MASK_COORD_KEYS.has(key)) {
+    return true;
+  }
+  if (
+    (!current.selfMaskEnabled || current.selfMaskMode !== 'manual') &&
+    SELF_MASK_COORD_KEYS.has(key)
+  ) {
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Returns whether user-facing settings match `DEFAULT_SETTINGS`, ignoring pixel coordinates
+ * that are auto-computed at runtime (`crop*` when auto-crop is enabled, and `mask*`/`selfMask*`
+ * when disabled or in `'ratio'`/`'ocr'` mode).
+ */
 export const areSettingsDefault = (current: ImageSettings): boolean =>
   (Object.keys(DEFAULT_SETTINGS) as (keyof ImageSettings)[]).every((key) => {
+    if (isAutoManagedPixelCoordKey(key, current)) {
+      return true;
+    }
     if (key === 'maskRatioRect' || key === 'selfMaskRatioRect') {
       return isRatioRectEqual(current[key], DEFAULT_SETTINGS[key]);
     }
