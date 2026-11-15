@@ -24,12 +24,17 @@ import {
   type RatioRect,
   type SortOrder,
   MASK_PRESETS,
+  MAX_COL_COUNT,
+  MAX_OFFSET_PX,
+  MIN_COL_COUNT,
+  MIN_OFFSET_PX,
   SELF_MASK_PRESETS,
   areSettingsDefault,
   clamp01,
   createDefaultSettings,
   cropRectToSettings,
   isRatioRectEqual,
+  normalizeHexColor,
   parseSavedSettings,
 } from './settingsHelpers.ts';
 import { detectAutoCropFromImage } from './cropHelpers.ts';
@@ -225,8 +230,6 @@ const LanguageButton: React.FC = () => {
   );
 };
 
-const isValidHexColor = (value: string) => /^#[0-9a-fA-F]{6}$/.test(value);
-
 const ColorSwatchInput = styled('input')({
   width: 22,
   height: 22,
@@ -248,44 +251,121 @@ interface ColorSettingFieldProps {
   name: string;
   value: string;
   disabled?: boolean;
-  onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  onCommit: (name: string, value: string) => void;
 }
 
-/** Compact outlined hex color field with an inline clickable color swatch. */
+/**
+ * Compact outlined hex color field with an inline clickable color swatch.
+ * Allows free text editing while focused and commits normalized lowercase `#rrggbb` values.
+ */
 const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
   label,
   name,
   value,
   disabled = false,
-  onChange,
-}) => (
-  <TextField
-    label={label}
-    variant="outlined"
-    size="small"
-    fullWidth
-    name={name}
-    value={value}
-    disabled={disabled}
-    onChange={onChange}
-    slotProps={{
-      input: {
-        startAdornment: (
-          <InputAdornment position="start">
-            <ColorSwatchInput
-              type="color"
-              name={name}
-              value={isValidHexColor(value) ? value : '#000000'}
-              disabled={disabled}
-              onChange={onChange}
-              aria-label={label}
-            />
-          </InputAdornment>
-        ),
-      },
-    }}
-  />
-);
+  onCommit,
+}) => {
+  const normalizedValue = normalizeHexColor(value) ?? '#000000';
+  const inputRef = useRef<HTMLInputElement>(null);
+  const isFocusedRef = useRef(false);
+  const isDirtyRef = useRef(false);
+  const lastValidRef = useRef(normalizedValue);
+
+  useEffect(() => {
+    lastValidRef.current = normalizedValue;
+    if (disabled) {
+      isFocusedRef.current = false;
+      isDirtyRef.current = false;
+    }
+    if ((!isFocusedRef.current || !isDirtyRef.current) && inputRef.current) {
+      inputRef.current.value = normalizedValue;
+    }
+  }, [normalizedValue, disabled]);
+
+  const handleFocus = () => {
+    isFocusedRef.current = true;
+    isDirtyRef.current = false;
+    lastValidRef.current = normalizedValue;
+  };
+
+  const handleTextChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    isDirtyRef.current = true;
+    const trimmed = event.target.value.trim();
+    if (trimmed.length === 7) {
+      const next = normalizeHexColor(trimmed);
+      if (next) {
+        lastValidRef.current = next;
+        onCommit(name, next);
+      }
+    }
+  };
+
+  const handleSwatchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const next = normalizeHexColor(event.target.value) ?? lastValidRef.current;
+    lastValidRef.current = next;
+    isDirtyRef.current = false;
+    if (inputRef.current) {
+      inputRef.current.value = next;
+    }
+    onCommit(name, next);
+  };
+
+  const commitDraft = () => {
+    const raw = inputRef.current?.value ?? '';
+    const next = normalizeHexColor(raw) ?? lastValidRef.current;
+    lastValidRef.current = next;
+    isDirtyRef.current = false;
+    if (inputRef.current) {
+      inputRef.current.value = next;
+    }
+    onCommit(name, next);
+  };
+
+  const handleBlur = () => {
+    isFocusedRef.current = false;
+    commitDraft();
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      commitDraft();
+    }
+  };
+
+  return (
+    <TextField
+      label={label}
+      variant="outlined"
+      size="small"
+      fullWidth
+      name={name}
+      defaultValue={normalizedValue}
+      disabled={disabled}
+      inputRef={inputRef}
+      onFocus={handleFocus}
+      onChange={handleTextChange}
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
+      slotProps={{
+        inputLabel: { shrink: true },
+        input: {
+          startAdornment: (
+            <InputAdornment position="start">
+              <ColorSwatchInput
+                type="color"
+                name={name}
+                value={normalizedValue}
+                disabled={disabled}
+                onChange={handleSwatchChange}
+                aria-label={label}
+              />
+            </InputAdornment>
+          ),
+        },
+      }}
+    />
+  );
+};
 
 interface NumericTextFieldProps {
   label: string;
@@ -427,6 +507,7 @@ interface MaskAccordionProps {
   disabled?: boolean;
   onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
   onNumericCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
+  onColorCommit: (name: string, value: string) => void;
   onRatioSliderChange: (axis: 'horizontal' | 'vertical') => (event: Event, value: number | number[]) => void;
   onPresetChange: (event: SelectChangeEvent<string>) => void;
 }
@@ -448,6 +529,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   disabled = false,
   onSettingChange,
   onNumericCommit,
+  onColorCommit,
   onRatioSliderChange,
   onPresetChange,
 }) => {
@@ -482,7 +564,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
               </FormControl>
             </Grid>
             <Grid size={{ xs: 6 }}>
-              <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} onChange={onSettingChange} />
+              <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} onCommit={onColorCommit} />
             </Grid>
             {mode === 'ratio' ? (
               <>
@@ -664,6 +746,14 @@ const ImageProcessor: React.FC = () => {
       ...prev,
       [name]: newValue,
     }));
+  };
+
+  const handleColorSettingCommit = (name: string, newValue: string) => {
+    if (isProcessing) return;
+    if (name !== 'bgColor' && name !== 'maskColor' && name !== 'selfMaskColor') return;
+    const normalized = normalizeHexColor(newValue);
+    if (!normalized) return;
+    setSettings(prev => (prev[name] === normalized ? prev : { ...prev, [name]: normalized }));
   };
 
   const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => {
@@ -1175,9 +1265,10 @@ const ImageProcessor: React.FC = () => {
                   <FormControl fullWidth size="small" disabled={isProcessing}>
                     <InputLabel id="col-count-label">{t('columns')}</InputLabel>
                     <Select labelId="col-count-label" name="colCount" value={settings.colCount} label={t('columns')} onChange={handleSettingChange}>
-                      {[...Array(10)].map((_, i) => (
-                        <MenuItem key={i + 1} value={i + 1}>{i + 1}</MenuItem>
-                      ))}
+                      {Array.from({ length: MAX_COL_COUNT - MIN_COL_COUNT + 1 }, (_, i) => {
+                        const val = MIN_COL_COUNT + i;
+                        return <MenuItem key={val} value={val}>{val}</MenuItem>;
+                      })}
                     </Select>
                   </FormControl>
                 </Grid>
@@ -1185,9 +1276,10 @@ const ImageProcessor: React.FC = () => {
                   <FormControl fullWidth size="small" disabled={isProcessing}>
                     <InputLabel id="offset-label">{t('offset_px')}</InputLabel>
                     <Select labelId="offset-label" name="offsetX" value={settings.offsetX} label={t('offset_px')} onChange={handleSettingChange}>
-                      {[...Array(51)].map((_, i) => (
-                        <MenuItem key={i} value={i}>{i}</MenuItem>
-                      ))}
+                      {Array.from({ length: MAX_OFFSET_PX - MIN_OFFSET_PX + 1 }, (_, i) => {
+                        const val = MIN_OFFSET_PX + i;
+                        return <MenuItem key={val} value={val}>{val}</MenuItem>;
+                      })}
                     </Select>
                   </FormControl>
                 </Grid>
@@ -1203,7 +1295,7 @@ const ImageProcessor: React.FC = () => {
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} disabled={isProcessing} onChange={handleSettingChange} /></Grid>
+                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} disabled={isProcessing} onCommit={handleColorSettingCommit} /></Grid>
                 <Grid size={{ xs: 6 }}>
                   <FormControl fullWidth size="small" disabled={isProcessing}>
                     <InputLabel id="output-format-label">{t('output_format')}</InputLabel>
@@ -1281,6 +1373,7 @@ const ImageProcessor: React.FC = () => {
             disabled={isProcessing}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
+            onColorCommit={handleColorSettingCommit}
             onRatioSliderChange={(axis) => handleRatioSliderChange('maskRatioRect', axis)}
             onPresetChange={handlePresetChange('maskRatioRect')}
           />
@@ -1301,6 +1394,7 @@ const ImageProcessor: React.FC = () => {
             disabled={isProcessing}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
+            onColorCommit={handleColorSettingCommit}
             onRatioSliderChange={(axis) => handleRatioSliderChange('selfMaskRatioRect', axis)}
             onPresetChange={handlePresetChange('selfMaskRatioRect')}
           />

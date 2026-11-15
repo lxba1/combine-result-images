@@ -58,6 +58,30 @@ export interface ImageSettings {
   selfMaskRatioRect: RatioRect;
 }
 
+export const MIN_COL_COUNT = 1;
+export const MAX_COL_COUNT = 10;
+export const MIN_OFFSET_PX = 0;
+export const MAX_OFFSET_PX = 50;
+
+const SIX_DIGIT_HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const THREE_DIGIT_HEX_COLOR_RE = /^#[0-9a-fA-F]{3}$/;
+
+/** Normalizes `#rgb` or `#rrggbb` hex strings to lowercase `#rrggbb`, returning `null` when invalid. */
+export const normalizeHexColor = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (SIX_DIGIT_HEX_COLOR_RE.test(trimmed)) {
+    return trimmed.toLowerCase();
+  }
+  if (THREE_DIGIT_HEX_COLOR_RE.test(trimmed)) {
+    const [, r, g, b] = trimmed.toLowerCase();
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  return null;
+};
+
 export const DEFAULT_SETTINGS: ImageSettings = {
   colCount: 2,
   offsetX: 8,
@@ -78,7 +102,7 @@ export const DEFAULT_SETTINGS: ImageSettings = {
   maskY: 0,
   maskWidth: 100,
   maskHeight: 100,
-  maskColor: '#FFFFFF',
+  maskColor: '#ffffff',
   maskRatioRect: MASK_PRESETS.name,
   selfMaskEnabled: false,
   selfMaskMode: 'ratio',
@@ -86,7 +110,7 @@ export const DEFAULT_SETTINGS: ImageSettings = {
   selfMaskY: 0,
   selfMaskWidth: 100,
   selfMaskHeight: 100,
-  selfMaskColor: '#FFFFFF',
+  selfMaskColor: '#ffffff',
   selfMaskRatioRect: SELF_MASK_PRESETS.name,
 };
 
@@ -100,6 +124,14 @@ export const areSettingsDefault = (current: ImageSettings): boolean =>
   (Object.keys(DEFAULT_SETTINGS) as (keyof ImageSettings)[]).every((key) => {
     if (key === 'maskRatioRect' || key === 'selfMaskRatioRect') {
       return isRatioRectEqual(current[key], DEFAULT_SETTINGS[key]);
+    }
+    if (key === 'bgColor' || key === 'maskColor' || key === 'selfMaskColor') {
+      const normalizedCurrent = normalizeHexColor(current[key]);
+      const normalizedDefault = normalizeHexColor(DEFAULT_SETTINGS[key]);
+      if (normalizedCurrent && normalizedDefault) {
+        return normalizedCurrent === normalizedDefault;
+      }
+      return current[key].trim().toLowerCase() === DEFAULT_SETTINGS[key].toLowerCase();
     }
     return current[key] === DEFAULT_SETTINGS[key];
   });
@@ -125,6 +157,9 @@ const toBoundedInt = (value: unknown, fallback: number, min = 0, max = Number.PO
   typeof value === 'number' && Number.isFinite(value)
     ? Math.min(max, Math.max(min, Math.round(value)))
     : fallback;
+
+const sanitizeHexColor = (value: unknown, fallback: string): string =>
+  normalizeHexColor(value) ?? fallback;
 
 const sanitizeRatioRect = (rect: unknown, fallback: RatioRect): RatioRect => {
   if (!rect || typeof rect !== 'object' || Array.isArray(rect)) {
@@ -168,16 +203,18 @@ export const parseSavedSettings = (savedSettingsJson: string | null): ImageSetti
   const rawMaskMode = raw.maskAuto !== undefined ? (raw.maskAuto ? 'ocr' : 'manual') : raw.maskMode;
   const rawSelfMaskMode =
     raw.selfMaskAuto !== undefined ? (raw.selfMaskAuto ? 'ocr' : 'manual') : raw.selfMaskMode;
+  const offsetSource = raw.offsetX !== undefined ? raw.offsetX : raw.offsetY;
+  const offset = toBoundedInt(offsetSource, defaults.offsetX, MIN_OFFSET_PX, MAX_OFFSET_PX);
 
   return {
-    colCount: toBoundedInt(raw.colCount, defaults.colCount, 1),
-    offsetX: toBoundedInt(raw.offsetX, defaults.offsetX, 0),
-    offsetY: toBoundedInt(raw.offsetY, defaults.offsetY, 0),
+    colCount: toBoundedInt(raw.colCount, defaults.colCount, MIN_COL_COUNT, MAX_COL_COUNT),
+    offsetX: offset,
+    offsetY: offset,
     sortOrder: pickEnum(raw.sortOrder, VALID_SORT_ORDERS, defaults.sortOrder),
-    bgColor: typeof raw.bgColor === 'string' ? raw.bgColor : defaults.bgColor,
+    bgColor: sanitizeHexColor(raw.bgColor, defaults.bgColor),
     outputFormat: pickEnum(raw.outputFormat, VALID_OUTPUT_FORMATS, defaults.outputFormat),
     quality: toBoundedInt(raw.quality, defaults.quality, 1, 100),
-    webpMethod: toBoundedInt(raw.webpMethod, defaults.webpMethod, 0),
+    webpMethod: toBoundedInt(raw.webpMethod, defaults.webpMethod, 0, 6),
     cropX: toBoundedInt(raw.cropX, defaults.cropX, 0),
     cropY: toBoundedInt(raw.cropY, defaults.cropY, 0),
     cropWidth: toBoundedInt(raw.cropWidth, defaults.cropWidth, 1),
@@ -189,7 +226,7 @@ export const parseSavedSettings = (savedSettingsJson: string | null): ImageSetti
     maskY: toBoundedInt(raw.maskY, defaults.maskY, 0),
     maskWidth: toBoundedInt(raw.maskWidth, defaults.maskWidth, 1),
     maskHeight: toBoundedInt(raw.maskHeight, defaults.maskHeight, 1),
-    maskColor: typeof raw.maskColor === 'string' ? raw.maskColor : defaults.maskColor,
+    maskColor: sanitizeHexColor(raw.maskColor, defaults.maskColor),
     maskRatioRect: sanitizeRatioRect(raw.maskRatioRect, defaults.maskRatioRect),
     selfMaskEnabled: typeof raw.selfMaskEnabled === 'boolean' ? raw.selfMaskEnabled : defaults.selfMaskEnabled,
     selfMaskMode: pickEnum(rawSelfMaskMode, VALID_MASK_MODES, defaults.selfMaskMode),
@@ -197,7 +234,7 @@ export const parseSavedSettings = (savedSettingsJson: string | null): ImageSetti
     selfMaskY: toBoundedInt(raw.selfMaskY, defaults.selfMaskY, 0),
     selfMaskWidth: toBoundedInt(raw.selfMaskWidth, defaults.selfMaskWidth, 1),
     selfMaskHeight: toBoundedInt(raw.selfMaskHeight, defaults.selfMaskHeight, 1),
-    selfMaskColor: typeof raw.selfMaskColor === 'string' ? raw.selfMaskColor : defaults.selfMaskColor,
+    selfMaskColor: sanitizeHexColor(raw.selfMaskColor, defaults.selfMaskColor),
     selfMaskRatioRect: sanitizeRatioRect(raw.selfMaskRatioRect, defaults.selfMaskRatioRect),
   };
 };
