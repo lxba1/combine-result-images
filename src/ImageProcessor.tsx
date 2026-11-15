@@ -406,6 +406,8 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
   const isFocusedRef = useRef(false);
   const isDirtyRef = useRef(false);
   const preEditValueRef = useRef(value);
+  const [commitVersion, setCommitVersion] = useState(0);
+  const syncedCommitVersionRef = useRef(0);
 
   const normalize = (num: number): number => {
     let next = integer ? Math.round(num) : Math.round(num * 10000) / 10000;
@@ -419,11 +421,13 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
       isFocusedRef.current = false;
       isDirtyRef.current = false;
     }
+    // Resync DOM value and pre-edit baseline after commits even if parent swap/clamp keeps `value` unchanged.
     if ((!isFocusedRef.current || !isDirtyRef.current) && inputRef.current) {
+      syncedCommitVersionRef.current = commitVersion;
       inputRef.current.value = String(value);
       preEditValueRef.current = value;
     }
-  }, [value, disabled]);
+  }, [value, disabled, commitVersion]);
 
   const handleFocus = () => {
     isFocusedRef.current = true;
@@ -432,18 +436,31 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
   };
 
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    isDirtyRef.current = true;
     const raw = event.target.value;
-    if (raw === '') return;
+    if (raw === '') {
+      isDirtyRef.current = true;
+      return;
+    }
 
     const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return;
+    if (!Number.isFinite(parsed)) {
+      isDirtyRef.current = true;
+      return;
+    }
 
+    if (!isFocusedRef.current) {
+      isDirtyRef.current = false;
+      onCommit(name, normalize(parsed), { finalize: true });
+      setCommitVersion((prev) => prev + 1);
+      return;
+    }
+
+    isDirtyRef.current = true;
     const withinBounds =
       (min === undefined || parsed >= min) &&
       (max === undefined || parsed <= max);
-    if (!isFocusedRef.current || withinBounds) {
-      onCommit(name, normalize(parsed), { finalize: !isFocusedRef.current });
+    if (withinBounds) {
+      onCommit(name, normalize(parsed), { finalize: false });
     }
   };
 
@@ -457,6 +474,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
       inputRef.current.value = String(next);
     }
     onCommit(name, next, { finalize: true });
+    setCommitVersion((prev) => prev + 1);
   };
 
   const handleBlur = () => {
