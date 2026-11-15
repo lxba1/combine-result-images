@@ -18,28 +18,20 @@ import {
   startOcrSession,
   validateOcrRois,
 } from './ocrHelpers.ts';
-
-const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-type RatioRect = { rx0: number; ry0: number; rx1: number; ry1: number };
-
-const isRatioRectEqual = (a: RatioRect, b: RatioRect) =>
-  Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
-  Math.abs(a.rx1 - b.rx1) < 0.0001 && Math.abs(a.ry1 - b.ry1) < 0.0001;
-
-const MASK_PRESETS: Record<string, RatioRect> = {
-  name:  { rx0: 0.785, ry0: 0.14, rx1: 1.0,  ry1: 0.2 },
-  title: { rx0: 0.785, ry0: 0.11, rx1: 1.0,  ry1: 0.33 },
-  full:  { rx0: 0.7, ry0: 0.11, rx1: 1.0,  ry1: 0.33 },
-};
-
-const SELF_MASK_PRESETS: Record<string, RatioRect> = {
-  name:  { rx0: 0.269, ry0: 0.14, rx1: 0.5, ry1: 0.2 },
-  title: { rx0: 0.269, ry0: 0.11, rx1: 0.5, ry1: 0.33 },
-  full:  { rx0: 0.185, ry0: 0.11, rx1: 0.5, ry1: 0.33 },
-};
-
-type MaskMode = 'manual' | 'ratio' | 'ocr';
-type SortOrder = 'date_asc' | 'date_desc' | 'name_asc' | 'name_desc' | 'none';
+import {
+  type ImageSettings,
+  type MaskMode,
+  type RatioRect,
+  type SortOrder,
+  MASK_PRESETS,
+  SELF_MASK_PRESETS,
+  areSettingsDefault,
+  clamp01,
+  createDefaultSettings,
+  cropRectToSettings,
+  isRatioRectEqual,
+  parseSavedSettings,
+} from './settingsHelpers.ts';
 
 const compareFileNames = (a: File, b: File) =>
   a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -88,84 +80,6 @@ const createFileTimestampFormatter = (locale?: string) => {
     return (date.getFullYear() === currentYear ? sameYearFmt : otherYearFmt).format(date);
   };
 };
-
-interface ImageSettings {
-  colCount: number;
-  offsetX: number;
-  offsetY: number;
-  sortOrder: SortOrder;
-  bgColor: string;
-  outputFormat: 'webp' | 'png' | 'jpeg';
-  quality: number;
-  webpMethod: number;
-  cropX: number;
-  cropY: number;
-  cropWidth: number;
-  cropHeight: number;
-  maskEnabled: boolean;
-  maskX: number;
-  maskY: number;
-  maskWidth: number;
-  maskHeight: number;
-  maskColor: string;
-  maskRatioRect: RatioRect;
-  cropAuto: boolean;
-  maskMode: MaskMode;
-  selfMaskEnabled: boolean;
-  selfMaskMode: MaskMode;
-  selfMaskX: number;
-  selfMaskY: number;
-  selfMaskWidth: number;
-  selfMaskHeight: number;
-  selfMaskColor: string;
-  selfMaskRatioRect: RatioRect;
-}
-
-const DEFAULT_SETTINGS: ImageSettings = {
-  colCount: 2,
-  offsetX: 8,
-  offsetY: 8,
-  sortOrder: 'date_asc',
-  bgColor: '#000000',
-  outputFormat: 'webp',
-  quality: 80,
-  webpMethod: 6,
-  cropX: 31,
-  cropY: 117,
-  cropWidth: 1538,
-  cropHeight: 665,
-  cropAuto: true,
-  maskEnabled: false,
-  maskMode: 'ratio',
-  maskX: 0,
-  maskY: 0,
-  maskWidth: 100,
-  maskHeight: 100,
-  maskColor: '#FFFFFF',
-  maskRatioRect: MASK_PRESETS.name,
-  selfMaskEnabled: false,
-  selfMaskMode: 'ratio',
-  selfMaskX: 0,
-  selfMaskY: 0,
-  selfMaskWidth: 100,
-  selfMaskHeight: 100,
-  selfMaskColor: '#FFFFFF',
-  selfMaskRatioRect: SELF_MASK_PRESETS.name,
-};
-
-const createDefaultSettings = (): ImageSettings => ({
-  ...DEFAULT_SETTINGS,
-  maskRatioRect: { ...DEFAULT_SETTINGS.maskRatioRect },
-  selfMaskRatioRect: { ...DEFAULT_SETTINGS.selfMaskRatioRect },
-});
-
-const areSettingsDefault = (current: ImageSettings): boolean =>
-  (Object.keys(DEFAULT_SETTINGS) as (keyof ImageSettings)[]).every((key) => {
-    if (key === 'maskRatioRect' || key === 'selfMaskRatioRect') {
-      return isRatioRectEqual(current[key], DEFAULT_SETTINGS[key]);
-    }
-    return current[key] === DEFAULT_SETTINGS[key];
-  });
 
 interface HeaderMenuOption<T extends string> {
   value: T;
@@ -638,59 +552,9 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
 const ImageProcessor: React.FC = () => {
   const { t, i18n } = useTranslation();
 
-  const [settings, setSettings] = useState<ImageSettings>(() => {
-    const defaults = createDefaultSettings();
-    const savedSettings = localStorage.getItem('imageProcessorSettings');
-    if (savedSettings) {
-      try {
-        const parsed = JSON.parse(savedSettings);
-        // Migration for old settings
-        if (parsed.maskAuto !== undefined) {
-          parsed.maskMode = parsed.maskAuto ? 'ocr' : 'manual';
-          delete parsed.maskAuto;
-        }
-        if (parsed.selfMaskAuto !== undefined) {
-          parsed.selfMaskMode = parsed.selfMaskAuto ? 'ocr' : 'manual';
-          delete parsed.selfMaskAuto;
-        }
-        const merged: ImageSettings = { ...defaults, ...parsed };
-        const clampRatioRect = (rect: RatioRect): RatioRect => {
-          const rx0 = clamp01(Number.isFinite(rect?.rx0) ? rect.rx0 : 0);
-          const ry0 = clamp01(Number.isFinite(rect?.ry0) ? rect.ry0 : 0);
-          const rx1 = clamp01(Number.isFinite(rect?.rx1) ? rect.rx1 : 1);
-          const ry1 = clamp01(Number.isFinite(rect?.ry1) ? rect.ry1 : 1);
-          return {
-            rx0: Math.min(rx0, rx1),
-            ry0: Math.min(ry0, ry1),
-            rx1: Math.max(rx0, rx1),
-            ry1: Math.max(ry0, ry1),
-          };
-        };
-        const toNonNegativeInt = (v: unknown, fallback: number, min = 0) =>
-          typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.round(v)) : fallback;
-        return {
-          ...merged,
-          cropX: toNonNegativeInt(merged.cropX, defaults.cropX, 0),
-          cropY: toNonNegativeInt(merged.cropY, defaults.cropY, 0),
-          cropWidth: toNonNegativeInt(merged.cropWidth, defaults.cropWidth, 1),
-          cropHeight: toNonNegativeInt(merged.cropHeight, defaults.cropHeight, 1),
-          maskX: toNonNegativeInt(merged.maskX, defaults.maskX, 0),
-          maskY: toNonNegativeInt(merged.maskY, defaults.maskY, 0),
-          maskWidth: toNonNegativeInt(merged.maskWidth, defaults.maskWidth, 1),
-          maskHeight: toNonNegativeInt(merged.maskHeight, defaults.maskHeight, 1),
-          selfMaskX: toNonNegativeInt(merged.selfMaskX, defaults.selfMaskX, 0),
-          selfMaskY: toNonNegativeInt(merged.selfMaskY, defaults.selfMaskY, 0),
-          selfMaskWidth: toNonNegativeInt(merged.selfMaskWidth, defaults.selfMaskWidth, 1),
-          selfMaskHeight: toNonNegativeInt(merged.selfMaskHeight, defaults.selfMaskHeight, 1),
-          maskRatioRect: clampRatioRect(merged.maskRatioRect),
-          selfMaskRatioRect: clampRatioRect(merged.selfMaskRatioRect),
-        };
-      } catch {
-        return defaults;
-      }
-    }
-    return defaults;
-  });
+  const [settings, setSettings] = useState<ImageSettings>(() =>
+    parseSavedSettings(localStorage.getItem('imageProcessorSettings'))
+  );
 
   useEffect(() => {
     localStorage.setItem('imageProcessorSettings', JSON.stringify(settings));
@@ -1033,7 +897,7 @@ const ImageProcessor: React.FC = () => {
 
                     if (plausible(rect)) {
                         cropRect = rect;
-                        Object.assign(newSettings, cropRect);
+                        Object.assign(newSettings, cropRectToSettings(cropRect));
                         //console.log(`Auto crop matched at threshold: ${t}`);
                         return true;
                     }
