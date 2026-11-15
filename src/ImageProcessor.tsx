@@ -41,6 +41,7 @@ import {
   parseSavedSettings,
 } from './settingsHelpers.ts';
 import { detectAutoCropFromImage } from './cropHelpers.ts';
+import { buildTileMaskRects, renderMontageTiles } from './montageHelpers.ts';
 
 const compareFileNames = (a: File, b: File) =>
   a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -842,10 +843,19 @@ const ImageProcessor: React.FC = () => {
           img.src = url;
         });
         const c = document.createElement('canvas');
-        c.width = img.naturalWidth; c.height = img.naturalHeight;
-        const ctx = c.getContext('2d', { willReadFrequently: true, alpha: false })!;
-        ctx.drawImage(img, 0, 0);
-        return await createImageBitmap(c);
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        try {
+          const ctx = c.getContext('2d', { willReadFrequently: true, alpha: false });
+          if (!ctx) {
+            throw new Error('Failed to get 2D context for fallback image decode canvas', { cause: error });
+          }
+          ctx.drawImage(img, 0, 0);
+          return await createImageBitmap(c);
+        } finally {
+          c.width = 1;
+          c.height = 1;
+        }
       } finally {
         URL.revokeObjectURL(url);
       }
@@ -898,8 +908,6 @@ const ImageProcessor: React.FC = () => {
     await new Promise(resolve => setTimeout(resolve, 200));
 
     let firstImageBitmap: ImageBitmap | null = null;
-    let reusableTempCanvas: HTMLCanvasElement | null = null;
-    let reusableTempCtx: CanvasRenderingContext2D | null = null;
     try {
       let cropRect: PixelRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
       let enemyMaskRect: PixelRect | null = settings.maskEnabled && settings.maskMode === 'manual'
@@ -1147,58 +1155,26 @@ const ImageProcessor: React.FC = () => {
       montageCtx.fillStyle = finalSettings.bgColor;
       montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
-      for (let i = 0; i < orderedImages.length; i++) {
-        const imageFile = orderedImages[i];
-        const row = Math.floor(i / finalSettings.colCount);
-        const col = i % finalSettings.colCount;
-        const drawX = finalSettings.offsetX + col * (cropRect.width + finalSettings.offsetX);
-        const drawY = finalSettings.offsetY + row * (cropRect.height + finalSettings.offsetY);
+      const tileMasks = buildTileMaskRects({
+        cropRect,
+        maskEnabled: finalSettings.maskEnabled,
+        maskRect: enemyMaskRect,
+        maskColor: finalSettings.maskColor,
+        selfMaskEnabled: finalSettings.selfMaskEnabled,
+        selfMaskRect,
+        selfMaskColor: finalSettings.selfMaskColor,
+      });
 
-        if (!finalSettings.maskEnabled && !finalSettings.selfMaskEnabled) {
-          const full = await createImageBitmap(imageFile);
-          if (!reusableTempCanvas) {
-            reusableTempCanvas = document.createElement('canvas');
-            reusableTempCtx = reusableTempCanvas.getContext('2d', { willReadFrequently: true, alpha: false });
-            if (!reusableTempCtx) { full.close(); throw new Error('Could not get reusable temporary canvas context'); }
-          }
-          reusableTempCanvas.width = cropRect.width;
-          reusableTempCanvas.height = cropRect.height;
-          reusableTempCtx!.drawImage(full, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
-          full.close();
-          montageCtx.drawImage(reusableTempCanvas, drawX, drawY);
-        } else {
-          const bitmap = await createImageBitmap(imageFile);
-          if (!reusableTempCanvas) {
-            reusableTempCanvas = document.createElement('canvas');
-            reusableTempCtx = reusableTempCanvas.getContext('2d', { willReadFrequently: true, alpha: false });
-            if (!reusableTempCtx) {
-              bitmap.close();
-              throw new Error('Could not get reusable temporary canvas context');
-            }
-          }
-          // Resize canvas to crop size, not full image size
-          reusableTempCanvas.width = cropRect.width;
-          reusableTempCanvas.height = cropRect.height;
-
-          // Draw only the cropped portion of the bitmap to the small temp canvas
-          reusableTempCtx!.drawImage(bitmap, cropRect.x, cropRect.y, cropRect.width, cropRect.height, 0, 0, cropRect.width, cropRect.height);
-          bitmap.close(); // Close bitmap as soon as it's on the temp canvas
-
-          // Adjust mask coordinates to be relative to the cropped canvas
-          if (finalSettings.maskEnabled && enemyMaskRect) {
-            reusableTempCtx!.fillStyle = finalSettings.maskColor;
-            reusableTempCtx!.fillRect(enemyMaskRect.x - cropRect.x, enemyMaskRect.y - cropRect.y, enemyMaskRect.width, enemyMaskRect.height);
-          }
-          if (finalSettings.selfMaskEnabled && selfMaskRect) {
-            reusableTempCtx!.fillStyle = finalSettings.selfMaskColor;
-            reusableTempCtx!.fillRect(selfMaskRect.x - cropRect.x, selfMaskRect.y - cropRect.y, selfMaskRect.width, selfMaskRect.height);
-          }
-
-          // Draw the small, masked canvas to the final montage
-          montageCtx.drawImage(reusableTempCanvas, drawX, drawY);
-        }
-        await new Promise(r => requestAnimationFrame(r)); // Yield control to browser
-      }
+      await renderMontageTiles<File, ImageBitmap, HTMLCanvasElement>({
+        files: orderedImages,
+        colCount: finalSettings.colCount,
+        offsetX: finalSettings.offsetX,
+        offsetY: finalSettings.offsetY,
+        cropRect,
+        masks: tileMasks,
+        montageCtx,
+        decodeImage: (file) => createImageBitmap(file),
+      });
 
       let mimeType = 'image/webp';
       if (finalSettings.outputFormat === 'png') mimeType = 'image/png';
@@ -1215,8 +1191,6 @@ const ImageProcessor: React.FC = () => {
         const ext = finalSettings.outputFormat === 'jpeg' ? 'jpg' : finalSettings.outputFormat;
         setDownloadFilename(`tile-${getTimestamp()}.${ext}`);
         setProcessedImageUrl(URL.createObjectURL(montageBlob));
-        montageCanvas.width = 1;
-        montageCanvas.height = 1;
       } else {
         throw new Error(t('alert_image_generation_failed'));
       }
@@ -1230,23 +1204,15 @@ const ImageProcessor: React.FC = () => {
       void releaseOcrResources(ocrAbortRef, ocrSessionRef, { abort: true }).catch((cleanupError) => {
         console.warn('Failed to terminate OCR worker during cleanup:', cleanupError);
       });
-      if (reusableTempCanvas) {
-        reusableTempCanvas.width = 1;
-        reusableTempCanvas.height = 1;
-      }
-      if (canvasRef.current) {
-        canvasRef.current.width = 1;
-        canvasRef.current.height = 1;
-      }
 
       window.location.reload();
     } finally {
       if (firstImageBitmap) {
         firstImageBitmap.close();
       }
-      if (reusableTempCanvas) { // Deallocate reusable canvas
-        reusableTempCanvas.width = 1;
-        reusableTempCanvas.height = 1;
+      if (canvasRef.current && (canvasRef.current.width !== 1 || canvasRef.current.height !== 1)) {
+        canvasRef.current.width = 1;
+        canvasRef.current.height = 1;
       }
       await releaseOcrResources(ocrAbortRef, ocrSessionRef);
       setOcrStatus(t('status_releasing_memory'));
