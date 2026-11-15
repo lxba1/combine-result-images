@@ -1,5 +1,11 @@
-import type { PixelRect } from './ocrHelpers.ts';
-import type { OutputFormat } from './settingsHelpers.ts';
+import type { OcrMaskDetectionResult, PixelRect } from './ocrHelpers.ts';
+import {
+  computeRatioMaskRect,
+  cropRectToSettings,
+  hasCropOverlapWithImage,
+  type ImageSettings,
+  type OutputFormat,
+} from './settingsHelpers.ts';
 
 export interface ImageDimensions {
   width: number;
@@ -35,7 +41,7 @@ export interface MontageContextLike<B extends BitmapLike, C> {
 
 export interface TileTempContextLike<B extends BitmapLike> {
   fillStyle: string | CanvasGradient | CanvasPattern;
-  clearRect: (x: number, y: number, w: number, h: number) => void;
+  clearRect?: (x: number, y: number, w: number, h: number) => void;
   fillRect: (x: number, y: number, w: number, h: number) => void;
   drawImage: (
     image: B,
@@ -80,6 +86,7 @@ export interface RenderMontageTilesOptions<
   offsetY: number;
   cropRect: PixelRect;
   masks: readonly TileMaskRect[];
+  bgColor?: string;
   montageCtx: MontageContextLike<B, C>;
   decodeImage: (file: F) => Promise<B>;
   expectedDimensions?: ImageDimensions;
@@ -177,6 +184,7 @@ export const renderMontageTiles = async <
     offsetY,
     cropRect,
     masks,
+    bgColor = '#000000',
     montageCtx,
     decodeImage,
     expectedDimensions,
@@ -226,8 +234,10 @@ export const renderMontageTiles = async <
         }
 
         if (tempCanvas && tempCtx) {
-          // Clear rather than reassigning canvas width/height, which would reallocate the backing store each frame.
-          tempCtx.clearRect(0, 0, cropRect.width, cropRect.height);
+          // Fill with bgColor rather than clearRect (which clears to black on alpha:false)
+          // so any partial crop overhang matches montageCanvas's background color.
+          tempCtx.fillStyle = bgColor;
+          tempCtx.fillRect(0, 0, cropRect.width, cropRect.height);
           tempCtx.drawImage(
             bitmap,
             cropRect.x,
@@ -429,4 +439,246 @@ export const resolveOutputExtension = (
     return MIME_TO_EXTENSION[normalizedMime];
   }
   return FORMAT_TO_EXTENSION[requestedFormat] ?? 'webp';
+};
+
+export type PrepareMontagePlanAlert =
+  | { kind: 'auto_crop_context_error' }
+  | { kind: 'auto_crop_not_found' }
+  | { kind: 'crop_outside_image'; width: number; height: number }
+  | { kind: 'invalid_mask_area' }
+  | { kind: 'ocr_not_found'; enemyMissing: boolean; selfMissing: boolean }
+  | { kind: 'ocr_error'; error: unknown }
+  | { kind: 'ocr_aborted' };
+
+export type PrepareMontagePlanResult =
+  | {
+      status: 'ok';
+      cropRect: PixelRect;
+      finalSettings: ImageSettings;
+      settingsPatch: Partial<ImageSettings>;
+      tileMasks: TileMaskRect[];
+    }
+  | {
+      status: 'abort';
+      settingsPatch: Partial<ImageSettings>;
+      alert: PrepareMontagePlanAlert;
+    };
+
+export interface PrepareMontagePlanOptions {
+  settings: ImageSettings;
+  imageSize: ImageDimensions;
+  detectAutoCrop: () =>
+    | { status: 'ok'; rect: PixelRect }
+    | { status: 'context_error' }
+    | { status: 'not_found' };
+  detectOcrMasks: (params: {
+    cropRect: PixelRect;
+    needsEnemyOcr: boolean;
+    needsSelfOcr: boolean;
+  }) => Promise<OcrMaskDetectionResult>;
+}
+
+const buildMaskCoordPatch = (
+  prefix: 'mask' | 'selfMask',
+  rect: PixelRect
+): Partial<ImageSettings> =>
+  prefix === 'mask'
+    ? { maskX: rect.x, maskY: rect.y, maskWidth: rect.width, maskHeight: rect.height }
+    : { selfMaskX: rect.x, selfMaskY: rect.y, selfMaskWidth: rect.width, selfMaskHeight: rect.height };
+
+const resolveStaticMaskRect = (
+  enabled: boolean,
+  mode: ImageSettings['maskMode'],
+  manualRect: PixelRect,
+  ratioRect: ImageSettings['maskRatioRect'],
+  cropRect: PixelRect
+): { ok: true; rect: PixelRect | null; needsRatioPatch: boolean } | { ok: false } => {
+  if (!enabled) {
+    return { ok: true, rect: null, needsRatioPatch: false };
+  }
+  if (mode === 'manual') {
+    return { ok: true, rect: manualRect, needsRatioPatch: false };
+  }
+  if (mode === 'ratio') {
+    const computed = computeRatioMaskRect(ratioRect, cropRect);
+    if (!computed) {
+      return { ok: false };
+    }
+    return { ok: true, rect: computed, needsRatioPatch: true };
+  }
+  return { ok: true, rect: null, needsRatioPatch: false };
+};
+
+/**
+ * Resolves the active crop rectangle, static/OCR mask rectangles, and settings updates before
+ * montage rendering. Keeps `maskMode` / `selfMaskMode` set to `'ocr'` when OCR fails so retries
+ * never silently fall back to stale manual coordinates.
+ */
+export const prepareMontagePlan = async ({
+  settings,
+  imageSize,
+  detectAutoCrop,
+  detectOcrMasks,
+}: PrepareMontagePlanOptions): Promise<PrepareMontagePlanResult> => {
+  let cropRect: PixelRect = {
+    x: settings.cropX,
+    y: settings.cropY,
+    width: settings.cropWidth,
+    height: settings.cropHeight,
+  };
+  const settingsPatch: Partial<ImageSettings> = {};
+
+  if (settings.cropAuto) {
+    const autoCropResult = detectAutoCrop();
+    if (autoCropResult.status !== 'ok') {
+      return {
+        status: 'abort',
+        settingsPatch: { cropAuto: false },
+        alert: {
+          kind:
+            autoCropResult.status === 'context_error'
+              ? 'auto_crop_context_error'
+              : 'auto_crop_not_found',
+        },
+      };
+    }
+    cropRect = autoCropResult.rect;
+    Object.assign(settingsPatch, cropRectToSettings(cropRect));
+  } else if (!hasCropOverlapWithImage(cropRect, imageSize)) {
+    return {
+      status: 'abort',
+      settingsPatch: {},
+      alert: {
+        kind: 'crop_outside_image',
+        width: imageSize.width,
+        height: imageSize.height,
+      },
+    };
+  }
+
+  const enemyStatic = resolveStaticMaskRect(
+    settings.maskEnabled,
+    settings.maskMode,
+    {
+      x: settings.maskX,
+      y: settings.maskY,
+      width: settings.maskWidth,
+      height: settings.maskHeight,
+    },
+    settings.maskRatioRect,
+    cropRect
+  );
+  if (!enemyStatic.ok) {
+    return {
+      status: 'abort',
+      settingsPatch,
+      alert: { kind: 'invalid_mask_area' },
+    };
+  }
+
+  const selfStatic = resolveStaticMaskRect(
+    settings.selfMaskEnabled,
+    settings.selfMaskMode,
+    {
+      x: settings.selfMaskX,
+      y: settings.selfMaskY,
+      width: settings.selfMaskWidth,
+      height: settings.selfMaskHeight,
+    },
+    settings.selfMaskRatioRect,
+    cropRect
+  );
+  if (!selfStatic.ok) {
+    return {
+      status: 'abort',
+      settingsPatch,
+      alert: { kind: 'invalid_mask_area' },
+    };
+  }
+
+  let enemyMaskRect = enemyStatic.rect;
+  let selfMaskRect = selfStatic.rect;
+  if (enemyStatic.needsRatioPatch && enemyMaskRect) {
+    Object.assign(settingsPatch, buildMaskCoordPatch('mask', enemyMaskRect));
+  }
+  if (selfStatic.needsRatioPatch && selfMaskRect) {
+    Object.assign(settingsPatch, buildMaskCoordPatch('selfMask', selfMaskRect));
+  }
+
+  const needsEnemyOcr = settings.maskEnabled && settings.maskMode === 'ocr';
+  const needsSelfOcr = settings.selfMaskEnabled && settings.selfMaskMode === 'ocr';
+
+  if (needsEnemyOcr || needsSelfOcr) {
+    const ocrOutcome = await detectOcrMasks({
+      cropRect,
+      needsEnemyOcr,
+      needsSelfOcr,
+    });
+
+    if (ocrOutcome.status === 'aborted') {
+      return {
+        status: 'abort',
+        settingsPatch,
+        alert: { kind: 'ocr_aborted' },
+      };
+    }
+    if (ocrOutcome.status === 'error') {
+      return {
+        status: 'abort',
+        settingsPatch,
+        alert: { kind: 'ocr_error', error: ocrOutcome.error },
+      };
+    }
+    if (ocrOutcome.status === 'not_found') {
+      return {
+        status: 'abort',
+        settingsPatch,
+        alert: {
+          kind: 'ocr_not_found',
+          enemyMissing: ocrOutcome.enemyMissing,
+          selfMissing: ocrOutcome.selfMissing,
+        },
+      };
+    }
+
+    if (needsEnemyOcr && ocrOutcome.enemyMaskRect) {
+      enemyMaskRect = ocrOutcome.enemyMaskRect;
+      Object.assign(settingsPatch, buildMaskCoordPatch('mask', enemyMaskRect));
+    }
+    if (needsSelfOcr && ocrOutcome.selfMaskRect) {
+      selfMaskRect = ocrOutcome.selfMaskRect;
+      Object.assign(settingsPatch, buildMaskCoordPatch('selfMask', selfMaskRect));
+    }
+  }
+
+  if ((settings.maskEnabled && !enemyMaskRect) || (settings.selfMaskEnabled && !selfMaskRect)) {
+    return {
+      status: 'abort',
+      settingsPatch,
+      alert: {
+        kind: 'ocr_not_found',
+        enemyMissing: settings.maskEnabled && !enemyMaskRect,
+        selfMissing: settings.selfMaskEnabled && !selfMaskRect,
+      },
+    };
+  }
+
+  const finalSettings: ImageSettings = { ...settings, ...settingsPatch };
+  const tileMasks = buildTileMaskRects({
+    cropRect,
+    maskEnabled: finalSettings.maskEnabled,
+    maskRect: enemyMaskRect,
+    maskColor: finalSettings.maskColor,
+    selfMaskEnabled: finalSettings.selfMaskEnabled,
+    selfMaskRect,
+    selfMaskColor: finalSettings.selfMaskColor,
+  });
+
+  return {
+    status: 'ok',
+    cropRect,
+    finalSettings,
+    settingsPatch,
+    tileMasks,
+  };
 };

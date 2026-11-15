@@ -5,9 +5,11 @@ import {
   ImageResolutionMismatchError,
   buildTileMaskRects,
   decodeImageWithFallback,
+  prepareMontagePlan,
   renderMontageTiles,
   resolveOutputExtension,
 } from '../src/montageHelpers.ts';
+import { createDefaultSettings } from '../src/settingsHelpers.ts';
 
 function createMockTempCanvas({ returnNullContext = false, throwOnDraw = false } = {}) {
   const widthWrites = [];
@@ -189,6 +191,7 @@ describe('renderMontageTiles', () => {
       colCount: 2,
       offsetX: 8,
       offsetY: 12,
+      bgColor: '#123456',
       cropRect: { x: 10, y: 20, width: 200, height: 150 },
       masks: [{ x: 30, y: 40, width: 50, height: 20, color: '#000000' }],
       createTempCanvas: () => {
@@ -234,8 +237,22 @@ describe('renderMontageTiles', () => {
     ]);
 
     const clearOps = temp.ops.filter((op) => op.type === 'clearRect');
-    assert.equal(clearOps.length, 3);
-    assert.deepEqual(clearOps[0].args, [0, 0, 200, 150]);
+    assert.equal(clearOps.length, 0);
+
+    const fillOps = temp.ops.filter((op) => op.type === 'fillRect');
+    assert.equal(fillOps.length, 6);
+    for (let i = 0; i < 3; i++) {
+      assert.deepEqual(fillOps[i * 2], {
+        type: 'fillRect',
+        color: '#123456',
+        args: [0, 0, 200, 150],
+      });
+      assert.deepEqual(fillOps[i * 2 + 1], {
+        type: 'fillRect',
+        color: '#000000',
+        args: [30, 40, 50, 20],
+      });
+    }
   });
 
   it('closes bitmap and releases temp canvas to 1x1 when masked draw throws', async () => {
@@ -379,6 +396,54 @@ describe('renderMontageTiles', () => {
     assert.equal(montageDraws, 1);
     assert.equal(temp.canvas.width, 1);
     assert.equal(temp.canvas.height, 1);
+  });
+
+  it('paints masked overhang background with bgColor instead of clearRect while keeping alpha: false', async () => {
+    const temp = createMockTempCanvas();
+    const img = { close() {} };
+
+    await renderMontageTiles({
+      files: ['overhang.png'],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      bgColor: '#ffffff',
+      cropRect: { x: 1500, y: 800, width: 300, height: 300 },
+      masks: [{ x: 10, y: 20, width: 40, height: 25, color: '#000000' }],
+      createTempCanvas: () => temp.canvas,
+      decodeImage: async () => img,
+      montageCtx: { drawImage() {} },
+      yieldFrame: async () => {},
+    });
+
+    assert.deepEqual(temp.contextCalls, [{ id: '2d', options: { alpha: false } }]);
+    assert.equal(temp.ops.filter((op) => op.type === 'clearRect').length, 0);
+
+    const drawIndex = temp.ops.findIndex((op) => op.type === 'tempDrawImage');
+    const bgFillIndex = temp.ops.findIndex(
+      (op) =>
+        op.type === 'fillRect' &&
+        op.color === '#ffffff' &&
+        op.args[0] === 0 &&
+        op.args[1] === 0 &&
+        op.args[2] === 300 &&
+        op.args[3] === 300
+    );
+    const maskFillIndex = temp.ops.findIndex(
+      (op) =>
+        op.type === 'fillRect' &&
+        op.color === '#000000' &&
+        op.args[0] === 10 &&
+        op.args[1] === 20 &&
+        op.args[2] === 40 &&
+        op.args[3] === 25
+    );
+
+    assert.ok(bgFillIndex !== -1, 'expected temp canvas background fillRect');
+    assert.ok(drawIndex !== -1, 'expected tempDrawImage');
+    assert.ok(maskFillIndex !== -1, 'expected mask fillRect');
+    assert.ok(bgFillIndex < drawIndex, 'bgColor must be painted before drawImage');
+    assert.ok(drawIndex < maskFillIndex, 'mask must be painted after drawImage');
   });
 });
 
@@ -579,5 +644,122 @@ describe('resolveOutputExtension', () => {
     assert.equal(resolveOutputExtension(undefined, 'png'), 'png');
     assert.equal(resolveOutputExtension(null, 'jpeg'), 'jpg');
     assert.equal(resolveOutputExtension('application/octet-stream', 'jpeg'), 'jpg');
+  });
+});
+
+describe('prepareMontagePlan', () => {
+  it('preserves ocr maskMode on not_found failure so retrying re-runs OCR instead of using stale (-31, -117) manual coords', async () => {
+    let settings = {
+      ...createDefaultSettings(),
+      cropAuto: false,
+      maskEnabled: true,
+      maskMode: 'ocr',
+      selfMaskEnabled: true,
+      selfMaskMode: 'ocr',
+    };
+
+    let ocrCalls = 0;
+    const plan1 = await prepareMontagePlan({
+      settings,
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async () => {
+        ocrCalls += 1;
+        return { status: 'not_found', enemyMissing: true, selfMissing: false };
+      },
+    });
+
+    assert.equal(plan1.status, 'abort');
+    assert.deepEqual(plan1.alert, {
+      kind: 'ocr_not_found',
+      enemyMissing: true,
+      selfMissing: false,
+    });
+    assert.equal(plan1.settingsPatch.maskMode, undefined);
+    assert.equal(plan1.settingsPatch.selfMaskMode, undefined);
+
+    settings = { ...settings, ...plan1.settingsPatch };
+    assert.equal(settings.maskMode, 'ocr');
+    assert.equal(settings.selfMaskMode, 'ocr');
+
+    const plan2 = await prepareMontagePlan({
+      settings,
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async ({ needsEnemyOcr, needsSelfOcr }) => {
+        ocrCalls += 1;
+        assert.equal(needsEnemyOcr, true);
+        assert.equal(needsSelfOcr, true);
+        return {
+          status: 'ok',
+          enemyMaskRect: { x: 950, y: 200, width: 140, height: 32 },
+          selfMaskRect: { x: 180, y: 210, width: 120, height: 32 },
+        };
+      },
+    });
+
+    assert.equal(ocrCalls, 2);
+    assert.equal(plan2.status, 'ok');
+    assert.deepEqual(plan2.tileMasks, [
+      { x: 919, y: 83, width: 140, height: 32, color: settings.maskColor },
+      { x: 149, y: 93, width: 120, height: 32, color: settings.selfMaskColor },
+    ]);
+  });
+
+  it('preserves ocr maskMode across error and aborted outcomes before a successful retry', async () => {
+    let settings = {
+      ...createDefaultSettings(),
+      maskEnabled: true,
+      maskMode: 'ocr',
+      selfMaskEnabled: false,
+    };
+    const detectAutoCrop = () => ({
+      status: 'ok',
+      rect: { x: 31, y: 117, width: 1538, height: 665 },
+    });
+
+    const err = new Error('worker crashed');
+    const errorPlan = await prepareMontagePlan({
+      settings,
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop,
+      detectOcrMasks: async () => ({ status: 'error', error: err }),
+    });
+    assert.equal(errorPlan.status, 'abort');
+    assert.deepEqual(errorPlan.alert, { kind: 'ocr_error', error: err });
+    settings = { ...settings, ...errorPlan.settingsPatch };
+    assert.equal(settings.maskMode, 'ocr');
+
+    const abortedPlan = await prepareMontagePlan({
+      settings,
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop,
+      detectOcrMasks: async () => ({ status: 'aborted' }),
+    });
+    assert.equal(abortedPlan.status, 'abort');
+    assert.deepEqual(abortedPlan.alert, { kind: 'ocr_aborted' });
+    settings = { ...settings, ...abortedPlan.settingsPatch };
+    assert.equal(settings.maskMode, 'ocr');
+
+    let retryOcrRan = false;
+    const retryPlan = await prepareMontagePlan({
+      settings,
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop,
+      detectOcrMasks: async () => {
+        retryOcrRan = true;
+        return {
+          status: 'ok',
+          enemyMaskRect: { x: 1000, y: 220, width: 150, height: 30 },
+          selfMaskRect: null,
+        };
+      },
+    });
+
+    assert.equal(retryOcrRan, true);
+    assert.equal(retryPlan.status, 'ok');
+    assert.deepEqual(retryPlan.tileMasks, [
+      { x: 969, y: 103, width: 150, height: 30, color: settings.maskColor },
+    ]);
   });
 });

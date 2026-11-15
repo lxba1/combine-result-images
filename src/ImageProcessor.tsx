@@ -8,16 +8,10 @@ import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
 import {
-  type PixelRect,
-  type OcrWord,
   type OcrSessionController,
-  buildOcrMaskRect,
-  extractWordsFromBlocks,
-  findTopmostLvBbox,
-  isAbortError,
   releaseOcrResources,
+  runOcrMaskDetection,
   startOcrSession,
-  validateOcrRois,
 } from './ocrHelpers.ts';
 import {
   type ImageSettings,
@@ -32,11 +26,8 @@ import {
   MIN_OFFSET_PX,
   SELF_MASK_PRESETS,
   areSettingsDefault,
-  computeRatioMaskRect,
   createDefaultSettings,
-  cropRectToSettings,
   evaluateMontageCanvasSize,
-  hasCropOverlapWithImage,
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
@@ -47,8 +38,8 @@ import { detectAutoCropFromImage } from './cropHelpers.ts';
 import {
   ImageDecodeError,
   ImageResolutionMismatchError,
-  buildTileMaskRects,
   decodeImageWithFallback,
+  prepareMontagePlan,
   renderMontageTiles,
   resolveOutputExtension,
   type ImageDimensions,
@@ -856,219 +847,95 @@ const ImageProcessor: React.FC = () => {
 
     let firstImageBitmap: ImageBitmap | null = null;
     try {
-      let cropRect: PixelRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
-      let enemyMaskRect: PixelRect | null = settings.maskEnabled && settings.maskMode === 'manual'
-        ? { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight }
-        : null;
-      let selfMaskRect: PixelRect | null = settings.selfMaskEnabled && settings.selfMaskMode === 'manual'
-        ? { x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight }
-        : null;
-      const newSettings: Partial<ImageSettings> = {};
-
-      const needsEnemyOcr = settings.maskEnabled && settings.maskMode === 'ocr';
-      const needsSelfOcr = settings.selfMaskEnabled && settings.selfMaskMode === 'ocr';
-
       // Always check first image dimensions (also runs auto-crop / OCR ROI when needed).
       firstImageBitmap = await decodeImageWithFallback<File, ImageBitmap>(orderedImages[0]);
       const expectedDimensions: ImageDimensions = {
         width: firstImageBitmap.width,
         height: firstImageBitmap.height,
       };
+      const sourceBitmap = firstImageBitmap;
 
-      if (settings.cropAuto) {
-        const autoCropResult = detectAutoCropFromImage(firstImageBitmap);
-        if (autoCropResult.status !== 'ok') {
-          const alertKey =
-            autoCropResult.status === 'context_error'
-              ? 'alert_failed_to_get_temp_canvas_context_for_auto_crop'
-              : 'alert_failed_to_detect_crop_area';
-          alert(t(alertKey));
-          setSettings(prev => ({ ...prev, cropAuto: false }));
-          return;
+      const plan = await prepareMontagePlan({
+        settings,
+        imageSize: expectedDimensions,
+        detectAutoCrop: () => detectAutoCropFromImage(sourceBitmap),
+        detectOcrMasks: ({ cropRect, needsEnemyOcr, needsSelfOcr }) =>
+          runOcrMaskDetection<Tesseract.Worker, HTMLCanvasElement, ImageBitmap>({
+            sourceImage: sourceBitmap,
+            cropRect,
+            needsEnemyOcr,
+            needsSelfOcr,
+            abortHolder: ocrAbortRef,
+            sessionHolder: ocrSessionRef,
+            startSession: (signal) =>
+              startOcrSession({
+                createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
+                configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
+                signal,
+              }),
+            onStatus: (status) => {
+              if (status === 'starting') {
+                setOcrStatus(t('ocr_status_starting'));
+              }
+            },
+          }),
+      });
+
+      // Early release of the first image bitmap before confirm dialogs or montage allocation.
+      firstImageBitmap.close();
+      firstImageBitmap = null;
+
+      if (Object.keys(plan.settingsPatch).length > 0) {
+        setSettings(prev => ({ ...prev, ...plan.settingsPatch }));
+      }
+
+      if (plan.status === 'abort') {
+        switch (plan.alert.kind) {
+          case 'auto_crop_context_error':
+            alert(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'));
+            break;
+          case 'auto_crop_not_found':
+            alert(t('alert_failed_to_detect_crop_area'));
+            break;
+          case 'crop_outside_image':
+            alert(
+              t('alert_crop_outside_image', {
+                width: plan.alert.width,
+                height: plan.alert.height,
+              })
+            );
+            break;
+          case 'invalid_mask_area':
+            alert(t('alert_invalid_mask_area'));
+            break;
+          case 'ocr_aborted':
+            setOcrStatus('');
+            break;
+          case 'ocr_error':
+            console.error(plan.alert.error);
+            setOcrStatus('');
+            alert(t('alert_ocr_error'));
+            break;
+          case 'ocr_not_found':
+            setOcrStatus('');
+            alert(
+              [
+                plan.alert.enemyMissing ? t('alert_could_not_find_right_lv') : '',
+                plan.alert.selfMissing ? t('alert_could_not_find_left_lv') : '',
+              ].filter(Boolean).join('\n')
+            );
+            break;
         }
-        cropRect = autoCropResult.rect;
-        Object.assign(newSettings, cropRectToSettings(cropRect));
-      } else if (!hasCropOverlapWithImage(cropRect, firstImageBitmap)) {
-        alert(
-          t('alert_crop_outside_image', {
-            width: firstImageBitmap.width,
-            height: firstImageBitmap.height,
-          })
-        );
         return;
       }
 
-      // Ratio calculation
-      if (settings.maskEnabled && settings.maskMode === 'ratio') {
-        enemyMaskRect = computeRatioMaskRect(settings.maskRatioRect, cropRect);
-        if (!enemyMaskRect) {
-          alert(t('alert_invalid_mask_area'));
-          return;
-        }
-        Object.assign(newSettings, { maskX: enemyMaskRect.x, maskY: enemyMaskRect.y, maskWidth: enemyMaskRect.width, maskHeight: enemyMaskRect.height });
-      }
-      if (settings.selfMaskEnabled && settings.selfMaskMode === 'ratio') {
-        selfMaskRect = computeRatioMaskRect(settings.selfMaskRatioRect, cropRect);
-        if (!selfMaskRect) {
-          alert(t('alert_invalid_mask_area'));
-          return;
-        }
-        Object.assign(newSettings, { selfMaskX: selfMaskRect.x, selfMaskY: selfMaskRect.y, selfMaskWidth: selfMaskRect.width, selfMaskHeight: selfMaskRect.height });
-      }
-
-      if (!needsEnemyOcr && !needsSelfOcr) {
-        firstImageBitmap.close();
-        firstImageBitmap = null;
-      }
-
-      // OCR calculation
-      if (firstImageBitmap && (needsEnemyOcr || needsSelfOcr)) {
-        const abortOcr = (message: string, disableEnemy: boolean, disableSelf: boolean) => {
-          if (disableEnemy) {
-            enemyMaskRect = null;
-            newSettings.maskMode = 'manual';
-          }
-          if (disableSelf) {
-            selfMaskRect = null;
-            newSettings.selfMaskMode = 'manual';
-          }
-          setSettings(prev => ({ ...prev, ...newSettings }));
-          setOcrStatus('');
-          alert(message);
-        };
-
-        const imageBounds: PixelRect = {
-          x: 0,
-          y: 0,
-          width: firstImageBitmap.width,
-          height: firstImageBitmap.height,
-        };
-        const { plan, enemyValid, selfValid } = validateOcrRois(
-          cropRect,
-          imageBounds,
-          needsEnemyOcr,
-          needsSelfOcr
-        );
-
-        if (!enemyValid || !selfValid) {
-          abortOcr(
-            [
-              !enemyValid ? t('alert_could_not_find_right_lv') : '',
-              !selfValid ? t('alert_could_not_find_left_lv') : '',
-            ].filter(Boolean).join('\n'),
-            !enemyValid,
-            !selfValid
-          );
-          return;
-        }
-
-        setOcrStatus(t('ocr_status_starting'));
-        const scratch = document.createElement('canvas');
-        const abortController = new AbortController();
-        const sessionHandle = startOcrSession({
-          createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
-          configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
-          signal: abortController.signal,
-        });
-        ocrAbortRef.current = abortController;
-        ocrSessionRef.current = sessionHandle;
-
-        let enemyDetected = !needsEnemyOcr;
-        let selfDetected = !needsSelfOcr;
-
-        try {
-          const sctx = scratch.getContext('2d', { willReadFrequently: true, alpha: false });
-          if (!sctx) {
-            throw new Error('Failed to get 2D context for OCR scratch canvas');
-          }
-
-          const session = await sessionHandle.ready;
-
-          const recognizeROI = async (roi: PixelRect): Promise<OcrWord[]> => {
-            scratch.width = roi.width;
-            scratch.height = roi.height;
-            sctx.clearRect(0, 0, roi.width, roi.height);
-            sctx.drawImage(firstImageBitmap!, roi.x, roi.y, roi.width, roi.height, 0, 0, roi.width, roi.height);
-            const blocks = await session.recognizeBlocks(scratch);
-            return extractWordsFromBlocks(blocks, roi.x, roi.y);
-          };
-
-          const detectOcrRect = async (roi: PixelRect, side: 'right' | 'left'): Promise<PixelRect | null> => {
-            const words = await recognizeROI(roi);
-            const targetBox = findTopmostLvBbox(words);
-            return targetBox ? buildOcrMaskRect(targetBox, cropRect, side) : null;
-          };
-
-          if (needsEnemyOcr) {
-            enemyMaskRect = await detectOcrRect(plan.enemyRoi, 'right');
-            if (enemyMaskRect) {
-              enemyDetected = true;
-              Object.assign(newSettings, {
-                maskX: enemyMaskRect.x,
-                maskY: enemyMaskRect.y,
-                maskWidth: enemyMaskRect.width,
-                maskHeight: enemyMaskRect.height,
-              });
-            }
-          }
-
-          if (needsSelfOcr) {
-            selfMaskRect = await detectOcrRect(plan.selfRoi, 'left');
-            if (selfMaskRect) {
-              selfDetected = true;
-              Object.assign(newSettings, {
-                selfMaskX: selfMaskRect.x,
-                selfMaskY: selfMaskRect.y,
-                selfMaskWidth: selfMaskRect.width,
-                selfMaskHeight: selfMaskRect.height,
-              });
-            }
-          }
-        } catch (e) {
-          if (isAbortError(e) || abortController.signal.aborted) {
-            return;
-          }
-          console.error(e);
-          abortOcr(t('alert_ocr_error'), needsEnemyOcr, needsSelfOcr);
-          return;
-        } finally {
-          scratch.width = scratch.height = 1;
-          // Terminate the OCR worker immediately so its WASM/language memory is released before allocating montageCanvas.
-          await releaseOcrResources(ocrAbortRef, ocrSessionRef, {
-            expectedAbort: abortController,
-            expectedSession: sessionHandle,
-          });
-        }
-
-        if (!enemyDetected || !selfDetected) {
-          abortOcr(
-            [
-              !enemyDetected ? t('alert_could_not_find_right_lv') : '',
-              !selfDetected ? t('alert_could_not_find_left_lv') : '',
-            ].filter(Boolean).join('\n'),
-            !enemyDetected,
-            !selfDetected
-          );
-          return;
-        }
-
+      const { cropRect, finalSettings, tileMasks } = plan;
+      if (
+        (finalSettings.maskEnabled && finalSettings.maskMode === 'ocr') ||
+        (finalSettings.selfMaskEnabled && finalSettings.selfMaskMode === 'ocr')
+      ) {
         setOcrStatus(t('ocr_status_mask_detected'));
       }
-
-      if ((settings.maskEnabled && !enemyMaskRect) || (settings.selfMaskEnabled && !selfMaskRect)) {
-        return;
-      }
-
-      // Early release of the first image bitmap as it's no longer needed
-      if (firstImageBitmap) {
-        firstImageBitmap.close();
-        firstImageBitmap = null;
-      }
-
-      if (Object.keys(newSettings).length > 0) {
-        setSettings(prev => ({ ...prev, ...newSettings }));
-      }
-      const finalSettings = { ...settings, ...newSettings };
 
       const sizeEval = evaluateMontageCanvasSize(orderedImages.length, cropRect, finalSettings);
       if (sizeEval.status === 'invalid') {
@@ -1111,16 +978,6 @@ const ImageProcessor: React.FC = () => {
       montageCtx.fillStyle = finalSettings.bgColor;
       montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
-      const tileMasks = buildTileMaskRects({
-        cropRect,
-        maskEnabled: finalSettings.maskEnabled,
-        maskRect: enemyMaskRect,
-        maskColor: finalSettings.maskColor,
-        selfMaskEnabled: finalSettings.selfMaskEnabled,
-        selfMaskRect,
-        selfMaskColor: finalSettings.selfMaskColor,
-      });
-
       await renderMontageTiles<File, ImageBitmap, HTMLCanvasElement>({
         files: orderedImages,
         colCount: finalSettings.colCount,
@@ -1128,6 +985,7 @@ const ImageProcessor: React.FC = () => {
         offsetY: finalSettings.offsetY,
         cropRect,
         masks: tileMasks,
+        bgColor: finalSettings.bgColor,
         montageCtx,
         expectedDimensions,
         getFileName: (file) => file.name,

@@ -356,10 +356,14 @@ export const startOcrSession = <
   const detachNativeErrorListeners: (() => void)[] = [];
   let terminated = false;
   let activeErrorRejector: ((err: Error) => void) | null = null;
+  let activeCancelRejector: (() => void) | null = null;
 
   const terminate = async (): Promise<void> => {
     if (terminated) return;
     terminated = true;
+    const cancelPending = activeCancelRejector;
+    activeCancelRejector = null;
+    cancelPending?.();
     for (const detach of detachNativeErrorListeners) {
       try {
         detach();
@@ -409,6 +413,9 @@ export const startOcrSession = <
         if (activeErrorRejector === handleWorkerError) {
           activeErrorRejector = null;
         }
+        if (activeCancelRejector === handleAbort) {
+          activeCancelRejector = null;
+        }
       };
 
       const settleWithError = (err: Error) => {
@@ -422,6 +429,7 @@ export const startOcrSession = <
       const handleWorkerError = (err: Error) => settleWithError(err);
 
       activeErrorRejector = handleWorkerError;
+      activeCancelRejector = handleAbort;
 
       if (signal) {
         if (signal.aborted) {
@@ -591,6 +599,191 @@ export const releaseOcrResources = async <
   }
   const targetSession = options?.expectedSession ?? activeSession;
   if (targetSession) {
+    // Attach a noop rejection handler before terminating so an unawaited `ready` promise
+    // never triggers an unhandled rejection if cleanup runs before `await session.ready`.
+    targetSession.ready?.catch(() => {});
     await targetSession.terminate();
   }
+};
+
+export interface OcrScratchContextLike<B = CanvasImageSource> {
+  clearRect: (x: number, y: number, w: number, h: number) => void;
+  drawImage: (
+    image: B,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number
+  ) => void;
+}
+
+export interface OcrScratchCanvasLike<B = CanvasImageSource> extends OcrCanvasLike {
+  width: number;
+  height: number;
+  getContext: (
+    contextId: '2d',
+    options?: CanvasRenderingContext2DSettings
+  ) => OcrScratchContextLike<B> | null;
+}
+
+export type OcrMaskDetectionResult =
+  | {
+      status: 'ok';
+      enemyMaskRect: PixelRect | null;
+      selfMaskRect: PixelRect | null;
+    }
+  | {
+      status: 'not_found';
+      enemyMissing: boolean;
+      selfMissing: boolean;
+    }
+  | { status: 'aborted' }
+  | { status: 'error'; error: unknown };
+
+export interface RunOcrMaskDetectionOptions<
+  W extends OcrWorkerLike<I>,
+  C extends OcrScratchCanvasLike<B>,
+  B extends { readonly width: number; readonly height: number } = ImageBitmap,
+  I = Blob | C,
+> {
+  sourceImage: B;
+  cropRect: PixelRect;
+  needsEnemyOcr: boolean;
+  needsSelfOcr: boolean;
+  abortHolder: MutableHolder<AbortController>;
+  sessionHolder: MutableHolder<OcrSessionController<W, C, I>>;
+  startSession: (signal: AbortSignal) => OcrSessionController<W, C, I>;
+  createCanvas?: () => C;
+  onStatus?: (status: 'starting') => void;
+}
+
+/**
+ * Validates OCR ROIs, acquires the scratch 2D canvas context BEFORE starting the worker session
+ * (so context creation failures never leave an unawaited `ready` promise or timer), runs Lv.
+ * detection, and awaits cleanup + `ready` settlement across every exit path.
+ */
+export const runOcrMaskDetection = async <
+  W extends OcrWorkerLike<I>,
+  C extends OcrScratchCanvasLike<B>,
+  B extends { readonly width: number; readonly height: number } = ImageBitmap,
+  I = Blob | C,
+>({
+  sourceImage,
+  cropRect,
+  needsEnemyOcr,
+  needsSelfOcr,
+  abortHolder,
+  sessionHolder,
+  startSession,
+  createCanvas = () => document.createElement('canvas') as unknown as C,
+  onStatus,
+}: RunOcrMaskDetectionOptions<W, C, B, I>): Promise<OcrMaskDetectionResult> => {
+  if (!needsEnemyOcr && !needsSelfOcr) {
+    return { status: 'ok', enemyMaskRect: null, selfMaskRect: null };
+  }
+
+  const imageBounds: PixelRect = {
+    x: 0,
+    y: 0,
+    width: sourceImage.width,
+    height: sourceImage.height,
+  };
+  const { plan, enemyValid, selfValid } = validateOcrRois(
+    cropRect,
+    imageBounds,
+    needsEnemyOcr,
+    needsSelfOcr
+  );
+
+  if (!enemyValid || !selfValid) {
+    return {
+      status: 'not_found',
+      enemyMissing: !enemyValid,
+      selfMissing: !selfValid,
+    };
+  }
+
+  const scratch = createCanvas();
+  const sctx = scratch.getContext('2d', { willReadFrequently: true, alpha: false });
+  if (!sctx) {
+    scratch.width = scratch.height = 1;
+    return {
+      status: 'error',
+      error: new Error('Failed to get 2D context for OCR scratch canvas'),
+    };
+  }
+
+  onStatus?.('starting');
+  const abortController = new AbortController();
+  abortHolder.current = abortController;
+  let sessionHandle: OcrSessionController<W, C, I> | undefined;
+
+  let enemyMaskRect: PixelRect | null = null;
+  let selfMaskRect: PixelRect | null = null;
+
+  try {
+    sessionHandle = startSession(abortController.signal);
+    sessionHolder.current = sessionHandle;
+
+    const session = await sessionHandle.ready;
+
+    const detectOcrRect = async (
+      roi: PixelRect,
+      side: 'right' | 'left'
+    ): Promise<PixelRect | null> => {
+      scratch.width = roi.width;
+      scratch.height = roi.height;
+      sctx.clearRect(0, 0, roi.width, roi.height);
+      sctx.drawImage(
+        sourceImage,
+        roi.x,
+        roi.y,
+        roi.width,
+        roi.height,
+        0,
+        0,
+        roi.width,
+        roi.height
+      );
+      const blocks = await session.recognizeBlocks(scratch);
+      const words = extractWordsFromBlocks(blocks, roi.x, roi.y);
+      const targetBox = findTopmostLvBbox(words);
+      return targetBox ? buildOcrMaskRect(targetBox, cropRect, side) : null;
+    };
+
+    if (needsEnemyOcr) {
+      enemyMaskRect = await detectOcrRect(plan.enemyRoi, 'right');
+    }
+    if (needsSelfOcr) {
+      selfMaskRect = await detectOcrRect(plan.selfRoi, 'left');
+    }
+  } catch (e) {
+    if (isAbortError(e) || abortController.signal.aborted) {
+      return { status: 'aborted' };
+    }
+    return { status: 'error', error: e };
+  } finally {
+    scratch.width = scratch.height = 1;
+    if (sessionHandle) {
+      await releaseOcrResources(abortHolder, sessionHolder, {
+        expectedAbort: abortController,
+        expectedSession: sessionHandle,
+      });
+      await sessionHandle.ready.catch(() => {});
+    } else if (abortHolder.current === abortController) {
+      abortHolder.current = null;
+    }
+  }
+
+  const enemyMissing = needsEnemyOcr && !enemyMaskRect;
+  const selfMissing = needsSelfOcr && !selfMaskRect;
+  if (enemyMissing || selfMissing) {
+    return { status: 'not_found', enemyMissing, selfMissing };
+  }
+
+  return { status: 'ok', enemyMaskRect, selfMaskRect };
 };

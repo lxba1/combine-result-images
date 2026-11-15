@@ -8,6 +8,7 @@ import {
   isAbortError,
   isRectWithinBounds,
   releaseOcrResources,
+  runOcrMaskDetection,
   startOcrSession,
   validateOcrRois,
 } from '../src/ocrHelpers.ts';
@@ -468,5 +469,149 @@ describe('releaseOcrResources early and fallback cleanup', () => {
     assert.equal(newTerminated, 1);
     assert.equal(abortHolder.current, null);
     assert.equal(sessionHolder.current, null);
+  });
+});
+
+describe('OCR cancellation & scratch context safety', () => {
+  it('clears pending init timeout and rejects ready with AbortError when terminate() runs before init completes', async () => {
+    const startMs = Date.now();
+    let resolveLateWorker;
+
+    const handle = startOcrSession({
+      initTimeoutMs: 60_000,
+      recognizeTimeoutMs: 60_000,
+      createWorkerFn: () =>
+        new Promise((resolve) => {
+          resolveLateWorker = resolve;
+        }),
+    });
+
+    await handle.terminate();
+    await assert.rejects(handle.ready, (err) => isAbortError(err));
+    assert.ok(Date.now() - startMs < 1000, 'terminate() must settle immediately without waiting for initTimeoutMs');
+
+    let orphanTerminated = 0;
+    resolveLateWorker?.({
+      recognize: async () => ({ data: { blocks: [] } }),
+      terminate: async () => {
+        orphanTerminated += 1;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(orphanTerminated, 1);
+  });
+
+  it('returns error without starting an OCR session when scratch canvas getContext() returns null', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    let startSessionCalls = 0;
+    let statusCalls = 0;
+    const widthWrites = [];
+    const heightWrites = [];
+    const contextCalls = [];
+
+    const mockCanvas = {
+      _w: 0,
+      _h: 0,
+      get width() {
+        return this._w;
+      },
+      set width(v) {
+        this._w = v;
+        widthWrites.push(v);
+      },
+      get height() {
+        return this._h;
+      },
+      set height(v) {
+        this._h = v;
+        heightWrites.push(v);
+      },
+      getContext(id, options) {
+        contextCalls.push({ id, options });
+        return null;
+      },
+    };
+
+    const result = await runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: false,
+      abortHolder,
+      sessionHolder,
+      createCanvas: () => mockCanvas,
+      onStatus: () => {
+        statusCalls += 1;
+      },
+      startSession: () => {
+        startSessionCalls += 1;
+        return {
+          ready: Promise.reject(new Error('should never be called')),
+          terminate: async () => {},
+        };
+      },
+    });
+
+    assert.equal(result.status, 'error');
+    assert.equal(startSessionCalls, 0);
+    assert.equal(statusCalls, 0);
+    assert.equal(abortHolder.current, null);
+    assert.equal(sessionHolder.current, null);
+    assert.deepEqual(contextCalls, [
+      { id: '2d', options: { willReadFrequently: true, alpha: false } },
+    ]);
+    assert.deepEqual(widthWrites, [1]);
+    assert.deepEqual(heightWrites, [1]);
+  });
+
+  it('awaits session termination and settles ready when aborted during initialization', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    let workerTerminated = 0;
+    const mockCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+      }),
+    };
+
+    const resultPromise = runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: true,
+      abortHolder,
+      sessionHolder,
+      createCanvas: () => mockCanvas,
+      startSession: (signal) =>
+        startOcrSession({
+          signal,
+          initTimeoutMs: 60_000,
+          recognizeTimeoutMs: 60_000,
+          createWorkerFn: () => new Promise(() => {}),
+        }),
+    });
+
+    // Abort once startSession has registered the active controller & session.
+    assert.ok(abortHolder.current);
+    assert.ok(sessionHolder.current);
+    const activeSession = sessionHolder.current;
+    const origTerminate = activeSession.terminate;
+    activeSession.terminate = async () => {
+      workerTerminated += 1;
+      return origTerminate();
+    };
+    abortHolder.current.abort();
+
+    const result = await resultPromise;
+    assert.deepEqual(result, { status: 'aborted' });
+    assert.equal(workerTerminated, 1);
+    assert.equal(abortHolder.current, null);
+    assert.equal(sessionHolder.current, null);
+    assert.equal(mockCanvas.width, 1);
+    assert.equal(mockCanvas.height, 1);
   });
 });
