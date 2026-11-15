@@ -700,3 +700,28 @@ export const prepareMontagePlan = async ({
     tileMasks,
   };
 };
+
+export const OCR_MEMORY_RELEASE_DELAY_MS = 5000;
+export const MONTAGE_MEMORY_RELEASE_DELAY_MS = 1000;
+
+export interface MemoryReleaseDelayParams {
+  ocrSessionStarted: boolean;
+  montageCanvasUsed: boolean;
+  reloadTriggered?: boolean;
+}
+
+/**
+ * Returns the GC cooldown wait duration after `processImages`, skipping any sleep
+ * when returning early before heavy resources (OCR worker or montage canvas) were used,
+ * or when the page is already reloading.
+ */
+export const getMemoryReleaseDelayMs = ({
+  ocrSessionStarted,
+  montageCanvasUsed,
+  reloadTriggered = false,
+}: MemoryReleaseDelayParams): number => {
+  if (reloadTriggered || (!ocrSessionStarted && !montageCanvasUsed)) {
+    return 0;
+  }
+  return ocrSessionStarted ? OCR_MEMORY_RELEASE_DELAY_MS : MONTAGE_MEMORY_RELEASE_DELAY_MS;
+};

@@ -40,6 +40,7 @@ import {
   ImageDecodeError,
   ImageResolutionMismatchError,
   decodeImageWithFallback,
+  getMemoryReleaseDelayMs,
   prepareMontagePlan,
   renderMontageToBlob,
   resolveOutputExtension,
@@ -840,6 +841,9 @@ const ImageProcessor: React.FC = () => {
     await new Promise(resolve => setTimeout(resolve, 200));
 
     let firstImageBitmap: ImageBitmap | null = null;
+    let ocrSessionStarted = false;
+    let montageCanvasUsed = false;
+    let reloadTriggered = false;
     const releaseFirstImageBitmap = () => {
       if (firstImageBitmap) {
         firstImageBitmap.close();
@@ -868,12 +872,14 @@ const ImageProcessor: React.FC = () => {
             abortHolder: ocrAbortRef,
             sessionHolder: ocrSessionRef,
             onSourceConsumed: releaseFirstImageBitmap,
-            startSession: (signal) =>
-              startOcrSession({
+            startSession: (signal) => {
+              ocrSessionStarted = true;
+              return startOcrSession({
                 createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
                 configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
                 signal,
-              }),
+              });
+            },
             onStatus: (status) => {
               if (status === 'starting') {
                 setOcrStatus(t('ocr_status_starting'));
@@ -967,6 +973,7 @@ const ImageProcessor: React.FC = () => {
       if (finalSettings.outputFormat === 'png') mimeType = 'image/png';
       else if (finalSettings.outputFormat === 'jpeg') mimeType = 'image/jpeg';
 
+      montageCanvasUsed = true;
       const renderResult = await renderMontageToBlob<File, ImageBitmap>({
         dimensions: sizeEval,
         bgColor: finalSettings.bgColor,
@@ -1039,14 +1046,21 @@ const ImageProcessor: React.FC = () => {
         console.warn('Failed to terminate OCR worker during cleanup:', cleanupError);
       });
 
+      reloadTriggered = true;
       window.location.reload();
     } finally {
       releaseFirstImageBitmap();
       await releaseOcrResources(ocrAbortRef, ocrSessionRef);
-      setOcrStatus(t('status_releasing_memory'));
-      // Add a small delay to allow GC to run before re-enabling the button
-      const isOcrUsed = (settings.maskEnabled && settings.maskMode === 'ocr') || (settings.selfMaskEnabled && settings.selfMaskMode === 'ocr');
-      await new Promise(resolve => setTimeout(resolve, isOcrUsed ? 5000 : 1000));
+      const releaseDelayMs = getMemoryReleaseDelayMs({
+        ocrSessionStarted,
+        montageCanvasUsed,
+        reloadTriggered,
+      });
+      if (releaseDelayMs > 0) {
+        setOcrStatus(t('status_releasing_memory'));
+        // Add a small delay to allow GC to run before re-enabling the button
+        await new Promise(resolve => setTimeout(resolve, releaseDelayMs));
+      }
       setOcrStatus(''); // Clear OCR status message
       setIsProcessing(false);
     }

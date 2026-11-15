@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import {
   ImageDecodeError,
   ImageResolutionMismatchError,
+  MONTAGE_MEMORY_RELEASE_DELAY_MS,
+  OCR_MEMORY_RELEASE_DELAY_MS,
   buildTileMaskRects,
   decodeImageWithFallback,
+  getMemoryReleaseDelayMs,
   prepareMontagePlan,
   renderMontageTiles,
   renderMontageToBlob,
@@ -1068,5 +1071,65 @@ describe('renderMontageToBlob', () => {
     );
     assert.equal(thrownMock.canvas.width, 1);
     assert.equal(thrownMock.canvas.height, 1);
+  });
+});
+
+describe('getMemoryReleaseDelayMs', () => {
+  it('returns 0 when aborted before OCR session or montage canvas allocation', () => {
+    assert.equal(
+      getMemoryReleaseDelayMs({
+        ocrSessionStarted: false,
+        montageCanvasUsed: false,
+      }),
+      0
+    );
+  });
+
+  it('returns MONTAGE_MEMORY_RELEASE_DELAY_MS (1000ms) when only montage canvas was used', () => {
+    assert.equal(
+      getMemoryReleaseDelayMs({
+        ocrSessionStarted: false,
+        montageCanvasUsed: true,
+      }),
+      MONTAGE_MEMORY_RELEASE_DELAY_MS
+    );
+    assert.equal(MONTAGE_MEMORY_RELEASE_DELAY_MS, 1000);
+  });
+
+  it('returns OCR_MEMORY_RELEASE_DELAY_MS (5000ms) when OCR session started', () => {
+    assert.equal(
+      getMemoryReleaseDelayMs({
+        ocrSessionStarted: true,
+        montageCanvasUsed: false,
+      }),
+      OCR_MEMORY_RELEASE_DELAY_MS
+    );
+    assert.equal(
+      getMemoryReleaseDelayMs({
+        ocrSessionStarted: true,
+        montageCanvasUsed: true,
+      }),
+      OCR_MEMORY_RELEASE_DELAY_MS
+    );
+    assert.equal(OCR_MEMORY_RELEASE_DELAY_MS, 5000);
+  });
+
+  it('returns 0 when page reload was triggered regardless of allocated resources', () => {
+    assert.equal(
+      getMemoryReleaseDelayMs({
+        ocrSessionStarted: false,
+        montageCanvasUsed: true,
+        reloadTriggered: true,
+      }),
+      0
+    );
+    assert.equal(
+      getMemoryReleaseDelayMs({
+        ocrSessionStarted: true,
+        montageCanvasUsed: true,
+        reloadTriggered: true,
+      }),
+      0
+    );
   });
 });
