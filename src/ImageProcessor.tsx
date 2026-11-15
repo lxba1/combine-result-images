@@ -32,6 +32,7 @@ import {
   isRatioRectEqual,
   parseSavedSettings,
 } from './settingsHelpers.ts';
+import { detectAutoCropFromImage } from './cropHelpers.ts';
 
 const compareFileNames = (a: File, b: File) =>
   a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -828,90 +829,18 @@ const ImageProcessor: React.FC = () => {
           if (!firstImageBitmap) return;
       }
       if (settings.cropAuto && firstImageBitmap) {
-        const performAutoCrop = (firstImageBitmap: ImageBitmap): boolean => {
-            const w = firstImageBitmap.width;
-            const h = firstImageBitmap.height;
-            const getLuminance = (d: Uint8ClampedArray, i: number) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-
-            // 1. Create a small canvas for the horizontal center line
-            const yMid = Math.floor(h / 2);
-            const hCanvas = document.createElement('canvas');
-            hCanvas.width = w;
-            hCanvas.height = 1;
-            const hCtx = hCanvas.getContext('2d', { willReadFrequently: true, alpha: false });
-            if (!hCtx) return false;
-
-            // 2. Draw only the center row onto the small canvas
-            hCtx.drawImage(firstImageBitmap, 0, yMid, w, 1, 0, 0, w, 1);
-            const hData = hCtx.getImageData(0, 0, w, 1).data;
-            hCanvas.width = hCanvas.height = 1; // Deallocate
-
-            // 3. Create a small canvas for the vertical center line
-            const xMid = Math.floor(w / 2);
-            const vCanvas = document.createElement('canvas');
-            vCanvas.width = 1;
-            vCanvas.height = h;
-            const vCtx = vCanvas.getContext('2d', { willReadFrequently: true, alpha: false });
-            if (!vCtx) return false;
-
-            // 4. Draw only the center column onto the small canvas
-            vCtx.drawImage(firstImageBitmap, xMid, 0, 1, h, 0, 0, 1, h);
-            const vData = vCtx.getImageData(0, 0, 1, h).data;
-            vCanvas.width = vCanvas.height = 1; // Deallocate
-
-            const findHEdge = (isRight: boolean, currentThreshold: number): number | null => {
-                const ASPECT_LIMIT = 2.1;
-                const skipX = w / h > ASPECT_LIMIT ? Math.floor((w - h * ASPECT_LIMIT) / 2) + 1 : 0;
-                for (let x = isRight ? w - skipX - 2 : skipX + 1; isRight ? x > 0 : x < w; isRight ? x-- : x++) {
-                    if (Math.abs(getLuminance(hData, x * 4) - getLuminance(hData, (x + (isRight ? 1 : -1)) * 4)) > currentThreshold) return x;
-                }
-                return null;
-            };
-
-            const findVEdge = (isBottom: boolean, currentThreshold: number): number | null => {
-                for (let y = isBottom ? Math.floor(h * 0.95) : 1; isBottom ? y > 0 : y < h; isBottom ? y-- : y++) {
-                    if (Math.abs(getLuminance(vData, y * 4) - getLuminance(vData, (y + (isBottom ? 1 : -1)) * 4)) > currentThreshold) return y;
-                }
-                return null;
-            };
-
-            const plausible = (r: {x:number; y:number; width:number; height:number}) => {
-                if (r.width < w * 0.65) return false;
-                if (r.height < h * 0.50) return false;
-                if (r.y + r.height > h * 0.95 + 2) return false;
-                const aspect = r.width / r.height;
-                if (aspect < 1.05 || aspect > 2.7) return false;
-                return true;
-            };
-
-            const thresholds = [100, 80, 60, 40];
-
-            for (const t of thresholds) {
-                const left = findHEdge(false, t);
-                const right = findHEdge(true, t);
-                const top = findVEdge(false, t);
-                const bottom = findVEdge(true, t);
-
-                if (left !== null && right !== null && top !== null && bottom !== null) {
-                    const rect = { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
-
-                    if (plausible(rect)) {
-                        cropRect = rect;
-                        Object.assign(newSettings, cropRectToSettings(cropRect));
-                        //console.log(`Auto crop matched at threshold: ${t}`);
-                        return true;
-                    }
-                }
-            }
-
-            alert(t('alert_failed_to_detect_crop_area'));
-            newSettings.cropAuto = false;
-            return false;
-        };
-        if (!performAutoCrop(firstImageBitmap)) {
-          setSettings(prev => ({ ...prev, ...newSettings }));
+        const autoCropResult = detectAutoCropFromImage(firstImageBitmap);
+        if (autoCropResult.status !== 'ok') {
+          const alertKey =
+            autoCropResult.status === 'context_error'
+              ? 'alert_failed_to_get_temp_canvas_context_for_auto_crop'
+              : 'alert_failed_to_detect_crop_area';
+          alert(t(alertKey));
+          setSettings(prev => ({ ...prev, cropAuto: false }));
           return;
         }
+        cropRect = autoCropResult.rect;
+        Object.assign(newSettings, cropRectToSettings(cropRect));
       }
 
       // Ratio calculation
