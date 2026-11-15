@@ -893,6 +893,7 @@ describe('renderMontageToBlob', () => {
     returnNullContext = false,
     clampWidth = null,
     toBlobResult = new Blob(['webp-bytes'], { type: 'image/webp' }),
+    getImageDataImpl = null,
   } = {}) => {
     const events = [];
     let currentWidth = initialWidth;
@@ -909,6 +910,14 @@ describe('renderMontageToBlob', () => {
       fillRect(x, y, w, h) {
         events.push(`fillRect:${this._fillStyle}:${x},${y},${w}x${h}`);
       },
+      ...(getImageDataImpl
+        ? {
+            getImageData(sx, sy, sw, sh) {
+              events.push(`getImageData:${sx},${sy},${sw}x${sh}`);
+              return getImageDataImpl({ sx, sy, sw, sh, lastFillStyle: this._fillStyle });
+            },
+          }
+        : {}),
       drawImage(_img, _sx, _sy, _sw, _sh, dx, dy, dw, dh) {
         events.push(`drawImage:${dx},${dy},${dw}x${dh}`);
       },
@@ -1231,6 +1240,88 @@ describe('renderMontageToBlob', () => {
     );
     assert.equal(parseImageDimensionsFromBytes(new Uint8Array([0x00, 0x01, 0x02])), null);
     assert.equal(parseImageDimensionsFromBytes(new Uint8Array(24)), null);
+  });
+
+  it('detects backing store allocation failure via 1px probe before decoding any tiles', async () => {
+    for (const [label, probeImpl] of [
+      ['zeroed RGBA readback', () => ({ data: new Uint8ClampedArray([0, 0, 0, 0]) })],
+      ['opaque black readback under alpha:false', () => ({ data: new Uint8ClampedArray([0, 0, 0, 255]) })],
+      [
+        'exception thrown during getImageData',
+        () => {
+          throw new Error('Canvas backing store allocation failed');
+        },
+      ],
+    ]) {
+      let decodeCalls = 0;
+      const failedMock = createMockOutputCanvas({ getImageDataImpl: probeImpl });
+      const result = await renderMontageToBlob({
+        dimensions: { width: 20000, height: 20000 },
+        bgColor: '#000000',
+        mimeType: 'image/png',
+        quality: 1,
+        createCanvas: () => failedMock.canvas,
+        files: [{ name: 'tile1.png' }, { name: 'tile2.png' }],
+        colCount: 2,
+        offsetX: 0,
+        offsetY: 0,
+        cropRect: { x: 0, y: 0, width: 100, height: 100 },
+        masks: [],
+        yieldFrame: async () => {},
+        decodeImage: async () => {
+          decodeCalls += 1;
+          return { close: () => {} };
+        },
+      });
+
+      assert.equal(result.status, 'allocation_failed', label);
+      assert.equal(decodeCalls, 0, label);
+      assert.equal(failedMock.canvas.width, 1, label);
+      assert.equal(failedMock.canvas.height, 1, label);
+      assert.ok(failedMock.events.includes('getImageData:19999,19999,1x1'), label);
+      assert.ok(!failedMock.events.some((e) => e.startsWith('toBlob:')), label);
+    }
+  });
+
+  it('overwrites the 1px allocation probe with bgColor and renders tiles when probe passes', async () => {
+    const probeSuccessMock = createMockOutputCanvas({
+      getImageDataImpl: ({ sx, sy, sw, sh, lastFillStyle }) => {
+        assert.deepEqual([sx, sy, sw, sh], [199, 99, 1, 1]);
+        assert.equal(lastFillStyle, '#55aa55');
+        return { data: new Uint8ClampedArray([0x55, 0xaa, 0x55, 255]) };
+      },
+      toBlobResult: new Blob([makePngHeaderBytes(200, 100)], { type: 'image/png' }),
+    });
+
+    const result = await renderMontageToBlob({
+      dimensions: { width: 200, height: 100 },
+      bgColor: '#000000',
+      mimeType: 'image/png',
+      quality: 1,
+      createCanvas: () => probeSuccessMock.canvas,
+      files: [{ name: 'tile1.png' }],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 200, height: 100 },
+      masks: [],
+      yieldFrame: async () => {},
+      decodeImage: async () => ({ width: 200, height: 100, close: () => {} }),
+    });
+
+    assert.equal(result.status, 'ok');
+    assert.deepEqual(probeSuccessMock.events, [
+      'getContext:2d:{"alpha":false}',
+      'width=200',
+      'height=100',
+      'fillRect:#55aa55:199,99,1x1',
+      'getImageData:199,99,1x1',
+      'fillRect:#000000:0,0,200x100',
+      'drawImage:0,0,200x100',
+      'toBlob:image/png:1',
+      'width=1',
+      'height=1',
+    ]);
   });
 });
 

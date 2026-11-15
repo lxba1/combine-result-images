@@ -26,6 +26,12 @@ export interface TileMaskRect extends PixelRect {
 export interface MontageContextLike<B extends BitmapLike> {
   fillStyle: string | CanvasGradient | CanvasPattern;
   fillRect: (x: number, y: number, w: number, h: number) => void;
+  getImageData?: (
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number
+  ) => { data: ArrayLike<number> };
   drawImage: (
     image: B,
     sx: number,
@@ -390,10 +396,46 @@ export type RenderMontageToBlobResult =
   | { status: 'encode_failed' }
   | { status: 'dimension_mismatch'; actualWidth: number; actualHeight: number };
 
+const ALLOCATION_PROBE_COLOR = '#55aa55';
+const ALLOCATION_PROBE_RGB: readonly [number, number, number] = [0x55, 0xaa, 0x55];
+const ALLOCATION_PROBE_TOLERANCE = 8;
+
+const verifyCanvasBackingAllocation = <B extends BitmapLike>(
+  montageCtx: MontageContextLike<B>,
+  width: number,
+  height: number
+): boolean => {
+  if (width <= 0 || height <= 0) {
+    return false;
+  }
+  if (typeof montageCtx.getImageData !== 'function') {
+    return true;
+  }
+  try {
+    const probeX = width - 1;
+    const probeY = height - 1;
+    montageCtx.fillStyle = ALLOCATION_PROBE_COLOR;
+    montageCtx.fillRect(probeX, probeY, 1, 1);
+    const { data } = montageCtx.getImageData(probeX, probeY, 1, 1);
+    if (!data || data.length < 4) {
+      return false;
+    }
+    return (
+      Math.abs(data[0] - ALLOCATION_PROBE_RGB[0]) <= ALLOCATION_PROBE_TOLERANCE &&
+      Math.abs(data[1] - ALLOCATION_PROBE_RGB[1]) <= ALLOCATION_PROBE_TOLERANCE &&
+      Math.abs(data[2] - ALLOCATION_PROBE_RGB[2]) <= ALLOCATION_PROBE_TOLERANCE &&
+      data[3] === 255
+    );
+  } catch {
+    return false;
+  }
+};
+
 /**
- * Allocates an offscreen detached canvas, renders the full montage onto it, encodes the output
- * Blob, immediately shrinks the canvas to 1x1 so the backing store can be GC-reclaimed, and
- * verifies encoded container dimensions against the requested output size.
+ * Allocates an offscreen detached canvas, verifies its backing store can actually be drawn and read,
+ * renders the full montage onto it, encodes the output Blob, immediately shrinks the canvas to 1x1
+ * so the backing store can be GC-reclaimed, and verifies encoded container dimensions against the
+ * requested output size.
  */
 export const renderMontageToBlob = async <F, B extends BitmapLike>({
   dimensions,
@@ -419,7 +461,11 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
 
     montageCanvas.width = dimensions.width;
     montageCanvas.height = dimensions.height;
-    if (montageCanvas.width !== dimensions.width || montageCanvas.height !== dimensions.height) {
+    if (
+      montageCanvas.width !== dimensions.width ||
+      montageCanvas.height !== dimensions.height ||
+      !verifyCanvasBackingAllocation(montageCtx, montageCanvas.width, montageCanvas.height)
+    ) {
       return { status: 'allocation_failed' };
     }
 
