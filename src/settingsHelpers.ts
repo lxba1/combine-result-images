@@ -238,3 +238,99 @@ export const parseSavedSettings = (savedSettingsJson: string | null): ImageSetti
     selfMaskRatioRect: sanitizeRatioRect(raw.selfMaskRatioRect, defaults.selfMaskRatioRect),
   };
 };
+
+export const MAX_RECOMMENDED_CANVAS_SIDE = 32_767;
+export const MAX_RECOMMENDED_CANVAS_PIXELS = 268_435_456;
+export const MAX_WEBP_DIMENSION = 16_383;
+
+export interface MontageSizeEvaluation {
+  width: number;
+  height: number;
+  pixels: number;
+  status: 'ok' | 'invalid' | 'confirm_required';
+  reason?: 'non_positive_or_overflow' | 'exceeds_canvas_limits' | 'exceeds_webp_dimension';
+}
+
+/**
+ * Evaluates output montage canvas dimensions before allocation.
+ * Only mathematically invalid/overflowing dimensions fail hard; huge dimensions above
+ * browser canvas/WebP ceilings request user confirmation instead of blocking valid outputs.
+ */
+export const evaluateMontageCanvasSize = (
+  imageCount: number,
+  cropRect: Pick<PixelRect, 'width' | 'height'>,
+  settings: Pick<ImageSettings, 'colCount' | 'offsetX' | 'offsetY' | 'outputFormat'>
+): MontageSizeEvaluation => {
+  if (
+    !Number.isSafeInteger(imageCount) ||
+    imageCount <= 0 ||
+    !Number.isSafeInteger(settings.colCount) ||
+    settings.colCount <= 0 ||
+    !Number.isSafeInteger(cropRect.width) ||
+    cropRect.width <= 0 ||
+    !Number.isSafeInteger(cropRect.height) ||
+    cropRect.height <= 0 ||
+    !Number.isSafeInteger(settings.offsetX) ||
+    settings.offsetX < 0 ||
+    !Number.isSafeInteger(settings.offsetY) ||
+    settings.offsetY < 0
+  ) {
+    return {
+      width: 0,
+      height: 0,
+      pixels: 0,
+      status: 'invalid',
+      reason: 'non_positive_or_overflow',
+    };
+  }
+
+  const rows = Math.ceil(imageCount / settings.colCount);
+  const width = cropRect.width * settings.colCount + settings.offsetX * (settings.colCount + 1);
+  const height = rows * cropRect.height + settings.offsetY * (rows + 1);
+  const pixels = width * height;
+
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    !Number.isSafeInteger(pixels) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return {
+      width: Number.isFinite(width) ? Math.round(width) : 0,
+      height: Number.isFinite(height) ? Math.round(height) : 0,
+      pixels: 0,
+      status: 'invalid',
+      reason: 'non_positive_or_overflow',
+    };
+  }
+
+  if (
+    width > MAX_RECOMMENDED_CANVAS_SIDE ||
+    height > MAX_RECOMMENDED_CANVAS_SIDE ||
+    pixels > MAX_RECOMMENDED_CANVAS_PIXELS
+  ) {
+    return {
+      width,
+      height,
+      pixels,
+      status: 'confirm_required',
+      reason: 'exceeds_canvas_limits',
+    };
+  }
+
+  if (
+    settings.outputFormat === 'webp' &&
+    (width > MAX_WEBP_DIMENSION || height > MAX_WEBP_DIMENSION)
+  ) {
+    return {
+      width,
+      height,
+      pixels,
+      status: 'confirm_required',
+      reason: 'exceeds_webp_dimension',
+    };
+  }
+
+  return { width, height, pixels, status: 'ok' };
+};

@@ -87,5 +87,8 @@
   "alert_failed_to_get_context": "Canvasから2D描画コンテキストの取得に失敗しました。もう一度お試しください。",
   "alert_image_generation_timeout": "画像の生成がタイムアウトしました。メモリ使用量が多い可能性があります。画像の枚数を減らして再度お試しください。",
   "alert_canvas_too_large": "合成される画像のサイズが大きすぎます ({{maxPixels}}ピクセル以上)。画像の枚数を減らすか、クロップ設定を調整してください。",
+  "alert_invalid_canvas_size": "出力画像のサイズ計算結果が無効です（{{width}} × {{height}} px）。設定値を見直してください。",
+  "confirm_large_canvas_size": "出力画像が非常に大きくなります（{{width}} × {{height}} px / {{pixels}} ピクセル）。\nブラウザや端末のメモリ上限により生成・表示に失敗する可能性があります。このまま続行しますか？",
+  "confirm_webp_canvas_size": "出力サイズが WebP 形式の上限目安（{{maxWebpDimension}} px）を超えています（{{width}} × {{height}} px / {{pixels}} ピクセル）。\nWebP では出力に失敗するブラウザがあります（PNG または JPEG なら出力できる場合があります）。このまま続行しますか？",
   "status_releasing_memory": "メモリを解放しています..."
 }

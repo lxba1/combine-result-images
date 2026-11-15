@@ -4,11 +4,15 @@ import {
   DEFAULT_SETTINGS,
   MAX_COL_COUNT,
   MAX_OFFSET_PX,
+  MAX_RECOMMENDED_CANVAS_PIXELS,
+  MAX_RECOMMENDED_CANVAS_SIDE,
+  MAX_WEBP_DIMENSION,
   MIN_COL_COUNT,
   MIN_OFFSET_PX,
   areSettingsDefault,
   createDefaultSettings,
   cropRectToSettings,
+  evaluateMontageCanvasSize,
   normalizeHexColor,
   parseSavedSettings,
 } from '../src/settingsHelpers.ts';
@@ -172,5 +176,73 @@ describe('hex color normalization and default comparison', () => {
     withUppercaseWhite.bgColor = '#000';
 
     assert.equal(areSettingsDefault(withUppercaseWhite), true);
+  });
+});
+
+describe('evaluateMontageCanvasSize', () => {
+  it('allows large multi-image outputs above old 16M pixel limit without confirmation', () => {
+    const result = evaluateMontageCanvasSize(
+      30,
+      { width: 1538, height: 665 },
+      { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }
+    );
+
+    assert.equal(result.width, 3100);
+    assert.equal(result.height, 10103);
+    assert.equal(result.pixels, 3100 * 10103);
+    assert.equal(result.status, 'ok');
+  });
+
+  it('requests confirmation instead of blocking when WebP exceeds 16383 px, while allowing PNG/JPEG silently', () => {
+    const webpResult = evaluateMontageCanvasSize(
+      50,
+      { width: 1538, height: 665 },
+      { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }
+    );
+    assert.equal(webpResult.height > MAX_WEBP_DIMENSION, true);
+    assert.equal(webpResult.status, 'confirm_required');
+    assert.equal(webpResult.reason, 'exceeds_webp_dimension');
+
+    const pngResult = evaluateMontageCanvasSize(
+      50,
+      { width: 1538, height: 665 },
+      { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'png' }
+    );
+    assert.equal(pngResult.status, 'ok');
+  });
+
+  it('requests confirmation with canvas limit reason when exceeding 32767 px side or 268M px area', () => {
+    const tallWebp = evaluateMontageCanvasSize(
+      100,
+      { width: 1538, height: 665 },
+      { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }
+    );
+    assert.equal(tallWebp.height > MAX_RECOMMENDED_CANVAS_SIDE, true);
+    assert.equal(tallWebp.status, 'confirm_required');
+    assert.equal(tallWebp.reason, 'exceeds_canvas_limits');
+
+    const wideArea = evaluateMontageCanvasSize(
+      16,
+      { width: 4500, height: 4500 },
+      { colCount: 4, offsetX: 0, offsetY: 0, outputFormat: 'png' }
+    );
+    assert.equal(wideArea.pixels > MAX_RECOMMENDED_CANVAS_PIXELS, true);
+    assert.equal(wideArea.status, 'confirm_required');
+    assert.equal(wideArea.reason, 'exceeds_canvas_limits');
+  });
+
+  it('rejects non-positive or integer-overflow dimensions as invalid', () => {
+    assert.equal(
+      evaluateMontageCanvasSize(0, { width: 100, height: 100 }, { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }).status,
+      'invalid'
+    );
+    assert.equal(
+      evaluateMontageCanvasSize(2, { width: 0, height: 100 }, { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }).status,
+      'invalid'
+    );
+    assert.equal(
+      evaluateMontageCanvasSize(2, { width: Number.MAX_SAFE_INTEGER, height: 100 }, { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'png' }).status,
+      'invalid'
+    );
   });
 });

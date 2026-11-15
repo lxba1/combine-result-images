@@ -87,5 +87,8 @@
   "alert_failed_to_get_context": "Failed to get 2D rendering context from canvas. Please try again.",
   "alert_image_generation_timeout": "Image generation timed out. This may be due to high memory usage. Please try again with fewer images.",
   "alert_canvas_too_large": "The resulting image is too large (over {{maxPixels}} pixels). Please reduce the number of images or adjust cropping settings.",
+  "alert_invalid_canvas_size": "Calculated output canvas size is invalid ({{width}} x {{height}} px). Please check your settings.",
+  "confirm_large_canvas_size": "The output image is very large ({{width}} x {{height}} px / {{pixels}} pixels).\nGeneration or display may fail depending on your browser or device memory limits. Do you want to continue?",
+  "confirm_webp_canvas_size": "The output size exceeds the WebP dimension limit of {{maxWebpDimension}} px ({{width}} x {{height}} px / {{pixels}} pixels).\nWebP export may fail in some browsers (PNG or JPEG may succeed). Do you want to continue?",
   "status_releasing_memory": "Releasing memory..."
 }

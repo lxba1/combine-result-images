@@ -27,6 +27,7 @@ import {
   MASK_PRESETS,
   MAX_COL_COUNT,
   MAX_OFFSET_PX,
+  MAX_WEBP_DIMENSION,
   MIN_COL_COUNT,
   MIN_OFFSET_PX,
   SELF_MASK_PRESETS,
@@ -34,6 +35,7 @@ import {
   clamp01,
   createDefaultSettings,
   cropRectToSettings,
+  evaluateMontageCanvasSize,
   isRatioRectEqual,
   normalizeHexColor,
   parseSavedSettings,
@@ -1104,18 +1106,43 @@ const ImageProcessor: React.FC = () => {
       }
       const finalSettings = { ...settings, ...newSettings };
 
+      const sizeEval = evaluateMontageCanvasSize(orderedImages.length, cropRect, finalSettings);
+      if (sizeEval.status === 'invalid') {
+        alert(t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }));
+        return;
+      }
+      if (sizeEval.status === 'confirm_required') {
+        const confirmMessage =
+          sizeEval.reason === 'exceeds_webp_dimension'
+            ? t('confirm_webp_canvas_size', {
+                width: sizeEval.width.toLocaleString(),
+                height: sizeEval.height.toLocaleString(),
+                pixels: sizeEval.pixels.toLocaleString(),
+                maxWebpDimension: MAX_WEBP_DIMENSION.toLocaleString(),
+              })
+            : t('confirm_large_canvas_size', {
+                width: sizeEval.width.toLocaleString(),
+                height: sizeEval.height.toLocaleString(),
+                pixels: sizeEval.pixels.toLocaleString(),
+              });
+        if (!window.confirm(confirmMessage)) {
+          return;
+        }
+      }
+
       const montageCanvas = canvasRef.current;
       if (!montageCanvas) throw new Error(t('alert_canvas_not_ready'));
       const montageCtx = montageCanvas.getContext('2d', { alpha: false });
       if (!montageCtx) throw new Error(t('alert_failed_to_get_context'));
 
-      montageCanvas.width = (cropRect.width * finalSettings.colCount) + (finalSettings.offsetX * (finalSettings.colCount + 1));
-      montageCanvas.height = (Math.ceil(orderedImages.length / finalSettings.colCount) * cropRect.height) + (finalSettings.offsetY * (Math.ceil(orderedImages.length / finalSettings.colCount) + 1));
-
-      // const maxPixels = 16_777_216; // Approximately 4096x4096
-      // if (montageCanvas.width * montageCanvas.height > maxPixels) {
-      //   throw new Error(t('alert_canvas_too_large', { maxPixels: maxPixels.toLocaleString() }));
-      // }
+      montageCanvas.width = sizeEval.width;
+      montageCanvas.height = sizeEval.height;
+      if (montageCanvas.width !== sizeEval.width || montageCanvas.height !== sizeEval.height) {
+        montageCanvas.width = 1;
+        montageCanvas.height = 1;
+        alert(t('alert_image_generation_failed'));
+        return;
+      }
 
       montageCtx.fillStyle = finalSettings.bgColor;
       montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
