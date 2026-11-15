@@ -53,6 +53,7 @@ describe('parseSavedSettings', () => {
       y: 50,
       width: 980,
       height: 500,
+      webpMethod: 6,
       unexpectedKey: 'stale',
     });
 
@@ -67,6 +68,7 @@ describe('parseSavedSettings', () => {
     assert.equal('y' in restored, false);
     assert.equal('width' in restored, false);
     assert.equal('height' in restored, false);
+    assert.equal('webpMethod' in restored, false);
     assert.equal('unexpectedKey' in restored, false);
     assert.deepEqual(Object.keys(restored).sort(), Object.keys(DEFAULT_SETTINGS).sort());
   });

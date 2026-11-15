@@ -34,7 +34,6 @@ export interface ImageSettings {
   bgColor: string;
   outputFormat: OutputFormat;
   quality: number;
-  webpMethod: number;
   cropX: number;
   cropY: number;
   cropWidth: number;
@@ -90,7 +89,6 @@ export const DEFAULT_SETTINGS: ImageSettings = {
   bgColor: '#000000',
   outputFormat: 'webp',
   quality: 80,
-  webpMethod: 6,
   cropX: 31,
   cropY: 117,
   cropWidth: 1538,
@@ -214,7 +212,6 @@ export const parseSavedSettings = (savedSettingsJson: string | null): ImageSetti
     bgColor: sanitizeHexColor(raw.bgColor, defaults.bgColor),
     outputFormat: pickEnum(raw.outputFormat, VALID_OUTPUT_FORMATS, defaults.outputFormat),
     quality: toBoundedInt(raw.quality, defaults.quality, 1, 100),
-    webpMethod: toBoundedInt(raw.webpMethod, defaults.webpMethod, 0, 6),
     cropX: toBoundedInt(raw.cropX, defaults.cropX, 0),
     cropY: toBoundedInt(raw.cropY, defaults.cropY, 0),
     cropWidth: toBoundedInt(raw.cropWidth, defaults.cropWidth, 1),
