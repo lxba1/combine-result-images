@@ -4,12 +4,124 @@ import { Button, TextField, Container, Grid, Card, CardContent, Typography, Circ
 import { useColorScheme, styled } from '@mui/material/styles';
 import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
-import Tesseract, { PSM, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
+import Tesseract, { PSM, type Bbox, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
 import packageJson from '../package.json';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 type RatioRect = { rx0: number; ry0: number; rx1: number; ry1: number };
+type PixelRect = { x: number; y: number; width: number; height: number };
+
+const isValidMaskRectWithinCrop = (rect: PixelRect, crop: PixelRect): boolean =>
+  Number.isFinite(rect.x) &&
+  Number.isFinite(rect.y) &&
+  Number.isFinite(rect.width) &&
+  Number.isFinite(rect.height) &&
+  rect.width > 0 &&
+  rect.height > 0 &&
+  rect.x >= crop.x &&
+  rect.y >= crop.y &&
+  rect.x + rect.width <= crop.x + crop.width &&
+  rect.y + rect.height <= crop.y + crop.height;
+
+const normalizeOcrToken = (text: string): string => text.normalize('NFKC').trim();
+
+const matchesLvLevel = (text: string): boolean => /lv[\s.,:・。]*\d+/i.test(text);
+
+const groupWordsIntoRows = (words: Word[]): Word[][] => {
+  const valid = words
+    .filter((w) => normalizeOcrToken(w.text).length > 0 && w.bbox.x1 > w.bbox.x0 && w.bbox.y1 > w.bbox.y0)
+    .sort((a, b) => (a.bbox.y0 + a.bbox.y1) / 2 - (b.bbox.y0 + b.bbox.y1) / 2);
+
+  const rows: { words: Word[]; y0: number; y1: number }[] = [];
+  for (const word of valid) {
+    const wordCy = (word.bbox.y0 + word.bbox.y1) / 2;
+    const wordH = word.bbox.y1 - word.bbox.y0;
+    const current = rows[rows.length - 1];
+    if (current) {
+      const rowCy = (current.y0 + current.y1) / 2;
+      const rowH = current.y1 - current.y0;
+      const verticalOverlap = Math.min(current.y1, word.bbox.y1) - Math.max(current.y0, word.bbox.y0);
+      if (verticalOverlap >= Math.min(wordH, rowH) * 0.2 || Math.abs(wordCy - rowCy) <= Math.max(wordH, rowH) * 0.5) {
+        current.words.push(word);
+        current.y0 = Math.min(current.y0, word.bbox.y0);
+        current.y1 = Math.max(current.y1, word.bbox.y1);
+        continue;
+      }
+    }
+    rows.push({ words: [word], y0: word.bbox.y0, y1: word.bbox.y1 });
+  }
+
+  return rows.map((row) => row.words.sort((a, b) => a.bbox.x0 - b.bbox.x0));
+};
+
+/**
+ * Finds the topmost "Lv.<number>" target across ROI words, supporting split tokens
+ * such as ["Lv.", "90"] or ["L", "v.", "90"] and whitespace/punctuation variants.
+ */
+const findTopmostLvBbox = (words: Word[]): Bbox | null => {
+  const rows = groupWordsIntoRows(words);
+  let bestMatch: Bbox | null = null;
+
+  for (const row of rows) {
+    for (let i = 0; i < row.length; i++) {
+      for (let j = i; j < Math.min(row.length, i + 5); j++) {
+        if (j > i) {
+          const prev = row[j - 1].bbox;
+          const curr = row[j].bbox;
+          const gap = curr.x0 - prev.x1;
+          const charHeight = Math.max(4, prev.y1 - prev.y0, curr.y1 - curr.y0);
+          if (gap > Math.max(charHeight * 3, 40) || gap < -Math.max(charHeight * 1.5, 16)) {
+            break;
+          }
+        }
+
+        const tokens = row.slice(i, j + 1).map((w) => normalizeOcrToken(w.text));
+        const hasLvPrefix =
+          /lv/i.test(tokens[0]) ||
+          (tokens.length > 1 && /^l$/i.test(tokens[0]) && /^v/i.test(tokens[1]));
+        if (!hasLvPrefix) continue;
+
+        const spacedMatch = matchesLvLevel(tokens.join(' '));
+        const compactMatch = matchesLvLevel(tokens.join(''));
+        if (!spacedMatch && !compactMatch) continue;
+
+        if (j > i) {
+          const restTokens = tokens.slice(1);
+          if (matchesLvLevel(restTokens.join(' ')) || matchesLvLevel(restTokens.join(''))) {
+            continue;
+          }
+        }
+
+        const matchedWords = row.slice(i, j + 1);
+        const matchBox: Bbox = {
+          x0: Math.min(...matchedWords.map((w) => w.bbox.x0)),
+          y0: Math.min(...matchedWords.map((w) => w.bbox.y0)),
+          x1: Math.max(...matchedWords.map((w) => w.bbox.x1)),
+          y1: Math.max(...matchedWords.map((w) => w.bbox.y1)),
+        };
+
+        if (!bestMatch || matchBox.y0 < bestMatch.y0 || (matchBox.y0 === bestMatch.y0 && matchBox.x0 < bestMatch.x0)) {
+          bestMatch = matchBox;
+        }
+        break;
+      }
+    }
+  }
+
+  return bestMatch;
+};
+
+/** Builds and validates a crop-clipped mask rectangle from a detected "Lv." bounding box. */
+const buildOcrMaskRect = (lvBox: Bbox, crop: PixelRect, side: 'right' | 'left'): PixelRect | null => {
+  const PADDING = 5;
+  const x0 = Math.max(crop.x, Math.floor(lvBox.x0 - PADDING));
+  const y0 = Math.max(crop.y, Math.floor(lvBox.y0 - PADDING));
+  const x1 = side === 'right' ? crop.x + crop.width : crop.x + Math.floor(crop.width / 2);
+  const y1 = Math.min(crop.y + crop.height, Math.ceil(lvBox.y1 + PADDING));
+  const rect: PixelRect = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  return isValidMaskRectWithinCrop(rect, crop) ? rect : null;
+};
 
 const isRatioRectEqual = (a: RatioRect, b: RatioRect) =>
   Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
@@ -904,9 +1016,13 @@ const ImageProcessor: React.FC = () => {
     let reusableTempCanvas: HTMLCanvasElement | null = null;
     let reusableTempCtx: CanvasRenderingContext2D | null = null;
     try {
-      let cropRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
-      let enemyMaskRect = { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight };
-      let selfMaskRect = { x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight };
+      let cropRect: PixelRect = { x: settings.cropX, y: settings.cropY, width: settings.cropWidth, height: settings.cropHeight };
+      let enemyMaskRect: PixelRect | null = settings.maskEnabled && settings.maskMode === 'manual'
+        ? { x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight }
+        : null;
+      let selfMaskRect: PixelRect | null = settings.selfMaskEnabled && settings.selfMaskMode === 'manual'
+        ? { x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight }
+        : null;
       const newSettings: Partial<ImageSettings> = {};
 
       const needsFirstImage = settings.cropAuto ||
@@ -1027,60 +1143,131 @@ const ImageProcessor: React.FC = () => {
       }
 
       // OCR calculation
-      if (firstImageBitmap && (
-        (settings.maskEnabled && settings.maskMode === 'ocr') ||
-        (settings.selfMaskEnabled && settings.selfMaskMode === 'ocr')
-      )) {
+      const needsEnemyOcr = settings.maskEnabled && settings.maskMode === 'ocr';
+      const needsSelfOcr = settings.selfMaskEnabled && settings.selfMaskMode === 'ocr';
+      if (firstImageBitmap && (needsEnemyOcr || needsSelfOcr)) {
+        const abortOcr = (message: string, disableEnemy: boolean, disableSelf: boolean) => {
+          if (disableEnemy) {
+            enemyMaskRect = null;
+            newSettings.maskMode = 'manual';
+          }
+          if (disableSelf) {
+            selfMaskRect = null;
+            newSettings.selfMaskMode = 'manual';
+          }
+          setSettings(prev => ({ ...prev, ...newSettings }));
+          setOcrStatus('');
+          alert(message);
+        };
+
+        const searchY = cropRect.y + Math.floor(cropRect.height * 0.1);
+        const searchHeight = Math.floor(cropRect.height * 0.11);
+        const quarterWidth = Math.floor(cropRect.width / 4);
+
+        if (quarterWidth <= 0 || searchHeight <= 0) {
+          abortOcr(
+            [
+              needsEnemyOcr ? t('alert_could_not_find_right_lv') : '',
+              needsSelfOcr ? t('alert_could_not_find_left_lv') : '',
+            ].filter(Boolean).join('\n'),
+            needsEnemyOcr,
+            needsSelfOcr
+          );
+          return;
+        }
+
         setOcrStatus(t('ocr_status_starting'));
-        const worker = await Tesseract.createWorker('jpn+eng', 1);
-        workerRef.current = worker;
-        await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+        const scratch = document.createElement('canvas');
+        let enemyDetected = !needsEnemyOcr;
+        let selfDetected = !needsSelfOcr;
 
         try {
-            const scratch = document.createElement('canvas');
-            const sctx = scratch.getContext('2d', { willReadFrequently: true, alpha: false })!;
+          const sctx = scratch.getContext('2d', { willReadFrequently: true, alpha: false });
+          if (!sctx) {
+            throw new Error('Failed to get 2D context for OCR scratch canvas');
+          }
 
-            async function recognizeROI(sx: number, sy: number, sw: number, sh: number) {
-              scratch.width = sw; scratch.height = sh;
-              sctx.clearRect(0, 0, sw, sh);
-              sctx.drawImage(firstImageBitmap!, sx, sy, sw, sh, 0, 0, sw, sh);
-              const { data } = await worker!.recognize(scratch, {}, { blocks: true });
-              return (data?.blocks ?? [])
-                .flatMap((b: Block) => b.paragraphs)
-                .flatMap((p: Paragraph) => p.lines)
-                .flatMap((l: Line) => l.words)
-                .map((w: Word) => ({ ...w, bbox: { x0: w.bbox.x0 + sx, y0: w.bbox.y0 + sy, x1: w.bbox.x1 + sx, y1: w.bbox.y1 + sy } }));
-            }
+          const worker = await Tesseract.createWorker('jpn+eng', 1);
+          workerRef.current = worker;
+          await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
 
-            const searchY = cropRect.y + Math.floor(cropRect.height * 0.1);
-            const searchHeight = Math.floor(cropRect.height * 0.11);
-            const quarterWidth = Math.floor(cropRect.width / 4);
+          const recognizeROI = async (sx: number, sy: number, sw: number, sh: number): Promise<Word[]> => {
+            scratch.width = sw;
+            scratch.height = sh;
+            sctx.clearRect(0, 0, sw, sh);
+            sctx.drawImage(firstImageBitmap!, sx, sy, sw, sh, 0, 0, sw, sh);
+            const { data } = await worker.recognize(scratch, {}, { blocks: true });
+            return (data?.blocks ?? [])
+              .flatMap((b: Block) => b.paragraphs ?? [])
+              .flatMap((p: Paragraph) => p.lines ?? [])
+              .flatMap((l: Line) => l.words ?? [])
+              .map((w: Word) => ({
+                ...w,
+                bbox: {
+                  x0: w.bbox.x0 + sx,
+                  y0: w.bbox.y0 + sy,
+                  x1: w.bbox.x1 + sx,
+                  y1: w.bbox.y1 + sy,
+                },
+              }));
+          };
 
-            const PADDING = 5;
-            if (settings.maskEnabled && settings.maskMode === 'ocr') {
-                const enemyWords = await recognizeROI(cropRect.x + (quarterWidth * 3), searchY, quarterWidth, searchHeight);
-                const enemyLvWords = enemyWords.filter((w: Word) => /Lv\.\d+/i.test(w.text));
-                if (enemyLvWords.length > 0) {
-                    const target = enemyLvWords.reduce((p: Word, c: Word) => (p.bbox.y0 < c.bbox.y0 ? p : c));
-                    const { x0, y0, y1 } = target.bbox;
-                    enemyMaskRect = { x: Math.max(cropRect.x, x0 - PADDING), y: Math.max(cropRect.y, y0 - PADDING), width: Math.max(0, (cropRect.x + cropRect.width) - Math.max(cropRect.x, x0 - PADDING)), height: Math.max(0, (y1 + PADDING) - Math.max(cropRect.y, y0 - PADDING)) };
-                    Object.assign(newSettings, { maskX: enemyMaskRect.x, maskY: enemyMaskRect.y, maskWidth: enemyMaskRect.width, maskHeight: enemyMaskRect.height });
-                }
+          const detectOcrRect = async (sx: number, side: 'right' | 'left'): Promise<PixelRect | null> => {
+            const words = await recognizeROI(sx, searchY, quarterWidth, searchHeight);
+            const targetBox = findTopmostLvBbox(words);
+            return targetBox ? buildOcrMaskRect(targetBox, cropRect, side) : null;
+          };
+
+          if (needsEnemyOcr) {
+            enemyMaskRect = await detectOcrRect(cropRect.x + (quarterWidth * 3), 'right');
+            if (enemyMaskRect) {
+              enemyDetected = true;
+              Object.assign(newSettings, {
+                maskX: enemyMaskRect.x,
+                maskY: enemyMaskRect.y,
+                maskWidth: enemyMaskRect.width,
+                maskHeight: enemyMaskRect.height,
+              });
             }
-            if (settings.selfMaskEnabled && settings.selfMaskMode === 'ocr') {
-                const selfWords = await recognizeROI(cropRect.x + quarterWidth, searchY, quarterWidth, searchHeight);
-                const selfLvWords = selfWords.filter((w: Word) => /Lv\.\d+/i.test(w.text));
-                if (selfLvWords.length > 0) {
-                    const target = selfLvWords.reduce((p: Word, c: Word) => (p.bbox.y0 < c.bbox.y0 ? p : c));
-                    const { x0, y0, y1 } = target.bbox;
-                    const cropCenterX = cropRect.x + Math.floor(cropRect.width / 2);
-                    selfMaskRect = { x: Math.max(cropRect.x, x0 - PADDING), y: Math.max(cropRect.y, y0 - PADDING), width: Math.max(0, cropCenterX - Math.max(cropRect.x, x0 - PADDING)), height: Math.max(0, (y1 + PADDING) - Math.max(cropRect.y, y0 - PADDING)) };
-                    Object.assign(newSettings, { selfMaskX: selfMaskRect.x, selfMaskY: selfMaskRect.y, selfMaskWidth: selfMaskRect.width, selfMaskHeight: selfMaskRect.height });
-                }
+          }
+
+          if (needsSelfOcr) {
+            selfMaskRect = await detectOcrRect(cropRect.x + quarterWidth, 'left');
+            if (selfMaskRect) {
+              selfDetected = true;
+              Object.assign(newSettings, {
+                selfMaskX: selfMaskRect.x,
+                selfMaskY: selfMaskRect.y,
+                selfMaskWidth: selfMaskRect.width,
+                selfMaskHeight: selfMaskRect.height,
+              });
             }
-            scratch.width = scratch.height = 1;
-            setOcrStatus(t('ocr_status_mask_detected'));
-        } catch (e) { console.error(e); alert(t('alert_ocr_error')); }
+          }
+        } catch (e) {
+          console.error(e);
+          abortOcr(t('alert_ocr_error'), needsEnemyOcr, needsSelfOcr);
+          return;
+        } finally {
+          scratch.width = scratch.height = 1;
+        }
+
+        if (!enemyDetected || !selfDetected) {
+          abortOcr(
+            [
+              !enemyDetected ? t('alert_could_not_find_right_lv') : '',
+              !selfDetected ? t('alert_could_not_find_left_lv') : '',
+            ].filter(Boolean).join('\n'),
+            !enemyDetected,
+            !selfDetected
+          );
+          return;
+        }
+
+        setOcrStatus(t('ocr_status_mask_detected'));
+      }
+
+      if ((settings.maskEnabled && !enemyMaskRect) || (settings.selfMaskEnabled && !selfMaskRect)) {
+        return;
       }
 
       // Early release of the first image bitmap as it's no longer needed
@@ -1148,11 +1335,11 @@ const ImageProcessor: React.FC = () => {
           bitmap.close(); // Close bitmap as soon as it's on the temp canvas
 
           // Adjust mask coordinates to be relative to the cropped canvas
-          if (finalSettings.maskEnabled) {
+          if (finalSettings.maskEnabled && enemyMaskRect) {
             reusableTempCtx!.fillStyle = finalSettings.maskColor;
             reusableTempCtx!.fillRect(enemyMaskRect.x - cropRect.x, enemyMaskRect.y - cropRect.y, enemyMaskRect.width, enemyMaskRect.height);
           }
-          if (finalSettings.selfMaskEnabled) {
+          if (finalSettings.selfMaskEnabled && selfMaskRect) {
             reusableTempCtx!.fillStyle = finalSettings.selfMaskColor;
             reusableTempCtx!.fillRect(selfMaskRect.x - cropRect.x, selfMaskRect.y - cropRect.y, selfMaskRect.width, selfMaskRect.height);
           }
