@@ -58,7 +58,7 @@
   "download_image": "画像を保存",
   "alert_select_images_first": "最初に画像を選択してください。",
   "alert_columns_must_be_positive": "カラムは正数にしてください。",
-  "alert_offset_cannot_be_empty_or_negative": "オフセット (px) は正数にしてください。",
+  "alert_offset_cannot_be_empty_or_negative": "オフセット (px) は 0 以上 50 以下の整数にしてください。",
   "alert_invalid_crop_setting": "クロップ設定が無効です。X・Y は 0 以上、幅・高さは 1 以上の整数にしてください。",
   "alert_crop_outside_image": "クロップ領域が 1 枚目の画像範囲（{{width}} × {{height}} px）から完全に外れています。クロップ設定を見直してください。",
   "alert_invalid_mask_area": "有効になっているマスク（またはセルフマスク）の範囲は、幅・高さが 0 より大きくなるように設定してください。",

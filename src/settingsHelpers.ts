@@ -483,6 +483,9 @@ const isPositiveRatioRect = (rect: RatioRect): boolean => {
   return ordered !== null && ordered.rx1 > ordered.rx0 && ordered.ry1 > ordered.ry0;
 };
 
+const isSafeIntInRange = (value: number, min: number, max: number): boolean =>
+  Number.isSafeInteger(value) && value >= min && value <= max;
+
 const isValidManualMask = (x: number, y: number, width: number, height: number): boolean =>
   Number.isSafeInteger(x) &&
   Number.isSafeInteger(y) &&
@@ -501,18 +504,12 @@ const isValidManualMask = (x: number, y: number, width: number, height: number):
 export const validateSettingsBeforeProcess = (
   settings: ImageSettings
 ): SettingsValidationResult => {
-  if (
-    !Number.isSafeInteger(settings.colCount) ||
-    settings.colCount < MIN_COL_COUNT ||
-    settings.colCount > MAX_COL_COUNT
-  ) {
+  if (!isSafeIntInRange(settings.colCount, MIN_COL_COUNT, MAX_COL_COUNT)) {
     return { valid: false, alertKey: 'alert_columns_must_be_positive' };
   }
   if (
-    !Number.isFinite(settings.offsetX) ||
-    settings.offsetX < MIN_OFFSET_PX ||
-    !Number.isFinite(settings.offsetY) ||
-    settings.offsetY < MIN_OFFSET_PX
+    !isSafeIntInRange(settings.offsetX, MIN_OFFSET_PX, MAX_OFFSET_PX) ||
+    !isSafeIntInRange(settings.offsetY, MIN_OFFSET_PX, MAX_OFFSET_PX)
   ) {
     return { valid: false, alertKey: 'alert_offset_cannot_be_empty_or_negative' };
   }

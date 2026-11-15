@@ -396,6 +396,39 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
     });
 
+    const fractionalOffsetX = { ...createDefaultSettings(), offsetX: 1.5 };
+    assert.deepEqual(validateSettingsBeforeProcess(fractionalOffsetX), {
+      valid: false,
+      alertKey: 'alert_offset_cannot_be_empty_or_negative',
+    });
+
+    const fractionalOffsetY = { ...createDefaultSettings(), offsetY: 2.5 };
+    assert.deepEqual(validateSettingsBeforeProcess(fractionalOffsetY), {
+      valid: false,
+      alertKey: 'alert_offset_cannot_be_empty_or_negative',
+    });
+
+    const oversizedOffsetX = { ...createDefaultSettings(), offsetX: MAX_OFFSET_PX + 1 };
+    assert.deepEqual(validateSettingsBeforeProcess(oversizedOffsetX), {
+      valid: false,
+      alertKey: 'alert_offset_cannot_be_empty_or_negative',
+    });
+
+    const oversizedOffsetY = { ...createDefaultSettings(), offsetY: MAX_OFFSET_PX + 1 };
+    assert.deepEqual(validateSettingsBeforeProcess(oversizedOffsetY), {
+      valid: false,
+      alertKey: 'alert_offset_cannot_be_empty_or_negative',
+    });
+
+    assert.deepEqual(
+      validateSettingsBeforeProcess({
+        ...createDefaultSettings(),
+        offsetX: MIN_OFFSET_PX,
+        offsetY: MAX_OFFSET_PX,
+      }),
+      { valid: true }
+    );
+
     const transparentBg = { ...createDefaultSettings(), bgColor: 'transparent' };
     assert.deepEqual(validateSettingsBeforeProcess(transparentBg), {
       valid: false,

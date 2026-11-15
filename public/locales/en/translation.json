@@ -58,7 +58,7 @@
   "download_image": "Save Image",
   "alert_select_images_first": "Please select images first.",
   "alert_columns_must_be_positive": "Columns must be a positive number.",
-  "alert_offset_cannot_be_empty_or_negative": "Offset (px) cannot be empty or negative.",
+  "alert_offset_cannot_be_empty_or_negative": "Offset (px) must be an integer between 0 and 50.",
   "alert_invalid_crop_setting": "Crop settings are invalid. X and Y must be 0 or greater, and Width and Height must be positive integers.",
   "alert_crop_outside_image": "The crop area is completely outside the first image ({{width}} x {{height}} px). Please adjust the crop settings.",
   "alert_invalid_mask_area": "Active mask area must have a width and height greater than 0.",
