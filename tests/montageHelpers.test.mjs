@@ -369,6 +369,63 @@ describe('renderMontageTiles', () => {
     assert.equal(montage.ops.filter((op) => op.type === 'drawImage').length, 1);
     assert.equal(montage.ops.filter((op) => op.type === 'fillRect').length, 1);
   });
+
+  it('passes 0-based index to decodeImage so a pre-decoded first bitmap can be reused cleanly', async () => {
+    const events = [];
+    const montage = createMockMontageContext({ events });
+    let firstBitmap = {
+      id: 'predecoded-first',
+      close() {
+        events.push({ type: 'close', id: 'predecoded-first' });
+      },
+    };
+    const decodeCalls = [];
+
+    await renderMontageTiles({
+      files: ['first.png', 'second.png'],
+      colCount: 2,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 100, height: 80 },
+      masks: [],
+      decodeImage: async (file, index) => {
+        decodeCalls.push([file, index]);
+        if (index === 0 && firstBitmap) {
+          const reused = firstBitmap;
+          firstBitmap = null;
+          return reused;
+        }
+        return {
+          id: `decoded-${file}`,
+          close() {
+            events.push({ type: 'close', id: `decoded-${file}` });
+          },
+        };
+      },
+      montageCtx: montage.ctx,
+      yieldFrame: async () => {
+        events.push({ type: 'yield' });
+      },
+    });
+
+    assert.equal(firstBitmap, null);
+    assert.deepEqual(decodeCalls, [
+      ['first.png', 0],
+      ['second.png', 1],
+    ]);
+    const drawCalls = montage.ops.filter((op) => op.type === 'drawImage').map((op) => op.args);
+    assert.equal(drawCalls[0][0].id, 'predecoded-first');
+    assert.equal(drawCalls[1][0].id, 'decoded-second.png');
+    assert.deepEqual(
+      events.filter((e) => e.type !== 'montageDrawImage'),
+      [
+        { type: 'close', id: 'predecoded-first' },
+        { type: 'yield' },
+        { type: 'close', id: 'decoded-second.png' },
+        { type: 'yield' },
+      ]
+    );
+  });
 });
 
 describe('decodeImageWithFallback', () => {

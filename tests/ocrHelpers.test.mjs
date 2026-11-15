@@ -722,4 +722,160 @@ describe('OCR cancellation & scratch context safety', () => {
     assert.equal(mockCanvas.width, 1);
     assert.equal(mockCanvas.height, 1);
   });
+
+  it('pre-encodes ROI blobs, shrinks scratch canvas, and invokes onSourceConsumed before worker startup', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    const events = [];
+    const recognizedInputs = [];
+    let currentWidth = 0;
+    let currentHeight = 0;
+    let sourceBitmapClosed = false;
+
+    const mockCanvas = {
+      get width() {
+        return currentWidth;
+      },
+      set width(v) {
+        currentWidth = v;
+        if (v === 1 && currentHeight === 1) {
+          events.push('scratch:reset');
+        }
+      },
+      get height() {
+        return currentHeight;
+      },
+      set height(v) {
+        currentHeight = v;
+        if (currentWidth === 1 && v === 1) {
+          events.push('scratch:reset');
+        }
+      },
+      getContext: () => ({
+        clearRect() {},
+        drawImage(_src, sx, sy, sw, sh) {
+          events.push(`draw:${sx},${sy},${sw},${sh}`);
+        },
+      }),
+      toBlob: (cb) => {
+        const blob = new Blob([`roi:${currentWidth}x${currentHeight}`], { type: 'image/png' });
+        events.push(`toBlob:${currentWidth}x${currentHeight}`);
+        cb(blob);
+      },
+    };
+
+    const result = await runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: true,
+      abortHolder,
+      sessionHolder,
+      createCanvas: () => mockCanvas,
+      onSourceConsumed: () => {
+        sourceBitmapClosed = true;
+        events.push('onSourceConsumed');
+      },
+      onStatus: (status) => {
+        assert.equal(sourceBitmapClosed, true);
+        assert.equal(mockCanvas.width, 1);
+        assert.equal(mockCanvas.height, 1);
+        events.push(`onStatus:${status}`);
+      },
+      startSession: (signal) => {
+        assert.equal(sourceBitmapClosed, true);
+        assert.equal(mockCanvas.width, 1);
+        assert.equal(mockCanvas.height, 1);
+        events.push('startSession');
+        let callIndex = 0;
+        return startOcrSession({
+          signal,
+          createWorkerFn: async () => ({
+            recognize: async (img) => {
+              assert.equal(img instanceof Blob, true);
+              recognizedInputs.push(img);
+              events.push(`recognize:${callIndex}`);
+              const word =
+                callIndex++ === 0
+                  ? { text: 'Lv.90', bbox: { x0: 40, y0: 20, x1: 95, y1: 40 } }
+                  : { text: 'Lv.85', bbox: { x0: 30, y0: 15, x1: 85, y1: 35 } };
+              return {
+                data: {
+                  blocks: [{ paragraphs: [{ lines: [{ words: [word] }] }] }],
+                },
+              };
+            },
+            terminate: async () => {},
+          }),
+        });
+      },
+    });
+
+    assert.deepEqual(result, {
+      status: 'ok',
+      enemyMaskRect: { x: 1218, y: 198, width: 351, height: 30 },
+      selfMaskRect: { x: 440, y: 193, width: 360, height: 30 },
+    });
+    assert.equal(recognizedInputs.length, 2);
+    assert.deepEqual(events, [
+      'draw:1183,183,384,73',
+      'toBlob:384x73',
+      'draw:415,183,384,73',
+      'toBlob:384x73',
+      'scratch:reset',
+      'onSourceConsumed',
+      'onStatus:starting',
+      'startSession',
+      'recognize:0',
+      'recognize:1',
+    ]);
+  });
+
+  it('returns error without calling onSourceConsumed or startSession when pre-encoding toBlob yields null', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    let startSessionCalls = 0;
+    let statusCalls = 0;
+    let sourceConsumedCalls = 0;
+
+    const mockCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+      }),
+      toBlob: (cb) => cb(null),
+    };
+
+    const result = await runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: false,
+      abortHolder,
+      sessionHolder,
+      createCanvas: () => mockCanvas,
+      onSourceConsumed: () => {
+        sourceConsumedCalls += 1;
+      },
+      onStatus: () => {
+        statusCalls += 1;
+      },
+      startSession: () => {
+        startSessionCalls += 1;
+        return {
+          ready: Promise.reject(new Error('should never be called')),
+          terminate: async () => {},
+        };
+      },
+    });
+
+    assert.equal(result.status, 'error');
+    assert.equal(sourceConsumedCalls, 0);
+    assert.equal(statusCalls, 0);
+    assert.equal(startSessionCalls, 0);
+    assert.equal(mockCanvas.width, 1);
+    assert.equal(mockCanvas.height, 1);
+  });
 });

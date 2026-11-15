@@ -74,7 +74,7 @@ export interface ManagedOcrSession<
   I = Blob | HTMLCanvasElement,
 > {
   worker: W;
-  recognizeBlocks: (canvas: C) => Promise<OcrBlock[] | null | undefined>;
+  recognizeBlocks: (input: C | Blob) => Promise<OcrBlock[] | null | undefined>;
   terminate: () => Promise<void>;
 }
 
@@ -529,30 +529,36 @@ export const startOcrSession = <
 
     return {
       worker,
-      recognizeBlocks: async (canvas) => {
+      recognizeBlocks: async (input) => {
         if (terminated || signal?.aborted) {
           throw createAbortError();
         }
-        if (
-          !Number.isFinite(canvas.width) ||
-          !Number.isFinite(canvas.height) ||
-          canvas.width <= 0 ||
-          canvas.height <= 0
-        ) {
-          throw new Error(`Invalid OCR canvas dimensions: ${canvas.width}x${canvas.height}`);
-        }
         const recognizeDeadline = Date.now() + recognizeTimeoutMs;
-        // Convert canvas to Blob in app code so null toBlob() rejects cleanly without hitting
-        // tesseract.js's unguarded canvas.toBlob wrapper.
-        const toBlobFn = canvas.toBlob;
-        const inputImage =
-          typeof toBlobFn === 'function'
-            ? await raceWithGuards(
-                canvasToBlob({ toBlob: toBlobFn.bind(canvas) }),
-                recognizeTimeoutMs,
-                'OCR image encoding timed out'
-              )
-            : canvas;
+        let inputImage: Blob | C;
+        if (typeof Blob !== 'undefined' && input instanceof Blob) {
+          inputImage = input;
+        } else {
+          const canvas = input as C;
+          if (
+            !Number.isFinite(canvas.width) ||
+            !Number.isFinite(canvas.height) ||
+            canvas.width <= 0 ||
+            canvas.height <= 0
+          ) {
+            throw new Error(`Invalid OCR canvas dimensions: ${canvas.width}x${canvas.height}`);
+          }
+          // Convert canvas to Blob in app code so null toBlob() rejects cleanly without hitting
+          // tesseract.js's unguarded canvas.toBlob wrapper.
+          const toBlobFn = canvas.toBlob;
+          inputImage =
+            typeof toBlobFn === 'function'
+              ? await raceWithGuards(
+                  canvasToBlob({ toBlob: toBlobFn.bind(canvas) }),
+                  recognizeTimeoutMs,
+                  'OCR image encoding timed out'
+                )
+              : canvas;
+        }
         const remainingRecognizeMs = Math.max(1, recognizeDeadline - Date.now());
         const result = await raceWithGuards(
           worker.recognize(inputImage as I, {}, { blocks: true }),
@@ -667,12 +673,14 @@ export interface RunOcrMaskDetectionOptions<
   startSession: (signal: AbortSignal) => OcrSessionController<W, C, I>;
   createCanvas?: () => C;
   onStatus?: (status: 'starting') => void;
+  onSourceConsumed?: () => void;
 }
 
 /**
  * Validates OCR ROIs, acquires the scratch 2D canvas context BEFORE starting the worker session
- * (so context creation failures never leave an unawaited `ready` promise or timer), runs Lv.
- * detection, and awaits cleanup + `ready` settlement across every exit path.
+ * (so context creation failures never leave an unawaited `ready` promise or timer), pre-encodes
+ * tiny ROI PNG blobs so the caller can release the full source bitmap before worker startup, runs
+ * Lv. detection, and awaits cleanup + `ready` settlement across every exit path.
  */
 export const runOcrMaskDetection = async <
   W extends OcrWorkerLike<I>,
@@ -689,6 +697,7 @@ export const runOcrMaskDetection = async <
   startSession,
   createCanvas = () => document.createElement('canvas') as unknown as C,
   onStatus,
+  onSourceConsumed,
 }: RunOcrMaskDetectionOptions<W, C, B, I>): Promise<OcrMaskDetectionResult> => {
   if (!needsEnemyOcr && !needsSelfOcr) {
     return { status: 'ok', enemyMaskRect: null, selfMaskRect: null };
@@ -725,6 +734,47 @@ export const runOcrMaskDetection = async <
     };
   }
 
+  const drawRoiToScratch = (roi: PixelRect): void => {
+    scratch.width = roi.width;
+    scratch.height = roi.height;
+    sctx.clearRect(0, 0, roi.width, roi.height);
+    sctx.drawImage(
+      sourceImage,
+      roi.x,
+      roi.y,
+      roi.width,
+      roi.height,
+      0,
+      0,
+      roi.width,
+      roi.height
+    );
+  };
+
+  let enemyBlob: Blob | null = null;
+  let selfBlob: Blob | null = null;
+  const canPreEncodeBlobs = typeof scratch.toBlob === 'function';
+
+  if (canPreEncodeBlobs) {
+    const toBlobFn = scratch.toBlob!.bind(scratch);
+    try {
+      if (needsEnemyOcr) {
+        drawRoiToScratch(plan.enemyRoi);
+        enemyBlob = await canvasToBlob({ toBlob: toBlobFn });
+      }
+      if (needsSelfOcr) {
+        drawRoiToScratch(plan.selfRoi);
+        selfBlob = await canvasToBlob({ toBlob: toBlobFn });
+      }
+    } catch (e) {
+      return { status: 'error', error: e };
+    } finally {
+      scratch.width = scratch.height = 1;
+    }
+    // Release the full-resolution source bitmap before spinning up Tesseract WASM/language data.
+    onSourceConsumed?.();
+  }
+
   onStatus?.('starting');
   const abortController = new AbortController();
   abortHolder.current = abortController;
@@ -741,33 +791,27 @@ export const runOcrMaskDetection = async <
 
     const detectOcrRect = async (
       roi: PixelRect,
-      side: 'right' | 'left'
+      side: 'right' | 'left',
+      preEncodedBlob: Blob | null
     ): Promise<PixelRect | null> => {
-      scratch.width = roi.width;
-      scratch.height = roi.height;
-      sctx.clearRect(0, 0, roi.width, roi.height);
-      sctx.drawImage(
-        sourceImage,
-        roi.x,
-        roi.y,
-        roi.width,
-        roi.height,
-        0,
-        0,
-        roi.width,
-        roi.height
-      );
-      const blocks = await session.recognizeBlocks(scratch);
+      let input: C | Blob;
+      if (preEncodedBlob) {
+        input = preEncodedBlob;
+      } else {
+        drawRoiToScratch(roi);
+        input = scratch;
+      }
+      const blocks = await session.recognizeBlocks(input);
       const words = extractWordsFromBlocks(blocks, roi.x, roi.y);
       const targetBox = findTopmostLvBbox(words);
       return targetBox ? buildOcrMaskRect(targetBox, cropRect, side) : null;
     };
 
     if (needsEnemyOcr) {
-      enemyMaskRect = await detectOcrRect(plan.enemyRoi, 'right');
+      enemyMaskRect = await detectOcrRect(plan.enemyRoi, 'right', enemyBlob);
     }
     if (needsSelfOcr) {
-      selfMaskRect = await detectOcrRect(plan.selfRoi, 'left');
+      selfMaskRect = await detectOcrRect(plan.selfRoi, 'left', selfBlob);
     }
   } catch (e) {
     if (isAbortError(e) || abortController.signal.aborted) {
@@ -775,7 +819,9 @@ export const runOcrMaskDetection = async <
     }
     return { status: 'error', error: e };
   } finally {
-    scratch.width = scratch.height = 1;
+    if (!canPreEncodeBlobs) {
+      scratch.width = scratch.height = 1;
+    }
     if (sessionHandle) {
       await releaseOcrResources(abortHolder, sessionHolder, {
         expectedAbort: abortController,

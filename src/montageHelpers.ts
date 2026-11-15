@@ -57,7 +57,7 @@ export interface RenderMontageTilesOptions<F, B extends BitmapLike> {
   cropRect: PixelRect;
   masks: readonly TileMaskRect[];
   montageCtx: MontageContextLike<B>;
-  decodeImage: (file: F) => Promise<B>;
+  decodeImage: (file: F, index: number) => Promise<B>;
   expectedDimensions?: ImageDimensions;
   getFileName?: (file: F) => string;
   yieldFrame?: () => Promise<void>;
@@ -170,7 +170,7 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
     const drawX = offsetX + col * (cropRect.width + offsetX);
     const drawY = offsetY + row * (cropRect.height + offsetY);
 
-    const bitmap = await decodeImage(files[i]);
+    const bitmap = await decodeImage(files[i], i);
     try {
       if (
         expectedDimensions &&

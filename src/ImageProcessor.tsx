@@ -841,6 +841,12 @@ const ImageProcessor: React.FC = () => {
     await new Promise(resolve => setTimeout(resolve, 200));
 
     let firstImageBitmap: ImageBitmap | null = null;
+    const releaseFirstImageBitmap = () => {
+      if (firstImageBitmap) {
+        firstImageBitmap.close();
+        firstImageBitmap = null;
+      }
+    };
     try {
       // Always check first image dimensions (also runs auto-crop / OCR ROI when needed).
       firstImageBitmap = await decodeImageWithFallback<File, ImageBitmap>(orderedImages[0]);
@@ -862,6 +868,7 @@ const ImageProcessor: React.FC = () => {
             needsSelfOcr,
             abortHolder: ocrAbortRef,
             sessionHolder: ocrSessionRef,
+            onSourceConsumed: releaseFirstImageBitmap,
             startSession: (signal) =>
               startOcrSession({
                 createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
@@ -875,10 +882,6 @@ const ImageProcessor: React.FC = () => {
             },
           }),
       });
-
-      // Early release of the first image bitmap before confirm dialogs or montage allocation.
-      firstImageBitmap.close();
-      firstImageBitmap = null;
 
       if (Object.keys(plan.settingsPatch).length > 0) {
         setSettings(prev => ({ ...prev, ...plan.settingsPatch }));
@@ -941,6 +944,8 @@ const ImageProcessor: React.FC = () => {
         return;
       }
       if (sizeEval.status === 'confirm_required') {
+        // Release before blocking on user confirmation or allocating an oversized montage.
+        releaseFirstImageBitmap();
         const confirmMessage =
           sizeEval.reason === 'exceeds_webp_dimension'
             ? t('confirm_webp_canvas_size', {
@@ -986,7 +991,14 @@ const ImageProcessor: React.FC = () => {
         montageCtx,
         expectedDimensions,
         getFileName: (file) => file.name,
-        decodeImage: (file) => decodeImageWithFallback<File, ImageBitmap>(file),
+        decodeImage: (file, index) => {
+          if (index === 0 && firstImageBitmap) {
+            const reusedBitmap = firstImageBitmap;
+            firstImageBitmap = null;
+            return Promise.resolve(reusedBitmap);
+          }
+          return decodeImageWithFallback<File, ImageBitmap>(file);
+        },
       });
 
       let mimeType = 'image/webp';
@@ -1041,9 +1053,7 @@ const ImageProcessor: React.FC = () => {
 
       window.location.reload();
     } finally {
-      if (firstImageBitmap) {
-        firstImageBitmap.close();
-      }
+      releaseFirstImageBitmap();
       if (canvasRef.current && (canvasRef.current.width !== 1 || canvasRef.current.height !== 1)) {
         canvasRef.current.width = 1;
         canvasRef.current.height = 1;
