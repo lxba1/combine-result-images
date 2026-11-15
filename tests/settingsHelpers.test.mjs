@@ -11,13 +11,16 @@ import {
   MIN_OFFSET_PX,
   SETTINGS_STORAGE_KEY,
   areSettingsDefault,
+  computeRatioMaskRect,
   createDefaultSettings,
   cropRectToSettings,
   evaluateMontageCanvasSize,
+  hasCropOverlapWithImage,
   loadSettingsFromStorage,
   normalizeHexColor,
   parseSavedSettings,
   saveSettingsToStorage,
+  validateSettingsBeforeProcess,
 } from '../src/settingsHelpers.ts';
 
 describe('cropRectToSettings', () => {
@@ -321,5 +324,111 @@ describe('loadSettingsFromStorage and saveSettingsToStorage', () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+});
+
+describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverlapWithImage', () => {
+  it('accepts valid defaults and rejects invalid colCount, offsets, colors, crop, and zero-area masks', () => {
+    assert.deepEqual(validateSettingsBeforeProcess(createDefaultSettings()), { valid: true });
+
+    const invalidCols = { ...createDefaultSettings(), colCount: 0 };
+    assert.deepEqual(validateSettingsBeforeProcess(invalidCols), {
+      valid: false,
+      alertKey: 'alert_columns_must_be_positive',
+    });
+
+    const fractionalCols = { ...createDefaultSettings(), colCount: 2.5 };
+    assert.deepEqual(validateSettingsBeforeProcess(fractionalCols), {
+      valid: false,
+      alertKey: 'alert_columns_must_be_positive',
+    });
+
+    const invalidOffset = { ...createDefaultSettings(), offsetY: -1 };
+    assert.deepEqual(validateSettingsBeforeProcess(invalidOffset), {
+      valid: false,
+      alertKey: 'alert_offset_cannot_be_empty_or_negative',
+    });
+
+    const transparentBg = { ...createDefaultSettings(), bgColor: 'transparent' };
+    assert.deepEqual(validateSettingsBeforeProcess(transparentBg), {
+      valid: false,
+      alertKey: 'alert_invalid_color_setting',
+    });
+
+    const inactiveBadMaskColor = { ...createDefaultSettings(), maskEnabled: false, maskColor: 'transparent' };
+    assert.deepEqual(validateSettingsBeforeProcess(inactiveBadMaskColor), { valid: true });
+
+    const activeBadMaskColor = { ...createDefaultSettings(), maskEnabled: true, maskColor: 'transparent' };
+    assert.deepEqual(validateSettingsBeforeProcess(activeBadMaskColor), {
+      valid: false,
+      alertKey: 'alert_invalid_color_setting',
+    });
+
+    const zeroManualCrop = { ...createDefaultSettings(), cropAuto: false, cropWidth: 0 };
+    assert.deepEqual(validateSettingsBeforeProcess(zeroManualCrop), {
+      valid: false,
+      alertKey: 'alert_invalid_crop_setting',
+    });
+
+    const invalidCropIgnoredWhenAuto = { ...createDefaultSettings(), cropAuto: true, cropWidth: 0 };
+    assert.deepEqual(validateSettingsBeforeProcess(invalidCropIgnoredWhenAuto), { valid: true });
+
+    const zeroRatioEnemyMask = {
+      ...createDefaultSettings(),
+      maskEnabled: true,
+      maskMode: 'ratio',
+      maskRatioRect: { rx0: 0.5, ry0: 0.1, rx1: 0.5, ry1: 0.3 },
+    };
+    assert.deepEqual(validateSettingsBeforeProcess(zeroRatioEnemyMask), {
+      valid: false,
+      alertKey: 'alert_invalid_mask_area',
+    });
+
+    const zeroManualSelfMask = {
+      ...createDefaultSettings(),
+      selfMaskEnabled: true,
+      selfMaskMode: 'manual',
+      selfMaskHeight: 0,
+    };
+    assert.deepEqual(validateSettingsBeforeProcess(zeroManualSelfMask), {
+      valid: false,
+      alertKey: 'alert_invalid_mask_area',
+    });
+  });
+
+  it('computes ratio masks and returns null when equal or collapsed to 0 px after rounding', () => {
+    const valid = computeRatioMaskRect(
+      { rx0: 0.25, ry0: 0.1, rx1: 0.75, ry1: 0.3 },
+      { x: 100, y: 50, width: 800, height: 600 }
+    );
+    assert.deepEqual(valid, { x: 300, y: 110, width: 400, height: 120 });
+
+    assert.equal(
+      computeRatioMaskRect(
+        { rx0: 0.5, ry0: 0.1, rx1: 0.5, ry1: 0.4 },
+        { x: 0, y: 0, width: 1000, height: 1000 }
+      ),
+      null
+    );
+
+    // Collapses width to 0 px after rounding against small crop width
+    assert.equal(
+      computeRatioMaskRect(
+        { rx0: 0.5, ry0: 0.1, rx1: 0.501, ry1: 0.4 },
+        { x: 0, y: 0, width: 100, height: 100 }
+      ),
+      null
+    );
+  });
+
+  it('allows partial crop overhang while rejecting zero overlap with image bounds', () => {
+    const image = { width: 1600, height: 900 };
+    assert.equal(hasCropOverlapWithImage({ x: 31, y: 117, width: 1538, height: 665 }, image), true);
+    // Partial overhang on right/bottom should be tolerated
+    assert.equal(hasCropOverlapWithImage({ x: 1500, y: 800, width: 300, height: 300 }, image), true);
+    // Completely outside right or bottom edge must fail
+    assert.equal(hasCropOverlapWithImage({ x: 1600, y: 100, width: 200, height: 200 }, image), false);
+    assert.equal(hasCropOverlapWithImage({ x: 100, y: 900, width: 200, height: 200 }, image), false);
+    assert.equal(hasCropOverlapWithImage({ x: 0, y: 0, width: 0, height: 200 }, image), false);
   });
 });

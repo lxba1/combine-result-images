@@ -32,14 +32,16 @@ import {
   MIN_OFFSET_PX,
   SELF_MASK_PRESETS,
   areSettingsDefault,
-  clamp01,
+  computeRatioMaskRect,
   createDefaultSettings,
   cropRectToSettings,
   evaluateMontageCanvasSize,
+  hasCropOverlapWithImage,
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
   saveSettingsToStorage,
+  validateSettingsBeforeProcess,
 } from './settingsHelpers.ts';
 import { detectAutoCropFromImage } from './cropHelpers.ts';
 import { buildTileMaskRects, renderMontageTiles } from './montageHelpers.ts';
@@ -879,23 +881,9 @@ const ImageProcessor: React.FC = () => {
       return;
     }
 
-    const validateSettings = (): boolean => {
-        if (isNaN(settings.colCount) || settings.colCount <= 0) {
-            alert(t('alert_columns_must_be_positive'));
-            return false;
-        }
-        if (isNaN(settings.offsetX) || settings.offsetX < 0) {
-            alert(t('alert_offset_cannot_be_empty_or_negative'));
-            return false;
-        }
-        if (isNaN(settings.offsetY) || settings.offsetY < 0) {
-            alert(t('alert_offset_cannot_be_empty_or_negative'));
-            return false;
-        }
-        return true;
-    };
-
-    if (!validateSettings()) {
+    const validation = validateSettingsBeforeProcess(settings);
+    if (!validation.valid) {
+      alert(t(validation.alertKey));
       return;
     }
 
@@ -917,15 +905,14 @@ const ImageProcessor: React.FC = () => {
         : null;
       const newSettings: Partial<ImageSettings> = {};
 
-      const needsFirstImage = settings.cropAuto ||
-        (settings.maskEnabled && (settings.maskMode === 'ratio' || settings.maskMode === 'ocr')) ||
-        (settings.selfMaskEnabled && (settings.selfMaskMode === 'ratio' || settings.selfMaskMode === 'ocr'));
+      const needsEnemyOcr = settings.maskEnabled && settings.maskMode === 'ocr';
+      const needsSelfOcr = settings.selfMaskEnabled && settings.selfMaskMode === 'ocr';
 
-      if (needsFirstImage) {
-          firstImageBitmap = await loadAndDrawFirstImage(orderedImages[0]);
-          if (!firstImageBitmap) return;
-      }
-      if (settings.cropAuto && firstImageBitmap) {
+      // Always check first image dimensions (also runs auto-crop / OCR ROI when needed).
+      firstImageBitmap = await loadAndDrawFirstImage(orderedImages[0]);
+      if (!firstImageBitmap) return;
+
+      if (settings.cropAuto) {
         const autoCropResult = detectAutoCropFromImage(firstImageBitmap);
         if (autoCropResult.status !== 'ok') {
           const alertKey =
@@ -938,33 +925,40 @@ const ImageProcessor: React.FC = () => {
         }
         cropRect = autoCropResult.rect;
         Object.assign(newSettings, cropRectToSettings(cropRect));
+      } else if (!hasCropOverlapWithImage(cropRect, firstImageBitmap)) {
+        alert(
+          t('alert_crop_outside_image', {
+            width: firstImageBitmap.width,
+            height: firstImageBitmap.height,
+          })
+        );
+        return;
       }
 
       // Ratio calculation
-      if (firstImageBitmap) {
-        if (settings.maskEnabled && settings.maskMode === 'ratio') {
-          const r = settings.maskRatioRect;
-          const x0 = cropRect.x + Math.round(clamp01(r.rx0) * cropRect.width);
-          const y0 = cropRect.y + Math.round(clamp01(r.ry0) * cropRect.height);
-          const x1 = cropRect.x + Math.round(clamp01(r.rx1) * cropRect.width);
-          const y1 = cropRect.y + Math.round(clamp01(r.ry1) * cropRect.height);
-          enemyMaskRect = { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
-          Object.assign(newSettings, { maskX: enemyMaskRect.x, maskY: enemyMaskRect.y, maskWidth: enemyMaskRect.width, maskHeight: enemyMaskRect.height });
+      if (settings.maskEnabled && settings.maskMode === 'ratio') {
+        enemyMaskRect = computeRatioMaskRect(settings.maskRatioRect, cropRect);
+        if (!enemyMaskRect) {
+          alert(t('alert_invalid_mask_area'));
+          return;
         }
-        if (settings.selfMaskEnabled && settings.selfMaskMode === 'ratio') {
-          const r = settings.selfMaskRatioRect;
-          const x0 = cropRect.x + Math.round(clamp01(r.rx0) * cropRect.width);
-          const y0 = cropRect.y + Math.round(clamp01(r.ry0) * cropRect.height);
-          const x1 = cropRect.x + Math.round(clamp01(r.rx1) * cropRect.width);
-          const y1 = cropRect.y + Math.round(clamp01(r.ry1) * cropRect.height);
-          selfMaskRect = { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
-          Object.assign(newSettings, { selfMaskX: selfMaskRect.x, selfMaskY: selfMaskRect.y, selfMaskWidth: selfMaskRect.width, selfMaskHeight: selfMaskRect.height });
+        Object.assign(newSettings, { maskX: enemyMaskRect.x, maskY: enemyMaskRect.y, maskWidth: enemyMaskRect.width, maskHeight: enemyMaskRect.height });
+      }
+      if (settings.selfMaskEnabled && settings.selfMaskMode === 'ratio') {
+        selfMaskRect = computeRatioMaskRect(settings.selfMaskRatioRect, cropRect);
+        if (!selfMaskRect) {
+          alert(t('alert_invalid_mask_area'));
+          return;
         }
+        Object.assign(newSettings, { selfMaskX: selfMaskRect.x, selfMaskY: selfMaskRect.y, selfMaskWidth: selfMaskRect.width, selfMaskHeight: selfMaskRect.height });
+      }
+
+      if (!needsEnemyOcr && !needsSelfOcr) {
+        firstImageBitmap.close();
+        firstImageBitmap = null;
       }
 
       // OCR calculation
-      const needsEnemyOcr = settings.maskEnabled && settings.maskMode === 'ocr';
-      const needsSelfOcr = settings.selfMaskEnabled && settings.selfMaskMode === 'ocr';
       if (firstImageBitmap && (needsEnemyOcr || needsSelfOcr)) {
         const abortOcr = (message: string, disableEnemy: boolean, disableSelf: boolean) => {
           if (disableEnemy) {

@@ -383,3 +383,176 @@ export const saveSettingsToStorage = (
     return false;
   }
 };
+
+export type SettingsValidationResult =
+  | { valid: true }
+  | {
+      valid: false;
+      alertKey:
+        | 'alert_columns_must_be_positive'
+        | 'alert_offset_cannot_be_empty_or_negative'
+        | 'alert_invalid_crop_setting'
+        | 'alert_invalid_mask_area'
+        | 'alert_invalid_color_setting';
+    };
+
+const getOrderedClampedRatio = (rect: RatioRect): RatioRect | null => {
+  if (
+    !Number.isFinite(rect.rx0) ||
+    !Number.isFinite(rect.ry0) ||
+    !Number.isFinite(rect.rx1) ||
+    !Number.isFinite(rect.ry1)
+  ) {
+    return null;
+  }
+  return {
+    rx0: clamp01(Math.min(rect.rx0, rect.rx1)),
+    ry0: clamp01(Math.min(rect.ry0, rect.ry1)),
+    rx1: clamp01(Math.max(rect.rx0, rect.rx1)),
+    ry1: clamp01(Math.max(rect.ry0, rect.ry1)),
+  };
+};
+
+const isPositiveRatioRect = (rect: RatioRect): boolean => {
+  const ordered = getOrderedClampedRatio(rect);
+  return ordered !== null && ordered.rx1 > ordered.rx0 && ordered.ry1 > ordered.ry0;
+};
+
+const isValidManualMask = (x: number, y: number, width: number, height: number): boolean =>
+  Number.isSafeInteger(x) &&
+  Number.isSafeInteger(y) &&
+  Number.isSafeInteger(width) &&
+  Number.isSafeInteger(height) &&
+  x >= 0 &&
+  y >= 0 &&
+  width > 0 &&
+  height > 0;
+
+/**
+ * Validates minimum preconditions on `ImageSettings` right before image processing starts:
+ * column/offset bounds, opaque hex colors, positive manual crop dimensions, and positive
+ * area for enabled manual or ratio masks.
+ */
+export const validateSettingsBeforeProcess = (
+  settings: ImageSettings
+): SettingsValidationResult => {
+  if (
+    !Number.isSafeInteger(settings.colCount) ||
+    settings.colCount < MIN_COL_COUNT ||
+    settings.colCount > MAX_COL_COUNT
+  ) {
+    return { valid: false, alertKey: 'alert_columns_must_be_positive' };
+  }
+  if (
+    !Number.isFinite(settings.offsetX) ||
+    settings.offsetX < MIN_OFFSET_PX ||
+    !Number.isFinite(settings.offsetY) ||
+    settings.offsetY < MIN_OFFSET_PX
+  ) {
+    return { valid: false, alertKey: 'alert_offset_cannot_be_empty_or_negative' };
+  }
+  if (!normalizeHexColor(settings.bgColor)) {
+    return { valid: false, alertKey: 'alert_invalid_color_setting' };
+  }
+  if (!settings.cropAuto) {
+    if (
+      !Number.isSafeInteger(settings.cropX) ||
+      !Number.isSafeInteger(settings.cropY) ||
+      !Number.isSafeInteger(settings.cropWidth) ||
+      !Number.isSafeInteger(settings.cropHeight) ||
+      settings.cropX < 0 ||
+      settings.cropY < 0 ||
+      settings.cropWidth <= 0 ||
+      settings.cropHeight <= 0
+    ) {
+      return { valid: false, alertKey: 'alert_invalid_crop_setting' };
+    }
+  }
+  if (settings.maskEnabled) {
+    if (!normalizeHexColor(settings.maskColor)) {
+      return { valid: false, alertKey: 'alert_invalid_color_setting' };
+    }
+    if (
+      settings.maskMode === 'manual' &&
+      !isValidManualMask(settings.maskX, settings.maskY, settings.maskWidth, settings.maskHeight)
+    ) {
+      return { valid: false, alertKey: 'alert_invalid_mask_area' };
+    }
+    if (settings.maskMode === 'ratio' && !isPositiveRatioRect(settings.maskRatioRect)) {
+      return { valid: false, alertKey: 'alert_invalid_mask_area' };
+    }
+  }
+  if (settings.selfMaskEnabled) {
+    if (!normalizeHexColor(settings.selfMaskColor)) {
+      return { valid: false, alertKey: 'alert_invalid_color_setting' };
+    }
+    if (
+      settings.selfMaskMode === 'manual' &&
+      !isValidManualMask(
+        settings.selfMaskX,
+        settings.selfMaskY,
+        settings.selfMaskWidth,
+        settings.selfMaskHeight
+      )
+    ) {
+      return { valid: false, alertKey: 'alert_invalid_mask_area' };
+    }
+    if (settings.selfMaskMode === 'ratio' && !isPositiveRatioRect(settings.selfMaskRatioRect)) {
+      return { valid: false, alertKey: 'alert_invalid_mask_area' };
+    }
+  }
+  return { valid: true };
+};
+
+/**
+ * Computes a pixel mask rectangle from a ratio rect inside `cropRect`,
+ * returning `null` if rounding collapses width or height to 0.
+ */
+export const computeRatioMaskRect = (
+  ratio: RatioRect,
+  cropRect: PixelRect
+): PixelRect | null => {
+  const ordered = getOrderedClampedRatio(ratio);
+  if (!ordered || ordered.rx1 <= ordered.rx0 || ordered.ry1 <= ordered.ry0) {
+    return null;
+  }
+  const x0 = cropRect.x + Math.round(ordered.rx0 * cropRect.width);
+  const y0 = cropRect.y + Math.round(ordered.ry0 * cropRect.height);
+  const x1 = cropRect.x + Math.round(ordered.rx1 * cropRect.width);
+  const y1 = cropRect.y + Math.round(ordered.ry1 * cropRect.height);
+  const width = x1 - x0;
+  const height = y1 - y0;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return { x: x0, y: y0, width, height };
+};
+
+/**
+ * Returns true if `cropRect` shares at least a 1x1 pixel overlap with `imageBounds`.
+ * Partial overhangs (e.g., mixed image sizes) are tolerated.
+ */
+export const hasCropOverlapWithImage = (
+  cropRect: PixelRect,
+  imageBounds: Pick<PixelRect, 'width' | 'height'>
+): boolean => {
+  if (
+    !Number.isFinite(cropRect.x) ||
+    !Number.isFinite(cropRect.y) ||
+    !Number.isFinite(cropRect.width) ||
+    !Number.isFinite(cropRect.height) ||
+    !Number.isFinite(imageBounds.width) ||
+    !Number.isFinite(imageBounds.height) ||
+    cropRect.width <= 0 ||
+    cropRect.height <= 0 ||
+    imageBounds.width <= 0 ||
+    imageBounds.height <= 0
+  ) {
+    return false;
+  }
+  const overlapX0 = Math.max(0, cropRect.x);
+  const overlapY0 = Math.max(0, cropRect.y);
+  const overlapX1 = Math.min(imageBounds.width, cropRect.x + cropRect.width);
+  const overlapY1 = Math.min(imageBounds.height, cropRect.y + cropRect.height);
+  return overlapX1 > overlapX0 && overlapY1 > overlapY0;
+};
