@@ -15,6 +15,7 @@ import {
   extractWordsFromBlocks,
   findTopmostLvBbox,
   isAbortError,
+  releaseOcrResources,
   startOcrSession,
   validateOcrRois,
 } from './ocrHelpers.ts';
@@ -666,10 +667,7 @@ const ImageProcessor: React.FC = () => {
   useEffect(() => {
     // Abort and terminate any active or still-initializing OCR worker on unmount
     return () => {
-      ocrAbortRef.current?.abort();
-      ocrAbortRef.current = null;
-      void ocrSessionRef.current?.terminate();
-      ocrSessionRef.current = null;
+      void releaseOcrResources(ocrAbortRef, ocrSessionRef, { abort: true });
     };
   }, []);
 
@@ -1069,6 +1067,11 @@ const ImageProcessor: React.FC = () => {
           return;
         } finally {
           scratch.width = scratch.height = 1;
+          // Terminate the OCR worker immediately so its WASM/language memory is released before allocating montageCanvas.
+          await releaseOcrResources(ocrAbortRef, ocrSessionRef, {
+            expectedAbort: abortController,
+            expectedSession: sessionHandle,
+          });
         }
 
         if (!enemyDetected || !selfDetected) {
@@ -1197,13 +1200,9 @@ const ImageProcessor: React.FC = () => {
       alert(`${t('alert_processing_failed')}: ${errorMessage}`);
 
       // Best-effort cleanup before reloading
-      try {
-        ocrAbortRef.current?.abort();
-        ocrAbortRef.current = null;
-        void ocrSessionRef.current?.terminate();
-      } catch (cleanupError) {
+      void releaseOcrResources(ocrAbortRef, ocrSessionRef, { abort: true }).catch((cleanupError) => {
         console.warn('Failed to terminate OCR worker during cleanup:', cleanupError);
-      }
+      });
       if (reusableTempCanvas) {
         reusableTempCanvas.width = 1;
         reusableTempCanvas.height = 1;
@@ -1222,11 +1221,7 @@ const ImageProcessor: React.FC = () => {
         reusableTempCanvas.width = 1;
         reusableTempCanvas.height = 1;
       }
-      ocrAbortRef.current = null;
-      if (ocrSessionRef.current) {
-        await ocrSessionRef.current.terminate();
-        ocrSessionRef.current = null;
-      }
+      await releaseOcrResources(ocrAbortRef, ocrSessionRef);
       setOcrStatus(t('status_releasing_memory'));
       // Add a small delay to allow GC to run before re-enabling the button
       const isOcrUsed = (settings.maskEnabled && settings.maskMode === 'ocr') || (settings.selfMaskEnabled && settings.selfMaskMode === 'ocr');

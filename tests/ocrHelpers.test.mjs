@@ -7,6 +7,7 @@ import {
   findTopmostLvBbox,
   isAbortError,
   isRectWithinBounds,
+  releaseOcrResources,
   startOcrSession,
   validateOcrRois,
 } from '../src/ocrHelpers.ts';
@@ -384,5 +385,88 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
       /native worker crashed during recognize/
     );
     assert.equal(nativeTerminated, 1);
+  });
+});
+
+describe('releaseOcrResources early and fallback cleanup', () => {
+  it('clears holders and awaits expected session termination, leaving subsequent cleanup as a no-op', async () => {
+    const controller = new AbortController();
+    let resolveTerminate;
+    let terminateCount = 0;
+
+    const sessionHandle = {
+      ready: new Promise(() => {}),
+      terminate: () => {
+        terminateCount += 1;
+        return new Promise((resolve) => {
+          resolveTerminate = resolve;
+        });
+      },
+    };
+
+    const abortHolder = { current: controller };
+    const sessionHolder = { current: sessionHandle };
+
+    const cleanupPromise = releaseOcrResources(abortHolder, sessionHolder, {
+      expectedAbort: controller,
+      expectedSession: sessionHandle,
+    });
+
+    assert.equal(abortHolder.current, null);
+    assert.equal(sessionHolder.current, null);
+    assert.equal(terminateCount, 1);
+
+    let finished = false;
+    cleanupPromise.then(() => {
+      finished = true;
+    });
+    await Promise.resolve();
+    assert.equal(finished, false);
+
+    resolveTerminate();
+    await cleanupPromise;
+    assert.equal(finished, true);
+
+    await releaseOcrResources(abortHolder, sessionHolder);
+    assert.equal(terminateCount, 1);
+  });
+
+  it('aborts active controller on abort cleanup without clobbering newer session refs when expected guards are provided', async () => {
+    const oldController = new AbortController();
+    const newController = new AbortController();
+    let oldTerminated = 0;
+    let newTerminated = 0;
+
+    const oldSession = {
+      ready: new Promise(() => {}),
+      terminate: async () => {
+        oldTerminated += 1;
+      },
+    };
+    const newSession = {
+      ready: new Promise(() => {}),
+      terminate: async () => {
+        newTerminated += 1;
+      },
+    };
+
+    const abortHolder = { current: newController };
+    const sessionHolder = { current: newSession };
+
+    await releaseOcrResources(abortHolder, sessionHolder, {
+      expectedAbort: oldController,
+      expectedSession: oldSession,
+    });
+
+    assert.equal(oldTerminated, 1);
+    assert.equal(newTerminated, 0);
+    assert.equal(abortHolder.current, newController);
+    assert.equal(sessionHolder.current, newSession);
+
+    await releaseOcrResources(abortHolder, sessionHolder, { abort: true });
+    assert.equal(newController.signal.aborted, true);
+    assert.equal(newTerminated, 1);
+    assert.equal(abortHolder.current, null);
+    assert.equal(sessionHolder.current, null);
   });
 });

@@ -551,3 +551,46 @@ export const startOcrSession = <
 
   return { ready, terminate };
 };
+
+export interface MutableHolder<T> {
+  current: T | null;
+}
+
+export interface ReleaseOcrResourcesOptions<
+  W extends OcrWorkerLike<I>,
+  C extends OcrCanvasLike = HTMLCanvasElement,
+  I = Blob | HTMLCanvasElement,
+> {
+  abort?: boolean;
+  expectedAbort?: AbortController;
+  expectedSession?: OcrSessionController<W, C, I>;
+}
+
+/**
+ * Clears active OCR abort/session holders and awaits worker termination.
+ * Safe to invoke across early OCR completion cleanup, error handling, and unmount.
+ */
+export const releaseOcrResources = async <
+  W extends OcrWorkerLike<I>,
+  C extends OcrCanvasLike = HTMLCanvasElement,
+  I = Blob | HTMLCanvasElement,
+>(
+  abortHolder: MutableHolder<AbortController>,
+  sessionHolder: MutableHolder<OcrSessionController<W, C, I>>,
+  options?: ReleaseOcrResourcesOptions<W, C, I>
+): Promise<void> => {
+  if (options?.abort) {
+    abortHolder.current?.abort();
+  }
+  if (!options?.expectedAbort || abortHolder.current === options.expectedAbort) {
+    abortHolder.current = null;
+  }
+  const activeSession = sessionHolder.current;
+  if (!options?.expectedSession || activeSession === options.expectedSession) {
+    sessionHolder.current = null;
+  }
+  const targetSession = options?.expectedSession ?? activeSession;
+  if (targetSession) {
+    await targetSession.terminate();
+  }
+};
