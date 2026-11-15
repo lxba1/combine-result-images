@@ -48,6 +48,7 @@
   "cancel": "Cancel",
   "reset": "Reset",
   "upload_and_process": "Select & Process",
+  "local_processing_notice": "Processed in browser, never uploaded.",
   "upload_images": "Select Images",
   "files_selected": "{{count}} files selected",
   "clear": "Clear",

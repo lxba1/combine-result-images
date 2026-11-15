@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
 import { useColorScheme, styled } from '@mui/material/styles';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon } from '@mui/icons-material';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
@@ -1382,7 +1382,21 @@ const ImageProcessor: React.FC = () => {
         <Grid size={{ xs: 12, md: 7, lg: 8 }}>
           <Card>
             <CardContent>
-              <Typography variant="h5" component="h2" sx={{ mb: 2 }}>{t('upload_and_process')}</Typography>
+              <Typography variant="h5" component="h2" sx={{ mb: 0.75 }}>{t('upload_and_process')}</Typography>
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 0.75,
+                  mb: 2,
+                  color: 'text.secondary',
+                }}
+              >
+                <LockOutlinedIcon sx={{ fontSize: 15, mt: '2px', flexShrink: 0 }} aria-hidden="true" />
+                <Typography variant="caption" color="text.secondary">
+                  {t('local_processing_notice')}
+                </Typography>
+              </Box>
               <Button
                 variant="contained"
                 component="label"
