@@ -956,4 +956,168 @@ describe('OCR cancellation & scratch context safety', () => {
     assert.equal(mockCanvas.width, 1);
     assert.equal(mockCanvas.height, 1);
   });
+
+  it('aborts hanging pre-encoding via releaseOcrResources, shrinks canvas immediately, and never spawns worker', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    let toBlobCalls = 0;
+    let pendingBlobCallback = null;
+    let sourceConsumedCalls = 0;
+    let statusCalls = 0;
+    let startSessionCalls = 0;
+
+    const mockCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+      }),
+      toBlob: (cb) => {
+        toBlobCalls += 1;
+        pendingBlobCallback = cb;
+      },
+    };
+
+    const resultPromise = runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: true,
+      abortHolder,
+      sessionHolder,
+      createCanvas: () => mockCanvas,
+      onSourceConsumed: () => {
+        sourceConsumedCalls += 1;
+      },
+      onStatus: () => {
+        statusCalls += 1;
+      },
+      startSession: () => {
+        startSessionCalls += 1;
+        return {
+          ready: Promise.reject(new Error('should never be called')),
+          terminate: async () => {},
+        };
+      },
+    });
+
+    assert.equal(toBlobCalls, 1);
+    assert.ok(abortHolder.current, 'AbortController must be registered before pre-encoding starts');
+    assert.ok(mockCanvas.width > 1 && mockCanvas.height > 1);
+
+    await releaseOcrResources(abortHolder, sessionHolder, { abort: true });
+    assert.equal(mockCanvas.width, 1);
+    assert.equal(mockCanvas.height, 1);
+
+    const result = await resultPromise;
+    assert.deepEqual(result, { status: 'aborted' });
+    assert.equal(toBlobCalls, 1);
+    assert.equal(sourceConsumedCalls, 0);
+    assert.equal(statusCalls, 0);
+    assert.equal(startSessionCalls, 0);
+    assert.equal(abortHolder.current, null);
+    assert.equal(sessionHolder.current, null);
+
+    // Late toBlob callback firing after abort must remain harmless.
+    pendingBlobCallback?.(new Blob(['late'], { type: 'image/png' }));
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(startSessionCalls, 0);
+  });
+
+  it('times out hanging pre-encoding toBlob, shrinks canvas, and skips worker startup', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    let sourceConsumedCalls = 0;
+    let statusCalls = 0;
+    let startSessionCalls = 0;
+
+    const mockCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+      }),
+      toBlob: () => {
+        // Intentionally never invoke callback.
+      },
+    };
+
+    const result = await runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: true,
+      abortHolder,
+      sessionHolder,
+      encodeTimeoutMs: 25,
+      createCanvas: () => mockCanvas,
+      onSourceConsumed: () => {
+        sourceConsumedCalls += 1;
+      },
+      onStatus: () => {
+        statusCalls += 1;
+      },
+      startSession: () => {
+        startSessionCalls += 1;
+        return {
+          ready: Promise.reject(new Error('should never be called')),
+          terminate: async () => {},
+        };
+      },
+    });
+
+    assert.equal(result.status, 'error');
+    assert.match(result.error instanceof Error ? result.error.message : String(result.error), /encoding timed out/i);
+    assert.equal(sourceConsumedCalls, 0);
+    assert.equal(statusCalls, 0);
+    assert.equal(startSessionCalls, 0);
+    assert.equal(abortHolder.current, null);
+    assert.equal(mockCanvas.width, 1);
+    assert.equal(mockCanvas.height, 1);
+  });
+
+  it('checks cancellation right before starting worker when aborted after pre-encoding', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    let startSessionCalls = 0;
+
+    const mockCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+      }),
+      toBlob: (cb) => cb(new Blob(['ok'], { type: 'image/png' })),
+    };
+
+    const result = await runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: false,
+      abortHolder,
+      sessionHolder,
+      createCanvas: () => mockCanvas,
+      onStatus: () => {
+        abortHolder.current?.abort();
+      },
+      startSession: () => {
+        startSessionCalls += 1;
+        return {
+          ready: Promise.reject(new Error('should never be called')),
+          terminate: async () => {},
+        };
+      },
+    });
+
+    assert.deepEqual(result, { status: 'aborted' });
+    assert.equal(startSessionCalls, 0);
+    assert.equal(abortHolder.current, null);
+    assert.equal(sessionHolder.current, null);
+    assert.equal(mockCanvas.width, 1);
+    assert.equal(mockCanvas.height, 1);
+  });
 });

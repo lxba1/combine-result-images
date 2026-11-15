@@ -341,6 +341,100 @@ const captureSpawnedWorkers = <T>(
   }
 };
 
+interface RaceWithTimeoutAndAbortOptions {
+  timeoutMs: number;
+  timeoutMessage: string;
+  signal?: AbortSignal;
+  isAborted?: () => boolean;
+  onAbort?: () => void;
+  onSettlingError?: () => Promise<void> | void;
+  registerHandlers?: (handlers: {
+    onError: (err: Error) => void;
+    onCancel: () => void;
+  }) => () => void;
+}
+
+const raceWithAbortAndTimeout = async <T>(
+  task: Promise<T>,
+  {
+    timeoutMs,
+    timeoutMessage,
+    signal,
+    isAborted,
+    onAbort,
+    onSettlingError,
+    registerHandlers,
+  }: RaceWithTimeoutAndAbortOptions
+): Promise<T> => {
+  if (isAborted?.() || signal?.aborted) {
+    void task.catch(() => {});
+    onAbort?.();
+    await Promise.resolve(onSettlingError?.()).catch(() => {});
+    throw createAbortError();
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    let unregisterHandlers: (() => void) | undefined;
+
+    const cleanup = () => {
+      if (timerId !== undefined) {
+        clearTimeout(timerId);
+        timerId = undefined;
+      }
+      signal?.removeEventListener('abort', handleAbort);
+      unregisterHandlers?.();
+      unregisterHandlers = undefined;
+    };
+
+    const settleWithError = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      Promise.resolve(onSettlingError?.())
+        .catch(() => {})
+        .finally(() => reject(err));
+    };
+
+    const handleAbort = () => {
+      onAbort?.();
+      settleWithError(createAbortError());
+    };
+
+    unregisterHandlers = registerHandlers?.({
+      onError: settleWithError,
+      onCancel: handleAbort,
+    });
+
+    if (signal) {
+      if (signal.aborted) {
+        handleAbort();
+        return;
+      }
+      signal.addEventListener('abort', handleAbort, { once: true });
+    }
+
+    if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+      timerId = setTimeout(() => {
+        settleWithError(new Error(timeoutMessage));
+      }, timeoutMs);
+    }
+
+    task.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (err) => {
+        settleWithError(toError(err));
+      }
+    );
+  });
+};
+
 /**
  * Starts an OCR session with initialization/recognition timeouts, worker error forwarding,
  * safe app-side Canvas-to-Blob conversion, immediate termination of even still-initializing
@@ -408,76 +502,30 @@ export const startOcrSession = <
     spawnedBlobUrls.length = 0;
   };
 
-  const raceWithGuards = async <T>(
+  const raceWithGuards = <T>(
     task: Promise<T>,
     timeoutMs: number,
     timeoutMessage: string
-  ): Promise<T> => {
-    if (terminated || signal?.aborted) {
-      await terminate();
-      throw createAbortError();
-    }
-
-    return new Promise<T>((resolve, reject) => {
-      let settled = false;
-      let timerId: ReturnType<typeof setTimeout> | undefined;
-
-      const cleanup = () => {
-        if (timerId !== undefined) {
-          clearTimeout(timerId);
-          timerId = undefined;
-        }
-        if (signal) {
-          signal.removeEventListener('abort', handleAbort);
-        }
-        if (activeErrorRejector === handleWorkerError) {
-          activeErrorRejector = null;
-        }
-        if (activeCancelRejector === handleAbort) {
-          activeCancelRejector = null;
-        }
-      };
-
-      const settleWithError = (err: Error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        void terminate().finally(() => reject(err));
-      };
-
-      const handleAbort = () => settleWithError(createAbortError());
-      const handleWorkerError = (err: Error) => settleWithError(err);
-
-      activeErrorRejector = handleWorkerError;
-      activeCancelRejector = handleAbort;
-
-      if (signal) {
-        if (signal.aborted) {
-          settleWithError(createAbortError());
-          return;
-        }
-        signal.addEventListener('abort', handleAbort, { once: true });
-      }
-
-      if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
-        timerId = setTimeout(() => {
-          settleWithError(new Error(timeoutMessage));
-        }, timeoutMs);
-      }
-
-      task.then(
-        (value) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve(value);
-        },
-        (err) => {
-          settleWithError(toError(err));
-        }
-      );
+  ): Promise<T> =>
+    raceWithAbortAndTimeout(task, {
+      timeoutMs,
+      timeoutMessage,
+      signal,
+      isAborted: () => terminated,
+      onSettlingError: terminate,
+      registerHandlers: ({ onError, onCancel }) => {
+        activeErrorRejector = onError;
+        activeCancelRejector = onCancel;
+        return () => {
+          if (activeErrorRejector === onError) {
+            activeErrorRejector = null;
+          }
+          if (activeCancelRejector === onCancel) {
+            activeCancelRejector = null;
+          }
+        };
+      },
     });
-  };
 
   const ready = (async (): Promise<ManagedOcrSession<W, C, I>> => {
     if (signal?.aborted) {
@@ -689,15 +737,17 @@ export interface RunOcrMaskDetectionOptions<
   sessionHolder: MutableHolder<OcrSessionController<W, C, I>>;
   startSession: (signal: AbortSignal) => OcrSessionController<W, C, I>;
   createCanvas?: () => C;
+  encodeTimeoutMs?: number;
   onStatus?: (status: 'starting') => void;
   onSourceConsumed?: () => void;
 }
 
 /**
  * Validates OCR ROIs, acquires the scratch 2D canvas context BEFORE starting the worker session
- * (so context creation failures never leave an unawaited `ready` promise or timer), pre-encodes
- * tiny ROI PNG blobs so the caller can release the full source bitmap before worker startup, runs
- * Lv. detection, and awaits cleanup + `ready` settlement across every exit path.
+ * (so context creation failures never leave an unawaited `ready` promise or timer), registers
+ * cancellation before pre-encoding tiny ROI PNG blobs with timeout and abort guards so the caller
+ * can release the full source bitmap before worker startup, confirms cancellation before spawning
+ * the worker, runs Lv. detection, and awaits cleanup + `ready` settlement across every exit path.
  */
 export const runOcrMaskDetection = async <
   W extends OcrWorkerLike<I>,
@@ -713,6 +763,7 @@ export const runOcrMaskDetection = async <
   sessionHolder,
   startSession,
   createCanvas = () => document.createElement('canvas') as unknown as C,
+  encodeTimeoutMs = DEFAULT_OCR_RECOGNIZE_TIMEOUT_MS,
   onStatus,
   onSourceConsumed,
 }: RunOcrMaskDetectionOptions<W, C, B, I>): Promise<OcrMaskDetectionResult> => {
@@ -751,6 +802,12 @@ export const runOcrMaskDetection = async <
     };
   }
 
+  const resetScratch = (): void => {
+    if (scratch.width !== 1 || scratch.height !== 1) {
+      scratch.width = scratch.height = 1;
+    }
+  };
+
   const drawRoiToScratch = (roi: PixelRect): void => {
     scratch.width = roi.width;
     scratch.height = roi.height;
@@ -768,39 +825,64 @@ export const runOcrMaskDetection = async <
     );
   };
 
-  let enemyBlob: Blob | null = null;
-  let selfBlob: Blob | null = null;
-  const canPreEncodeBlobs = typeof scratch.toBlob === 'function';
-
-  if (canPreEncodeBlobs) {
-    const toBlobFn = scratch.toBlob!.bind(scratch);
-    try {
-      if (needsEnemyOcr) {
-        drawRoiToScratch(plan.enemyRoi);
-        enemyBlob = await canvasToBlob({ toBlob: toBlobFn });
-      }
-      if (needsSelfOcr) {
-        drawRoiToScratch(plan.selfRoi);
-        selfBlob = await canvasToBlob({ toBlob: toBlobFn });
-      }
-    } catch (e) {
-      return { status: 'error', error: e };
-    } finally {
-      scratch.width = scratch.height = 1;
-    }
-    // Release the full-resolution source bitmap before spinning up Tesseract WASM/language data.
-    onSourceConsumed?.();
-  }
-
-  onStatus?.('starting');
   const abortController = new AbortController();
   abortHolder.current = abortController;
   let sessionHandle: OcrSessionController<W, C, I> | undefined;
 
+  let enemyBlob: Blob | null = null;
+  let selfBlob: Blob | null = null;
   let enemyMaskRect: PixelRect | null = null;
   let selfMaskRect: PixelRect | null = null;
+  const canPreEncodeBlobs = typeof scratch.toBlob === 'function';
 
   try {
+    if (canPreEncodeBlobs) {
+      const toBlobFn = scratch.toBlob!.bind(scratch);
+      const hasFiniteEncodeTimeout = encodeTimeoutMs > 0 && Number.isFinite(encodeTimeoutMs);
+      const encodeDeadline = Date.now() + encodeTimeoutMs;
+
+      const preEncodeRoi = async (roi: PixelRect): Promise<Blob> => {
+        if (abortController.signal.aborted) {
+          throw createAbortError();
+        }
+        drawRoiToScratch(roi);
+        const remainingTimeoutMs = hasFiniteEncodeTimeout
+          ? Math.max(1, encodeDeadline - Date.now())
+          : encodeTimeoutMs;
+        return raceWithAbortAndTimeout(canvasToBlob({ toBlob: toBlobFn }), {
+          timeoutMs: remainingTimeoutMs,
+          timeoutMessage: 'OCR image encoding timed out',
+          signal: abortController.signal,
+          onAbort: resetScratch,
+        });
+      };
+
+      try {
+        if (needsEnemyOcr) {
+          enemyBlob = await preEncodeRoi(plan.enemyRoi);
+        }
+        if (needsSelfOcr) {
+          selfBlob = await preEncodeRoi(plan.selfRoi);
+        }
+      } finally {
+        resetScratch();
+      }
+
+      if (abortController.signal.aborted) {
+        throw createAbortError();
+      }
+      // Release the full-resolution source bitmap before spinning up Tesseract WASM/language data.
+      onSourceConsumed?.();
+    }
+
+    if (abortController.signal.aborted) {
+      throw createAbortError();
+    }
+    onStatus?.('starting');
+    if (abortController.signal.aborted) {
+      throw createAbortError();
+    }
+
     sessionHandle = startSession(abortController.signal);
     sessionHolder.current = sessionHandle;
 
@@ -836,9 +918,7 @@ export const runOcrMaskDetection = async <
     }
     return { status: 'error', error: e };
   } finally {
-    if (!canPreEncodeBlobs) {
-      scratch.width = scratch.height = 1;
-    }
+    resetScratch();
     if (sessionHandle) {
       await releaseOcrResources(abortHolder, sessionHolder, {
         expectedAbort: abortController,
