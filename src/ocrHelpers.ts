@@ -1,3 +1,5 @@
+import { intersectPixelRects } from './settingsHelpers.ts';
+
 export type PixelRect = { x: number; y: number; width: number; height: number };
 
 export interface OcrBbox {
@@ -138,18 +140,24 @@ export const computeOcrSearchPlan = (crop: PixelRect): OcrSearchPlan => {
   };
 };
 
-/** Validates active OCR regions have positive dimensions and lie completely inside image bounds. */
+/** Clips OCR regions to image bounds and validates that each active ROI keeps positive dimensions. */
 export const validateOcrRois = (
   crop: PixelRect,
   imageBounds: PixelRect,
   needsEnemy: boolean,
   needsSelf: boolean
 ): OcrRoiValidationResult => {
-  const plan = computeOcrSearchPlan(crop);
+  const rawPlan = computeOcrSearchPlan(crop);
+  const clippedEnemy = intersectPixelRects(rawPlan.enemyRoi, imageBounds);
+  const clippedSelf = intersectPixelRects(rawPlan.selfRoi, imageBounds);
   return {
-    plan,
-    enemyValid: !needsEnemy || isRectWithinBounds(plan.enemyRoi, imageBounds),
-    selfValid: !needsSelf || isRectWithinBounds(plan.selfRoi, imageBounds),
+    plan: {
+      ...rawPlan,
+      enemyRoi: clippedEnemy ?? rawPlan.enemyRoi,
+      selfRoi: clippedSelf ?? rawPlan.selfRoi,
+    },
+    enemyValid: !needsEnemy || clippedEnemy !== null,
+    selfValid: !needsSelf || clippedSelf !== null,
   };
 };
 

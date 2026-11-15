@@ -54,7 +54,7 @@ describe('validateOcrRois and isRectWithinBounds', () => {
     assert.equal(short.selfValid, false);
   });
 
-  it('rejects ROIs that extend outside the decoded image bounds', () => {
+  it('rejects ROIs that have zero overlap with the decoded image bounds', () => {
     const imageBounds = { x: 0, y: 0, width: 1600, height: 900 };
 
     const completelyOut = validateOcrRois(
@@ -66,15 +66,58 @@ describe('validateOcrRois and isRectWithinBounds', () => {
     assert.equal(completelyOut.enemyValid, false);
     assert.equal(completelyOut.selfValid, false);
 
-    // cropX=900, width=1000 -> enemyRoi=[1650..1900] (outside 1600), selfRoi=[1150..1400] (inside 1600)
-    const partiallyOut = validateOcrRois(
+    // cropX=900, width=1000 -> enemyRoi=[1650..1900] (completely outside 1600), selfRoi=[1150..1400] (inside 1600)
+    const disjointEnemy = validateOcrRois(
       { x: 900, y: 100, width: 1000, height: 600 },
       imageBounds,
       true,
       true
     );
-    assert.equal(partiallyOut.enemyValid, false);
-    assert.equal(partiallyOut.selfValid, true);
+    assert.equal(disjointEnemy.enemyValid, false);
+    assert.equal(disjointEnemy.selfValid, true);
+  });
+
+  it('clips partially overhanging ROIs to image bounds and marks them valid', () => {
+    const imageBounds = { x: 0, y: 0, width: 1600, height: 900 };
+    // Right edge of enemyRoi overhangs 1600 by 3px (1210 + 393 = 1603); bottom edge of searchHeight stays inside
+    const overhangRight = validateOcrRois(
+      { x: 31, y: 117, width: 1572, height: 665 },
+      imageBounds,
+      true,
+      true
+    );
+    assert.equal(overhangRight.enemyValid, true);
+    assert.equal(overhangRight.selfValid, true);
+    assert.deepEqual(overhangRight.plan.enemyRoi, {
+      x: 1210,
+      y: 183,
+      width: 390,
+      height: 73,
+    });
+    assert.ok(isRectWithinBounds(overhangRight.plan.enemyRoi, imageBounds));
+    assert.ok(isRectWithinBounds(overhangRight.plan.selfRoi, imageBounds));
+
+    // Bottom edge of both ROIs overhangs 900 by 6px (searchY=895, searchHeight=11 -> bottom=906)
+    const overhangBottom = validateOcrRois(
+      { x: 100, y: 885, width: 800, height: 100 },
+      imageBounds,
+      true,
+      true
+    );
+    assert.equal(overhangBottom.enemyValid, true);
+    assert.equal(overhangBottom.selfValid, true);
+    assert.deepEqual(overhangBottom.plan.enemyRoi, {
+      x: 700,
+      y: 895,
+      width: 200,
+      height: 5,
+    });
+    assert.deepEqual(overhangBottom.plan.selfRoi, {
+      x: 300,
+      y: 895,
+      width: 200,
+      height: 5,
+    });
   });
 
   it('skips validation for sides where OCR is disabled', () => {
@@ -611,6 +654,71 @@ describe('OCR cancellation & scratch context safety', () => {
     assert.equal(workerTerminated, 1);
     assert.equal(abortHolder.current, null);
     assert.equal(sessionHolder.current, null);
+    assert.equal(mockCanvas.width, 1);
+    assert.equal(mockCanvas.height, 1);
+  });
+
+  it('runs OCR using clipped ROI when crop slightly overhangs image right edge', async () => {
+    const abortHolder = { current: null };
+    const sessionHolder = { current: null };
+    const drawCalls = [];
+    const mockCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage(...args) {
+          drawCalls.push({ args, width: mockCanvas.width, height: mockCanvas.height });
+        },
+      }),
+      toBlob: (cb) => cb(new Blob(['png-bytes'], { type: 'image/png' })),
+    };
+
+    const result = await runOcrMaskDetection({
+      sourceImage: { width: 1600, height: 900 },
+      cropRect: { x: 31, y: 117, width: 1572, height: 665 },
+      needsEnemyOcr: true,
+      needsSelfOcr: false,
+      abortHolder,
+      sessionHolder,
+      createCanvas: () => mockCanvas,
+      startSession: (signal) =>
+        startOcrSession({
+          signal,
+          createWorkerFn: async () => ({
+            recognize: async () => ({
+              data: {
+                blocks: [
+                  {
+                    paragraphs: [
+                      {
+                        lines: [
+                          {
+                            words: [
+                              { text: 'Lv.90', bbox: { x0: 40, y0: 20, x1: 95, y1: 40 } },
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            }),
+            terminate: async () => {},
+          }),
+        }),
+    });
+
+    assert.equal(drawCalls.length, 1);
+    assert.deepEqual(drawCalls[0].args.slice(1), [1210, 183, 390, 73, 0, 0, 390, 73]);
+    assert.equal(drawCalls[0].width, 390);
+    assert.equal(drawCalls[0].height, 73);
+    assert.deepEqual(result, {
+      status: 'ok',
+      enemyMaskRect: { x: 1245, y: 198, width: 358, height: 30 },
+      selfMaskRect: null,
+    });
     assert.equal(mockCanvas.width, 1);
     assert.equal(mockCanvas.height, 1);
   });
