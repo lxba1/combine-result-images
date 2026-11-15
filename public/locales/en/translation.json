@@ -78,6 +78,7 @@
   "alert_failed_to_get_context": "Failed to get 2D rendering context from canvas. Please try again.",
   "alert_invalid_canvas_size": "Calculated output canvas size is invalid ({{width}} x {{height}} px). Please check your settings.",
   "confirm_large_canvas_size": "The output image is very large ({{width}} x {{height}} px / {{pixels}} pixels).\nGeneration or display may fail depending on your browser or device memory limits. Do you want to continue?",
-  "confirm_webp_canvas_size": "The output size exceeds the WebP dimension limit of {{maxWebpDimension}} px ({{width}} x {{height}} px / {{pixels}} pixels).\nWebP export may fail in some browsers (PNG or JPEG may succeed). Do you want to continue?",
+  "alert_webp_canvas_size": "The output size ({{width}} x {{height}} px) exceeds the WebP format limit of {{maxWebpDimension}} px.\nWebP cannot export images beyond this limit without silent truncation. Switch the Output Format to PNG or JPEG, or adjust the column count / number of images and try again.",
+  "alert_output_dimension_mismatch": "The encoded image size ({{actualWidth}} x {{actualHeight}} px) does not match the expected size ({{expectedWidth}} x {{expectedHeight}} px).\nThe output may have been truncated due to format or browser size limits. Switch the Output Format (PNG / JPEG) or adjust the column count / number of images and try again.",
   "status_releasing_memory": "Releasing memory..."
 }

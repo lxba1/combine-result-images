@@ -78,6 +78,7 @@
   "alert_failed_to_get_context": "Canvasから2D描画コンテキストの取得に失敗しました。もう一度お試しください。",
   "alert_invalid_canvas_size": "出力画像のサイズ計算結果が無効です（{{width}} × {{height}} px）。設定値を見直してください。",
   "confirm_large_canvas_size": "出力画像が非常に大きくなります（{{width}} × {{height}} px / {{pixels}} ピクセル）。\nブラウザや端末のメモリ上限により生成・表示に失敗する可能性があります。このまま続行しますか？",
-  "confirm_webp_canvas_size": "出力サイズが WebP 形式の上限目安（{{maxWebpDimension}} px）を超えています（{{width}} × {{height}} px / {{pixels}} ピクセル）。\nWebP では出力に失敗するブラウザがあります（PNG または JPEG なら出力できる場合があります）。このまま続行しますか？",
+  "alert_webp_canvas_size": "出力サイズ（{{width}} × {{height}} px）が WebP 形式の上限（{{maxWebpDimension}} px）を超えています。\nWebP では上限を超える部分が切り捨てられるため出力できません。出力形式を PNG または JPEG に変更するか、カラム数・画像の枚数を調整して再度お試しください。",
+  "alert_output_dimension_mismatch": "生成された画像のサイズ（{{actualWidth}} × {{actualHeight}} px）が期待サイズ（{{expectedWidth}} × {{expectedHeight}} px）と一致しません。\n画像形式やブラウザのサイズ上限により一部が切り捨てられた可能性があります。出力形式（PNG / JPEG）やカラム数・画像の枚数を調整して再度お試しください。",
   "status_releasing_memory": "メモリを解放しています..."
 }

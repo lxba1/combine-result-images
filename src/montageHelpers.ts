@@ -224,6 +224,155 @@ export interface MontageCanvasLike<B extends BitmapLike> {
   ) => void;
 }
 
+const matchesAscii = (bytes: Uint8Array, offset: number, ascii: string): boolean => {
+  if (offset + ascii.length > bytes.length) return false;
+  for (let i = 0; i < ascii.length; i++) {
+    if (bytes[offset + i] !== ascii.charCodeAt(i)) return false;
+  }
+  return true;
+};
+
+const parsePngDimensions = (bytes: Uint8Array, view: DataView): ImageDimensions | null => {
+  if (
+    bytes.length < 24 ||
+    bytes[0] !== 0x89 ||
+    !matchesAscii(bytes, 1, 'PNG\r\n\x1a\n') ||
+    !matchesAscii(bytes, 12, 'IHDR')
+  ) {
+    return null;
+  }
+  const width = view.getUint32(16, false);
+  const height = view.getUint32(20, false);
+  return width > 0 && height > 0 ? { width, height } : null;
+};
+
+const parseWebpDimensions = (bytes: Uint8Array, view: DataView): ImageDimensions | null => {
+  if (!matchesAscii(bytes, 0, 'RIFF') || !matchesAscii(bytes, 8, 'WEBP')) {
+    return null;
+  }
+  if (matchesAscii(bytes, 12, 'VP8 ')) {
+    if (
+      bytes.length < 30 ||
+      (bytes[20] & 0x01) !== 0 ||
+      bytes[23] !== 0x9d ||
+      bytes[24] !== 0x01 ||
+      bytes[25] !== 0x2a
+    ) {
+      return null;
+    }
+    const width = view.getUint16(26, true) & 0x3fff;
+    const height = view.getUint16(28, true) & 0x3fff;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  if (matchesAscii(bytes, 12, 'VP8L')) {
+    if (bytes.length < 25 || bytes[20] !== 0x2f) {
+      return null;
+    }
+    const bits = view.getUint32(21, true);
+    const width = (bits & 0x3fff) + 1;
+    const height = ((bits >>> 14) & 0x3fff) + 1;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  if (matchesAscii(bytes, 12, 'VP8X')) {
+    if (bytes.length < 30) {
+      return null;
+    }
+    const width = (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)) + 1;
+    const height = (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)) + 1;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  return null;
+};
+
+const parseJpegDimensions = (bytes: Uint8Array, view: DataView): ImageDimensions | null => {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return null;
+  }
+  let offset = 2;
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      break;
+    }
+    while (offset < bytes.length && bytes[offset] === 0xff) {
+      offset += 1;
+    }
+    if (offset >= bytes.length) {
+      break;
+    }
+    const marker = bytes[offset];
+    offset += 1;
+    // Standalone markers without a segment payload
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      if (marker === 0xd9) break;
+      continue;
+    }
+    // Start of Scan: SOF frame markers always precede entropy-coded scan data
+    if (marker === 0xda || offset + 2 > bytes.length) {
+      break;
+    }
+    const segmentLength = view.getUint16(offset, false);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) {
+      break;
+    }
+    const isSofMarker =
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc;
+    if (isSofMarker) {
+      if (segmentLength < 7 || offset + 7 > bytes.length) {
+        break;
+      }
+      const height = view.getUint16(offset + 3, false);
+      const width = view.getUint16(offset + 5, false);
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+    offset += segmentLength;
+  }
+  return null;
+};
+
+/**
+ * Parses pixel dimensions from PNG, WebP, or JPEG container header bytes without decoding
+ * full image pixel buffers. Returns `null` when bytes are unrecognized or truncated.
+ */
+export const parseImageDimensionsFromBytes = (bytes: Uint8Array): ImageDimensions | null => {
+  if (bytes.length < 4) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return (
+    parsePngDimensions(bytes, view) ??
+    parseWebpDimensions(bytes, view) ??
+    parseJpegDimensions(bytes, view)
+  );
+};
+
+const MAX_HEADER_INSPECT_BYTES = 131_072;
+
+/**
+ * Reads encoded dimensions from an output Blob header without decoding full uncompressed
+ * pixel buffers into GPU/RAM. Returns `null` if the header cannot be parsed.
+ */
+export const readEncodedImageDimensions = async (
+  blob: Blob
+): Promise<ImageDimensions | null> => {
+  if (!blob || typeof blob.slice !== 'function') {
+    return null;
+  }
+  try {
+    const headerSlice = blob.slice(0, MAX_HEADER_INSPECT_BYTES);
+    if (typeof headerSlice.arrayBuffer !== 'function') {
+      return null;
+    }
+    const bytes = new Uint8Array(await headerSlice.arrayBuffer());
+    return parseImageDimensionsFromBytes(bytes);
+  } catch {
+    return null;
+  }
+};
+
 export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
   extends Omit<RenderMontageTilesOptions<F, B>, 'montageCtx'> {
   dimensions: ImageDimensions;
@@ -231,18 +380,20 @@ export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
   mimeType: string;
   quality: number;
   createCanvas?: () => MontageCanvasLike<B>;
+  inspectBlobDimensions?: (blob: Blob) => Promise<ImageDimensions | null>;
 }
 
 export type RenderMontageToBlobResult =
   | { status: 'ok'; blob: Blob }
   | { status: 'allocation_failed' }
   | { status: 'context_failed' }
-  | { status: 'encode_failed' };
+  | { status: 'encode_failed' }
+  | { status: 'dimension_mismatch'; actualWidth: number; actualHeight: number };
 
 /**
  * Allocates an offscreen detached canvas, renders the full montage onto it, encodes the output
- * Blob, and immediately shrinks the canvas to 1x1 before returning so the backing store and
- * 2D context can be GC-reclaimed without retaining a DOM `<canvas>`.
+ * Blob, immediately shrinks the canvas to 1x1 so the backing store can be GC-reclaimed, and
+ * verifies encoded container dimensions against the requested output size.
  */
 export const renderMontageToBlob = async <F, B extends BitmapLike>({
   dimensions,
@@ -250,9 +401,16 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
   mimeType,
   quality,
   createCanvas = () => document.createElement('canvas') as unknown as MontageCanvasLike<B>,
+  inspectBlobDimensions = readEncodedImageDimensions,
   ...tileOptions
 }: RenderMontageToBlobOptions<F, B>): Promise<RenderMontageToBlobResult> => {
   const montageCanvas = createCanvas();
+  const shrinkCanvas = () => {
+    if (montageCanvas.width !== 1 || montageCanvas.height !== 1) {
+      montageCanvas.width = 1;
+      montageCanvas.height = 1;
+    }
+  };
   try {
     const montageCtx = montageCanvas.getContext('2d', { alpha: false });
     if (!montageCtx) {
@@ -276,12 +434,25 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
     const montageBlob = await new Promise<Blob | null>((resolve) =>
       montageCanvas.toBlob(resolve, mimeType, quality)
     );
-    return montageBlob ? { status: 'ok', blob: montageBlob } : { status: 'encode_failed' };
-  } finally {
-    if (montageCanvas.width !== 1 || montageCanvas.height !== 1) {
-      montageCanvas.width = 1;
-      montageCanvas.height = 1;
+    shrinkCanvas();
+    if (!montageBlob || montageBlob.size === 0) {
+      return { status: 'encode_failed' };
     }
+    const actualDimensions = await inspectBlobDimensions(montageBlob);
+    if (
+      actualDimensions &&
+      (actualDimensions.width !== dimensions.width ||
+        actualDimensions.height !== dimensions.height)
+    ) {
+      return {
+        status: 'dimension_mismatch',
+        actualWidth: actualDimensions.width,
+        actualHeight: actualDimensions.height,
+      };
+    }
+    return { status: 'ok', blob: montageBlob };
+  } finally {
+    shrinkCanvas();
   }
 };
 

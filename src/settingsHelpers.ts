@@ -300,8 +300,9 @@ export interface MontageSizeEvaluation {
 
 /**
  * Evaluates output montage canvas dimensions before allocation.
- * Only mathematically invalid/overflowing dimensions fail hard; huge dimensions above
- * browser canvas/WebP ceilings request user confirmation instead of blocking valid outputs.
+ * Blocks mathematically invalid dimensions as well as WebP outputs exceeding `MAX_WEBP_DIMENSION`
+ * (since WebP has a 16,383 px format limit and Chrome silently truncates larger WebP exports),
+ * while requesting user confirmation for oversized PNG/JPEG dimensions above canvas ceilings.
  */
 export const evaluateMontageCanvasSize = (
   imageCount: number,
@@ -353,6 +354,19 @@ export const evaluateMontageCanvasSize = (
   }
 
   if (
+    settings.outputFormat === 'webp' &&
+    (width > MAX_WEBP_DIMENSION || height > MAX_WEBP_DIMENSION)
+  ) {
+    return {
+      width,
+      height,
+      pixels,
+      status: 'invalid',
+      reason: 'exceeds_webp_dimension',
+    };
+  }
+
+  if (
     width > MAX_RECOMMENDED_CANVAS_SIDE ||
     height > MAX_RECOMMENDED_CANVAS_SIDE ||
     pixels > MAX_RECOMMENDED_CANVAS_PIXELS
@@ -363,19 +377,6 @@ export const evaluateMontageCanvasSize = (
       pixels,
       status: 'confirm_required',
       reason: 'exceeds_canvas_limits',
-    };
-  }
-
-  if (
-    settings.outputFormat === 'webp' &&
-    (width > MAX_WEBP_DIMENSION || height > MAX_WEBP_DIMENSION)
-  ) {
-    return {
-      width,
-      height,
-      pixels,
-      status: 'confirm_required',
-      reason: 'exceeds_webp_dimension',
     };
   }
 

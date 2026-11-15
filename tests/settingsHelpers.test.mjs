@@ -248,33 +248,75 @@ describe('evaluateMontageCanvasSize', () => {
     assert.equal(result.status, 'ok');
   });
 
-  it('requests confirmation instead of blocking when WebP exceeds 16383 px, while allowing PNG/JPEG silently', () => {
+  it('blocks WebP when exceeding 16383 px (even above canvas limits), while allowing PNG/JPEG up to canvas limits', () => {
+    const okWebpBoundary = evaluateMontageCanvasSize(
+      48,
+      { width: 1538, height: 665 },
+      { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }
+    );
+    assert.equal(okWebpBoundary.height, 16160);
+    assert.equal(okWebpBoundary.status, 'ok');
+
     const webpResult = evaluateMontageCanvasSize(
-      50,
+      49,
       { width: 1538, height: 665 },
       { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }
     );
     assert.equal(webpResult.height > MAX_WEBP_DIMENSION, true);
-    assert.equal(webpResult.status, 'confirm_required');
+    assert.equal(webpResult.status, 'invalid');
     assert.equal(webpResult.reason, 'exceeds_webp_dimension');
 
+    const singleColWebp = evaluateMontageCanvasSize(
+      25,
+      { width: 1538, height: 665 },
+      { colCount: 1, offsetX: 8, offsetY: 8, outputFormat: 'webp' }
+    );
+    assert.equal(singleColWebp.height, 16833);
+    assert.equal(singleColWebp.status, 'invalid');
+    assert.equal(singleColWebp.reason, 'exceeds_webp_dimension');
+
+    const wideWebp = evaluateMontageCanvasSize(
+      2,
+      { width: 10000, height: 100 },
+      { colCount: 2, offsetX: 0, offsetY: 0, outputFormat: 'webp' }
+    );
+    assert.equal(wideWebp.width, 20000);
+    assert.equal(wideWebp.status, 'invalid');
+    assert.equal(wideWebp.reason, 'exceeds_webp_dimension');
+
     const pngResult = evaluateMontageCanvasSize(
-      50,
+      49,
       { width: 1538, height: 665 },
       { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'png' }
     );
     assert.equal(pngResult.status, 'ok');
+
+    const jpegResult = evaluateMontageCanvasSize(
+      49,
+      { width: 1538, height: 665 },
+      { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'jpeg' }
+    );
+    assert.equal(jpegResult.status, 'ok');
   });
 
-  it('requests confirmation with canvas limit reason when exceeding 32767 px side or 268M px area', () => {
+  it('requests confirmation with canvas limit reason for PNG/JPEG exceeding 32767 px side or 268M px area, while still blocking WebP', () => {
     const tallWebp = evaluateMontageCanvasSize(
       100,
       { width: 1538, height: 665 },
       { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'webp' }
     );
     assert.equal(tallWebp.height > MAX_RECOMMENDED_CANVAS_SIDE, true);
-    assert.equal(tallWebp.status, 'confirm_required');
-    assert.equal(tallWebp.reason, 'exceeds_canvas_limits');
+    assert.equal(tallWebp.status, 'invalid');
+    assert.equal(tallWebp.reason, 'exceeds_webp_dimension');
+
+    const tallPng = evaluateMontageCanvasSize(
+      100,
+      { width: 1538, height: 665 },
+      { colCount: 2, offsetX: 8, offsetY: 8, outputFormat: 'png' }
+    );
+    assert.equal(tallPng.height > MAX_RECOMMENDED_CANVAS_SIDE, true);
+    assert.equal(tallPng.status, 'confirm_required');
+    assert.equal(tallPng.reason, 'exceeds_canvas_limits');
 
     const wideArea = evaluateMontageCanvasSize(
       16,

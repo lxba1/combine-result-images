@@ -963,25 +963,27 @@ const ImageProcessor: React.FC = () => {
 
       const sizeEval = evaluateMontageCanvasSize(orderedImages.length, cropRect, finalSettings);
       if (sizeEval.status === 'invalid') {
-        alert(t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }));
+        if (sizeEval.reason === 'exceeds_webp_dimension') {
+          alert(
+            t('alert_webp_canvas_size', {
+              width: sizeEval.width.toLocaleString(),
+              height: sizeEval.height.toLocaleString(),
+              maxWebpDimension: MAX_WEBP_DIMENSION.toLocaleString(),
+            })
+          );
+        } else {
+          alert(t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }));
+        }
         return;
       }
       if (sizeEval.status === 'confirm_required') {
         // Release before blocking on user confirmation or allocating an oversized montage.
         releaseFirstImageBitmap();
-        const confirmMessage =
-          sizeEval.reason === 'exceeds_webp_dimension'
-            ? t('confirm_webp_canvas_size', {
-                width: sizeEval.width.toLocaleString(),
-                height: sizeEval.height.toLocaleString(),
-                pixels: sizeEval.pixels.toLocaleString(),
-                maxWebpDimension: MAX_WEBP_DIMENSION.toLocaleString(),
-              })
-            : t('confirm_large_canvas_size', {
-                width: sizeEval.width.toLocaleString(),
-                height: sizeEval.height.toLocaleString(),
-                pixels: sizeEval.pixels.toLocaleString(),
-              });
+        const confirmMessage = t('confirm_large_canvas_size', {
+          width: sizeEval.width.toLocaleString(),
+          height: sizeEval.height.toLocaleString(),
+          pixels: sizeEval.pixels.toLocaleString(),
+        });
         if (!window.confirm(confirmMessage)) {
           return;
         }
@@ -1017,6 +1019,20 @@ const ImageProcessor: React.FC = () => {
 
       if (renderResult.status === 'context_failed') {
         throw new Error(t('alert_failed_to_get_context'));
+      }
+      if (renderResult.status === 'dimension_mismatch') {
+        console.warn(
+          `Encoded output dimension mismatch: expected ${sizeEval.width}x${sizeEval.height}, got ${renderResult.actualWidth}x${renderResult.actualHeight}`
+        );
+        alert(
+          t('alert_output_dimension_mismatch', {
+            expectedWidth: sizeEval.width.toLocaleString(),
+            expectedHeight: sizeEval.height.toLocaleString(),
+            actualWidth: renderResult.actualWidth.toLocaleString(),
+            actualHeight: renderResult.actualHeight.toLocaleString(),
+          })
+        );
+        return;
       }
       if (renderResult.status === 'allocation_failed' || renderResult.status === 'encode_failed') {
         alert(t('alert_image_generation_failed'));
