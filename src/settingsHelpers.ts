@@ -159,21 +159,25 @@ const toBoundedInt = (value: unknown, fallback: number, min = 0, max = Number.PO
 const sanitizeHexColor = (value: unknown, fallback: string): string =>
   normalizeHexColor(value) ?? fallback;
 
+/** Clamps a ratio rectangle to [0, 1] and orders endpoints so rx0 <= rx1 and ry0 <= ry1. */
+export const normalizeRatioRect = (rect: RatioRect): RatioRect => ({
+  rx0: clamp01(Math.min(rect.rx0, rect.rx1)),
+  ry0: clamp01(Math.min(rect.ry0, rect.ry1)),
+  rx1: clamp01(Math.max(rect.rx0, rect.rx1)),
+  ry1: clamp01(Math.max(rect.ry0, rect.ry1)),
+});
+
 const sanitizeRatioRect = (rect: unknown, fallback: RatioRect): RatioRect => {
   if (!rect || typeof rect !== 'object' || Array.isArray(rect)) {
     return { ...fallback };
   }
   const candidate = rect as Partial<RatioRect>;
-  const rx0 = clamp01(typeof candidate.rx0 === 'number' && Number.isFinite(candidate.rx0) ? candidate.rx0 : 0);
-  const ry0 = clamp01(typeof candidate.ry0 === 'number' && Number.isFinite(candidate.ry0) ? candidate.ry0 : 0);
-  const rx1 = clamp01(typeof candidate.rx1 === 'number' && Number.isFinite(candidate.rx1) ? candidate.rx1 : 1);
-  const ry1 = clamp01(typeof candidate.ry1 === 'number' && Number.isFinite(candidate.ry1) ? candidate.ry1 : 1);
-  return {
-    rx0: Math.min(rx0, rx1),
-    ry0: Math.min(ry0, ry1),
-    rx1: Math.max(rx0, rx1),
-    ry1: Math.max(ry0, ry1),
-  };
+  return normalizeRatioRect({
+    rx0: typeof candidate.rx0 === 'number' && Number.isFinite(candidate.rx0) ? candidate.rx0 : 0,
+    ry0: typeof candidate.ry0 === 'number' && Number.isFinite(candidate.ry0) ? candidate.ry0 : 0,
+    rx1: typeof candidate.rx1 === 'number' && Number.isFinite(candidate.rx1) ? candidate.rx1 : 1,
+    ry1: typeof candidate.ry1 === 'number' && Number.isFinite(candidate.ry1) ? candidate.ry1 : 1,
+  });
 };
 
 /**
@@ -405,12 +409,27 @@ const getOrderedClampedRatio = (rect: RatioRect): RatioRect | null => {
   ) {
     return null;
   }
-  return {
-    rx0: clamp01(Math.min(rect.rx0, rect.rx1)),
-    ry0: clamp01(Math.min(rect.ry0, rect.ry1)),
-    rx1: clamp01(Math.max(rect.rx0, rect.rx1)),
-    ry1: clamp01(Math.max(rect.ry0, rect.ry1)),
-  };
+  return normalizeRatioRect(rect);
+};
+
+/**
+ * Applies a ratio mask field update and swaps inverted endpoints when `finalize` is true
+ * so entering Left > Right or Top > Bottom preserves the span instead of collapsing to 0.
+ */
+export const commitRatioRectField = (
+  rect: RatioRect,
+  key: keyof RatioRect,
+  value: number,
+  options?: { finalize?: boolean }
+): RatioRect => {
+  if (!Number.isFinite(value)) {
+    return options?.finalize ? (getOrderedClampedRatio(rect) ?? { ...rect }) : { ...rect };
+  }
+  const nextRect: RatioRect = { ...rect, [key]: clamp01(value) };
+  if (!options?.finalize) {
+    return nextRect;
+  }
+  return getOrderedClampedRatio(nextRect) ?? nextRect;
 };
 
 const isPositiveRatioRect = (rect: RatioRect): boolean => {

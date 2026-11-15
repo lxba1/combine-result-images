@@ -26,6 +26,7 @@ import {
   MIN_OFFSET_PX,
   SELF_MASK_PRESETS,
   areSettingsDefault,
+  commitRatioRectField,
   createDefaultSettings,
   evaluateMontageCanvasSize,
   isRatioRectEqual,
@@ -730,16 +731,10 @@ const ImageProcessor: React.FC = () => {
     if (isProcessing) return;
     if (name.startsWith('maskRatioRect.') || name.startsWith('selfMaskRatioRect.')) {
       const [parent, key] = name.split('.') as ['maskRatioRect' | 'selfMaskRatioRect', keyof RatioRect];
-      setSettings(prev => {
-        const nextRect = { ...prev[parent], [key]: newValue };
-        if (options?.finalize) {
-          if (key === 'rx0') nextRect.rx1 = Math.max(nextRect.rx1, newValue);
-          if (key === 'rx1') nextRect.rx0 = Math.min(nextRect.rx0, newValue);
-          if (key === 'ry0') nextRect.ry1 = Math.max(nextRect.ry1, newValue);
-          if (key === 'ry1') nextRect.ry0 = Math.min(nextRect.ry0, newValue);
-        }
-        return { ...prev, [parent]: nextRect };
-      });
+      setSettings(prev => ({
+        ...prev,
+        [parent]: commitRatioRectField(prev[parent], key, newValue, options),
+      }));
       return;
     }
 

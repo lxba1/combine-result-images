@@ -11,6 +11,7 @@ import {
   MIN_OFFSET_PX,
   SETTINGS_STORAGE_KEY,
   areSettingsDefault,
+  commitRatioRectField,
   computeRatioMaskRect,
   createDefaultSettings,
   cropRectToSettings,
@@ -19,6 +20,7 @@ import {
   intersectPixelRects,
   loadSettingsFromStorage,
   normalizeHexColor,
+  normalizeRatioRect,
   parseSavedSettings,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
@@ -464,5 +466,47 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
       ),
       null
     );
+  });
+
+  it('swaps inverted ratio endpoints on finalize instead of collapsing width or height to 0', () => {
+    const initial = { rx0: 0.5, ry0: 0.2, rx1: 0.8, ry1: 0.6 };
+
+    // Mid-edit keeps raw endpoints so user can finish typing without field jumping
+    const midEdit = commitRatioRectField(initial, 'rx0', 0.9, { finalize: false });
+    assert.deepEqual(midEdit, { rx0: 0.9, ry0: 0.2, rx1: 0.8, ry1: 0.6 });
+
+    // Blur/Enter finalize swaps Left (0.9) and Right (0.8) -> [0.8, 0.9]
+    const finalizedLeft = commitRatioRectField(initial, 'rx0', 0.9, { finalize: true });
+    assert.deepEqual(finalizedLeft, { rx0: 0.8, ry0: 0.2, rx1: 0.9, ry1: 0.6 });
+
+    // Entering Right < Left swaps into [0.3, 0.5]
+    const finalizedRight = commitRatioRectField(initial, 'rx1', 0.3, { finalize: true });
+    assert.deepEqual(finalizedRight, { rx0: 0.3, ry0: 0.2, rx1: 0.5, ry1: 0.6 });
+
+    // Entering Top > Bottom swaps into [0.6, 0.75]
+    const finalizedTop = commitRatioRectField(initial, 'ry0', 0.75, { finalize: true });
+    assert.deepEqual(finalizedTop, { rx0: 0.5, ry0: 0.6, rx1: 0.8, ry1: 0.75 });
+
+    // Entering Bottom < Top swaps into [0.1, 0.2]
+    const finalizedBottom = commitRatioRectField(initial, 'ry1', 0.1, { finalize: true });
+    assert.deepEqual(finalizedBottom, { rx0: 0.5, ry0: 0.1, rx1: 0.8, ry1: 0.2 });
+
+    // Resulting swapped rect stays valid for process validation
+    assert.deepEqual(
+      validateSettingsBeforeProcess({
+        ...createDefaultSettings(),
+        maskEnabled: true,
+        maskMode: 'ratio',
+        maskRatioRect: finalizedLeft,
+      }),
+      { valid: true }
+    );
+
+    assert.deepEqual(normalizeRatioRect({ rx0: 1.4, ry0: 0.9, rx1: -0.2, ry1: 0.3 }), {
+      rx0: 0,
+      ry0: 0.3,
+      rx1: 1,
+      ry1: 0.9,
+    });
   });
 });
