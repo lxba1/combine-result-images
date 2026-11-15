@@ -4,124 +4,23 @@ import { Button, TextField, Container, Grid, Card, CardContent, Typography, Circ
 import { useColorScheme, styled } from '@mui/material/styles';
 import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
-import Tesseract, { PSM, type Bbox, type Block, type Line, type Word, type Paragraph } from 'tesseract.js';
+import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
+import {
+  type PixelRect,
+  type OcrWord,
+  type OcrSessionController,
+  buildOcrMaskRect,
+  extractWordsFromBlocks,
+  findTopmostLvBbox,
+  isAbortError,
+  startOcrSession,
+  validateOcrRois,
+} from './ocrHelpers.ts';
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 type RatioRect = { rx0: number; ry0: number; rx1: number; ry1: number };
-type PixelRect = { x: number; y: number; width: number; height: number };
-
-const isValidMaskRectWithinCrop = (rect: PixelRect, crop: PixelRect): boolean =>
-  Number.isFinite(rect.x) &&
-  Number.isFinite(rect.y) &&
-  Number.isFinite(rect.width) &&
-  Number.isFinite(rect.height) &&
-  rect.width > 0 &&
-  rect.height > 0 &&
-  rect.x >= crop.x &&
-  rect.y >= crop.y &&
-  rect.x + rect.width <= crop.x + crop.width &&
-  rect.y + rect.height <= crop.y + crop.height;
-
-const normalizeOcrToken = (text: string): string => text.normalize('NFKC').trim();
-
-const matchesLvLevel = (text: string): boolean => /lv[\s.,:・。]*\d+/i.test(text);
-
-const groupWordsIntoRows = (words: Word[]): Word[][] => {
-  const valid = words
-    .filter((w) => normalizeOcrToken(w.text).length > 0 && w.bbox.x1 > w.bbox.x0 && w.bbox.y1 > w.bbox.y0)
-    .sort((a, b) => (a.bbox.y0 + a.bbox.y1) / 2 - (b.bbox.y0 + b.bbox.y1) / 2);
-
-  const rows: { words: Word[]; y0: number; y1: number }[] = [];
-  for (const word of valid) {
-    const wordCy = (word.bbox.y0 + word.bbox.y1) / 2;
-    const wordH = word.bbox.y1 - word.bbox.y0;
-    const current = rows[rows.length - 1];
-    if (current) {
-      const rowCy = (current.y0 + current.y1) / 2;
-      const rowH = current.y1 - current.y0;
-      const verticalOverlap = Math.min(current.y1, word.bbox.y1) - Math.max(current.y0, word.bbox.y0);
-      if (verticalOverlap >= Math.min(wordH, rowH) * 0.2 || Math.abs(wordCy - rowCy) <= Math.max(wordH, rowH) * 0.5) {
-        current.words.push(word);
-        current.y0 = Math.min(current.y0, word.bbox.y0);
-        current.y1 = Math.max(current.y1, word.bbox.y1);
-        continue;
-      }
-    }
-    rows.push({ words: [word], y0: word.bbox.y0, y1: word.bbox.y1 });
-  }
-
-  return rows.map((row) => row.words.sort((a, b) => a.bbox.x0 - b.bbox.x0));
-};
-
-/**
- * Finds the topmost "Lv.<number>" target across ROI words, supporting split tokens
- * such as ["Lv.", "90"] or ["L", "v.", "90"] and whitespace/punctuation variants.
- */
-const findTopmostLvBbox = (words: Word[]): Bbox | null => {
-  const rows = groupWordsIntoRows(words);
-  let bestMatch: Bbox | null = null;
-
-  for (const row of rows) {
-    for (let i = 0; i < row.length; i++) {
-      for (let j = i; j < Math.min(row.length, i + 5); j++) {
-        if (j > i) {
-          const prev = row[j - 1].bbox;
-          const curr = row[j].bbox;
-          const gap = curr.x0 - prev.x1;
-          const charHeight = Math.max(4, prev.y1 - prev.y0, curr.y1 - curr.y0);
-          if (gap > Math.max(charHeight * 3, 40) || gap < -Math.max(charHeight * 1.5, 16)) {
-            break;
-          }
-        }
-
-        const tokens = row.slice(i, j + 1).map((w) => normalizeOcrToken(w.text));
-        const hasLvPrefix =
-          /lv/i.test(tokens[0]) ||
-          (tokens.length > 1 && /^l$/i.test(tokens[0]) && /^v/i.test(tokens[1]));
-        if (!hasLvPrefix) continue;
-
-        const spacedMatch = matchesLvLevel(tokens.join(' '));
-        const compactMatch = matchesLvLevel(tokens.join(''));
-        if (!spacedMatch && !compactMatch) continue;
-
-        if (j > i) {
-          const restTokens = tokens.slice(1);
-          if (matchesLvLevel(restTokens.join(' ')) || matchesLvLevel(restTokens.join(''))) {
-            continue;
-          }
-        }
-
-        const matchedWords = row.slice(i, j + 1);
-        const matchBox: Bbox = {
-          x0: Math.min(...matchedWords.map((w) => w.bbox.x0)),
-          y0: Math.min(...matchedWords.map((w) => w.bbox.y0)),
-          x1: Math.max(...matchedWords.map((w) => w.bbox.x1)),
-          y1: Math.max(...matchedWords.map((w) => w.bbox.y1)),
-        };
-
-        if (!bestMatch || matchBox.y0 < bestMatch.y0 || (matchBox.y0 === bestMatch.y0 && matchBox.x0 < bestMatch.x0)) {
-          bestMatch = matchBox;
-        }
-        break;
-      }
-    }
-  }
-
-  return bestMatch;
-};
-
-/** Builds and validates a crop-clipped mask rectangle from a detected "Lv." bounding box. */
-const buildOcrMaskRect = (lvBox: Bbox, crop: PixelRect, side: 'right' | 'left'): PixelRect | null => {
-  const PADDING = 5;
-  const x0 = Math.max(crop.x, Math.floor(lvBox.x0 - PADDING));
-  const y0 = Math.max(crop.y, Math.floor(lvBox.y0 - PADDING));
-  const x1 = side === 'right' ? crop.x + crop.width : crop.x + Math.floor(crop.width / 2);
-  const y1 = Math.min(crop.y + crop.height, Math.ceil(lvBox.y1 + PADDING));
-  const rect: PixelRect = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-  return isValidMaskRectWithinCrop(rect, crop) ? rect : null;
-};
 
 const isRatioRectEqual = (a: RatioRect, b: RatioRect) =>
   Math.abs(a.rx0 - b.rx0) < 0.0001 && Math.abs(a.ry0 - b.ry0) < 0.0001 &&
@@ -790,7 +689,8 @@ const ImageProcessor: React.FC = () => {
   const [ocrStatus, setOcrStatus] = useState('');
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const workerRef = useRef<Tesseract.Worker | null>(null);
+  const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
+  const ocrAbortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
   const isDefaultSettings = areSettingsDefault(settings);
@@ -801,10 +701,12 @@ const ImageProcessor: React.FC = () => {
   };
 
   useEffect(() => {
-    // Terminate the worker when the component unmounts
+    // Abort and terminate any active or still-initializing OCR worker on unmount
     return () => {
-      workerRef.current?.terminate();
-      workerRef.current = null;
+      ocrAbortRef.current?.abort();
+      ocrAbortRef.current = null;
+      void ocrSessionRef.current?.terminate();
+      ocrSessionRef.current = null;
     };
   }, []);
 
@@ -1160,24 +1062,42 @@ const ImageProcessor: React.FC = () => {
           alert(message);
         };
 
-        const searchY = cropRect.y + Math.floor(cropRect.height * 0.1);
-        const searchHeight = Math.floor(cropRect.height * 0.11);
-        const quarterWidth = Math.floor(cropRect.width / 4);
+        const imageBounds: PixelRect = {
+          x: 0,
+          y: 0,
+          width: firstImageBitmap.width,
+          height: firstImageBitmap.height,
+        };
+        const { plan, enemyValid, selfValid } = validateOcrRois(
+          cropRect,
+          imageBounds,
+          needsEnemyOcr,
+          needsSelfOcr
+        );
 
-        if (quarterWidth <= 0 || searchHeight <= 0) {
+        if (!enemyValid || !selfValid) {
           abortOcr(
             [
-              needsEnemyOcr ? t('alert_could_not_find_right_lv') : '',
-              needsSelfOcr ? t('alert_could_not_find_left_lv') : '',
+              !enemyValid ? t('alert_could_not_find_right_lv') : '',
+              !selfValid ? t('alert_could_not_find_left_lv') : '',
             ].filter(Boolean).join('\n'),
-            needsEnemyOcr,
-            needsSelfOcr
+            !enemyValid,
+            !selfValid
           );
           return;
         }
 
         setOcrStatus(t('ocr_status_starting'));
         const scratch = document.createElement('canvas');
+        const abortController = new AbortController();
+        const sessionHandle = startOcrSession({
+          createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
+          configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
+          signal: abortController.signal,
+        });
+        ocrAbortRef.current = abortController;
+        ocrSessionRef.current = sessionHandle;
+
         let enemyDetected = !needsEnemyOcr;
         let selfDetected = !needsSelfOcr;
 
@@ -1187,39 +1107,25 @@ const ImageProcessor: React.FC = () => {
             throw new Error('Failed to get 2D context for OCR scratch canvas');
           }
 
-          const worker = await Tesseract.createWorker('jpn+eng', 1);
-          workerRef.current = worker;
-          await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+          const session = await sessionHandle.ready;
 
-          const recognizeROI = async (sx: number, sy: number, sw: number, sh: number): Promise<Word[]> => {
-            scratch.width = sw;
-            scratch.height = sh;
-            sctx.clearRect(0, 0, sw, sh);
-            sctx.drawImage(firstImageBitmap!, sx, sy, sw, sh, 0, 0, sw, sh);
-            const { data } = await worker.recognize(scratch, {}, { blocks: true });
-            return (data?.blocks ?? [])
-              .flatMap((b: Block) => b.paragraphs ?? [])
-              .flatMap((p: Paragraph) => p.lines ?? [])
-              .flatMap((l: Line) => l.words ?? [])
-              .map((w: Word) => ({
-                ...w,
-                bbox: {
-                  x0: w.bbox.x0 + sx,
-                  y0: w.bbox.y0 + sy,
-                  x1: w.bbox.x1 + sx,
-                  y1: w.bbox.y1 + sy,
-                },
-              }));
+          const recognizeROI = async (roi: PixelRect): Promise<OcrWord[]> => {
+            scratch.width = roi.width;
+            scratch.height = roi.height;
+            sctx.clearRect(0, 0, roi.width, roi.height);
+            sctx.drawImage(firstImageBitmap!, roi.x, roi.y, roi.width, roi.height, 0, 0, roi.width, roi.height);
+            const blocks = await session.recognizeBlocks(scratch);
+            return extractWordsFromBlocks(blocks, roi.x, roi.y);
           };
 
-          const detectOcrRect = async (sx: number, side: 'right' | 'left'): Promise<PixelRect | null> => {
-            const words = await recognizeROI(sx, searchY, quarterWidth, searchHeight);
+          const detectOcrRect = async (roi: PixelRect, side: 'right' | 'left'): Promise<PixelRect | null> => {
+            const words = await recognizeROI(roi);
             const targetBox = findTopmostLvBbox(words);
             return targetBox ? buildOcrMaskRect(targetBox, cropRect, side) : null;
           };
 
           if (needsEnemyOcr) {
-            enemyMaskRect = await detectOcrRect(cropRect.x + (quarterWidth * 3), 'right');
+            enemyMaskRect = await detectOcrRect(plan.enemyRoi, 'right');
             if (enemyMaskRect) {
               enemyDetected = true;
               Object.assign(newSettings, {
@@ -1232,7 +1138,7 @@ const ImageProcessor: React.FC = () => {
           }
 
           if (needsSelfOcr) {
-            selfMaskRect = await detectOcrRect(cropRect.x + quarterWidth, 'left');
+            selfMaskRect = await detectOcrRect(plan.selfRoi, 'left');
             if (selfMaskRect) {
               selfDetected = true;
               Object.assign(newSettings, {
@@ -1244,6 +1150,9 @@ const ImageProcessor: React.FC = () => {
             }
           }
         } catch (e) {
+          if (isAbortError(e) || abortController.signal.aborted) {
+            return;
+          }
           console.error(e);
           abortOcr(t('alert_ocr_error'), needsEnemyOcr, needsSelfOcr);
           return;
@@ -1378,7 +1287,9 @@ const ImageProcessor: React.FC = () => {
 
       // Best-effort cleanup before reloading
       try {
-        workerRef.current?.terminate();
+        ocrAbortRef.current?.abort();
+        ocrAbortRef.current = null;
+        void ocrSessionRef.current?.terminate();
       } catch (cleanupError) {
         console.warn('Failed to terminate OCR worker during cleanup:', cleanupError);
       }
@@ -1400,9 +1311,10 @@ const ImageProcessor: React.FC = () => {
         reusableTempCanvas.width = 1;
         reusableTempCanvas.height = 1;
       }
-      if (workerRef.current) {
-        await workerRef.current.terminate();
-        workerRef.current = null;
+      ocrAbortRef.current = null;
+      if (ocrSessionRef.current) {
+        await ocrSessionRef.current.terminate();
+        ocrSessionRef.current = null;
       }
       setOcrStatus(t('status_releasing_memory'));
       // Add a small delay to allow GC to run before re-enabling the button
