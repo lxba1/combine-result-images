@@ -70,6 +70,8 @@
   "ocr_status_starting": "OCRを開始しています...",
   "ocr_status_mask_detected": "マスク領域を検出しました。",
   "alert_image_generation_failed": "画像の生成に失敗しました。メモリが不足している可能性があります。画像の枚数を減らして再度お試しください。",
+  "alert_image_decode_failed": "画像「{{fileName}}」の読み込みに失敗しました。ファイルを確認するか、一覧から削除して再度お試しください。",
+  "alert_image_resolution_mismatch": "画像「{{fileName}}」（{{actualWidth}} × {{actualHeight}} px）の解像度が 1 枚目の画像（{{expectedWidth}} × {{expectedHeight}} px）と一致しません。同じ解像度の画像のみを選択して再度お試しください。",
   "alert_processing_failed": "メモリが不足している可能性があります。もう一度お試しください。",
   "alert_canvas_not_ready": "Canvasが準備できていません。もう一度お試しください。",
   "alert_failed_to_get_context": "Canvasから2D描画コンテキストの取得に失敗しました。もう一度お試しください。",

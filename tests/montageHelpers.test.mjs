@@ -1,8 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ImageDecodeError,
+  ImageResolutionMismatchError,
   buildTileMaskRects,
+  decodeImageWithFallback,
   renderMontageTiles,
+  resolveOutputExtension,
 } from '../src/montageHelpers.ts';
 
 function createMockTempCanvas({ returnNullContext = false, throwOnDraw = false } = {}) {
@@ -321,5 +325,259 @@ describe('renderMontageTiles', () => {
     });
 
     assert.equal(tempCalls, 0);
+  });
+
+  it('rejects images whose dimensions differ from expectedDimensions and still closes bitmaps and temp canvas', async () => {
+    const temp = createMockTempCanvas();
+    const closed = [];
+    const decoded = [];
+    let montageDraws = 0;
+
+    await assert.rejects(
+      () =>
+        renderMontageTiles({
+          files: [{ name: 'ok.png' }, { name: 'wrong.png' }, { name: 'unreached.png' }],
+          colCount: 2,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 100, height: 100 },
+          masks: [{ x: 0, y: 0, width: 10, height: 10, color: '#000000' }],
+          expectedDimensions: { width: 1920, height: 1080 },
+          getFileName: (f) => f.name,
+          createTempCanvas: () => temp.canvas,
+          decodeImage: async (f) => {
+            decoded.push(f.name);
+            const size =
+              f.name === 'wrong.png'
+                ? { width: 1280, height: 720 }
+                : { width: 1920, height: 1080 };
+            return {
+              ...size,
+              close() {
+                closed.push(f.name);
+              },
+            };
+          },
+          montageCtx: {
+            drawImage() {
+              montageDraws++;
+            },
+          },
+          yieldFrame: async () => {},
+        }),
+      (err) =>
+        err instanceof ImageResolutionMismatchError &&
+        err.fileName === 'wrong.png' &&
+        err.expectedWidth === 1920 &&
+        err.expectedHeight === 1080 &&
+        err.actualWidth === 1280 &&
+        err.actualHeight === 720
+    );
+
+    assert.deepEqual(decoded, ['ok.png', 'wrong.png']);
+    assert.deepEqual(closed, ['ok.png', 'wrong.png']);
+    assert.equal(montageDraws, 1);
+    assert.equal(temp.canvas.width, 1);
+    assert.equal(temp.canvas.height, 1);
+  });
+});
+
+describe('decodeImageWithFallback', () => {
+  it('returns the primary ImageBitmap when createImageBitmap succeeds', async () => {
+    const bitmap = { close() {} };
+    let fallbackUsed = false;
+
+    const result = await decodeImageWithFallback(
+      { name: 'ok.png' },
+      {
+        primaryDecode: async () => bitmap,
+        createObjectURL: () => {
+          fallbackUsed = true;
+          return 'blob:unused';
+        },
+      }
+    );
+
+    assert.equal(result, bitmap);
+    assert.equal(fallbackUsed, false);
+  });
+
+  it('falls back to Image + temporary canvas when primary decoding fails, cleaning up URL and canvas', async () => {
+    const fallbackBitmap = { close() {} };
+    const revokedUrls = [];
+    const sleptMs = [];
+    const fallbackCanvas = createMockTempCanvas();
+    let drawnImage = null;
+
+    fallbackCanvas.ctx.drawImage = (img, dx, dy) => {
+      drawnImage = { img, dx, dy };
+    };
+
+    const result = await decodeImageWithFallback(
+      { name: 'retry.webp' },
+      {
+        primaryDecode: async () => {
+          throw new Error('primary decode glitch');
+        },
+        onPrimaryError: () => {},
+        retryDelayMs: 200,
+        sleep: async (ms) => {
+          sleptMs.push(ms);
+        },
+        createObjectURL: () => 'blob:mock-1',
+        revokeObjectURL: (url) => {
+          revokedUrls.push(url);
+        },
+        createImage: () => {
+          const img = {
+            decoding: '',
+            naturalWidth: 640,
+            naturalHeight: 480,
+            onload: null,
+            onerror: null,
+            _src: '',
+            get src() {
+              return this._src;
+            },
+            set src(v) {
+              this._src = v;
+              queueMicrotask(() => img.onload?.());
+            },
+          };
+          return img;
+        },
+        createCanvas: () => fallbackCanvas.canvas,
+        decodeCanvas: async (c) => {
+          assert.equal(c, fallbackCanvas.canvas);
+          assert.equal(c.width, 640);
+          assert.equal(c.height, 480);
+          return fallbackBitmap;
+        },
+      }
+    );
+
+    assert.equal(result, fallbackBitmap);
+    assert.deepEqual(sleptMs, [200]);
+    assert.deepEqual(revokedUrls, ['blob:mock-1']);
+    assert.deepEqual(fallbackCanvas.contextCalls, [
+      { id: '2d', options: { willReadFrequently: true, alpha: false } },
+    ]);
+    assert.deepEqual(fallbackCanvas.widthWrites, [640, 1]);
+    assert.deepEqual(fallbackCanvas.heightWrites, [480, 1]);
+    assert.equal(drawnImage.dx, 0);
+    assert.equal(drawnImage.dy, 0);
+  });
+
+  it('throws ImageDecodeError naming the failed file and still cleans up resources when both paths fail', async () => {
+    const revokedUrls = [];
+    const fallbackCanvas = createMockTempCanvas();
+
+    await assert.rejects(
+      () =>
+        decodeImageWithFallback(
+          { name: 'corrupt-sample.png' },
+          {
+            primaryDecode: async () => {
+              throw new Error('primary failed');
+            },
+            onPrimaryError: () => {},
+            retryDelayMs: 0,
+            createObjectURL: () => 'blob:mock-2',
+            revokeObjectURL: (url) => {
+              revokedUrls.push(url);
+            },
+            createImage: () => {
+              const img = {
+                decoding: '',
+                naturalWidth: 100,
+                naturalHeight: 100,
+                onload: null,
+                onerror: null,
+                _src: '',
+                get src() {
+                  return this._src;
+                },
+                set src(v) {
+                  this._src = v;
+                  queueMicrotask(() => img.onload?.());
+                },
+              };
+              return img;
+            },
+            createCanvas: () => fallbackCanvas.canvas,
+            decodeCanvas: async () => {
+              throw new Error('canvas decode failed');
+            },
+          }
+        ),
+      (err) => err instanceof ImageDecodeError && err.fileName === 'corrupt-sample.png'
+    );
+
+    assert.deepEqual(revokedUrls, ['blob:mock-2']);
+    assert.equal(fallbackCanvas.canvas.width, 1);
+    assert.equal(fallbackCanvas.canvas.height, 1);
+  });
+
+  it('throws ImageDecodeError when fallback image triggers onerror without leaking the object URL', async () => {
+    const revokedUrls = [];
+
+    await assert.rejects(
+      () =>
+        decodeImageWithFallback(
+          { name: 'bad-file.png' },
+          {
+            primaryDecode: async () => {
+              throw new Error('primary failed');
+            },
+            onPrimaryError: () => {},
+            retryDelayMs: 0,
+            createObjectURL: () => 'blob:mock-3',
+            revokeObjectURL: (url) => {
+              revokedUrls.push(url);
+            },
+            createImage: () => {
+              const img = {
+                decoding: '',
+                naturalWidth: 0,
+                naturalHeight: 0,
+                onload: null,
+                onerror: null,
+                _src: '',
+                get src() {
+                  return this._src;
+                },
+                set src(v) {
+                  this._src = v;
+                  queueMicrotask(() => img.onerror?.());
+                },
+              };
+              return img;
+            },
+          }
+        ),
+      (err) => err instanceof ImageDecodeError && err.fileName === 'bad-file.png'
+    );
+
+    assert.deepEqual(revokedUrls, ['blob:mock-3']);
+  });
+});
+
+describe('resolveOutputExtension', () => {
+  it('uses actual Blob MIME type when canvas.toBlob falls back to PNG', () => {
+    assert.equal(resolveOutputExtension('image/png', 'webp'), 'png');
+    assert.equal(resolveOutputExtension('IMAGE/PNG', 'jpeg'), 'png');
+  });
+
+  it('normalizes MIME parameters, whitespace, and JPEG extensions', () => {
+    assert.equal(resolveOutputExtension('image/webp; codecs=vp8', 'webp'), 'webp');
+    assert.equal(resolveOutputExtension(' image/jpeg ', 'png'), 'jpg');
+    assert.equal(resolveOutputExtension('image/jpg', 'jpeg'), 'jpg');
+  });
+
+  it('falls back to the requested format when Blob.type is empty or unrecognized', () => {
+    assert.equal(resolveOutputExtension('', 'webp'), 'webp');
+    assert.equal(resolveOutputExtension(undefined, 'png'), 'png');
+    assert.equal(resolveOutputExtension(null, 'jpeg'), 'jpg');
+    assert.equal(resolveOutputExtension('application/octet-stream', 'jpeg'), 'jpg');
   });
 });

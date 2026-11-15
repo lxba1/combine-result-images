@@ -530,7 +530,7 @@ export const computeRatioMaskRect = (
 
 /**
  * Returns true if `cropRect` shares at least a 1x1 pixel overlap with `imageBounds`.
- * Partial overhangs (e.g., mixed image sizes) are tolerated.
+ * Partial overhangs are tolerated as long as there is overlap.
  */
 export const hasCropOverlapWithImage = (
   cropRect: PixelRect,

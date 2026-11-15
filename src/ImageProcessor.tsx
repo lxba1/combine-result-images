@@ -44,7 +44,15 @@ import {
   validateSettingsBeforeProcess,
 } from './settingsHelpers.ts';
 import { detectAutoCropFromImage } from './cropHelpers.ts';
-import { buildTileMaskRects, renderMontageTiles } from './montageHelpers.ts';
+import {
+  ImageDecodeError,
+  ImageResolutionMismatchError,
+  buildTileMaskRects,
+  decodeImageWithFallback,
+  renderMontageTiles,
+  resolveOutputExtension,
+  type ImageDimensions,
+} from './montageHelpers.ts';
 
 const compareFileNames = (a: File, b: File) =>
   a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -826,54 +834,6 @@ const ImageProcessor: React.FC = () => {
     }
   };
 
-  async function decodeFirst(file: File): Promise<ImageBitmap> {
-    try {
-      return await createImageBitmap(file);
-    } catch (error) {
-      console.warn("createImageBitmap failed, falling back to Image element:", error);
-      // Add a delay before retrying to let the browser recover
-      await new Promise(resolve => setTimeout(resolve, 200));
-      // Retry with an alternative path if createImageBitmap fails
-      const url = URL.createObjectURL(file);
-      try {
-        const img = new Image();
-        img.decoding = 'async';
-        await new Promise<void>((res, rej) => {
-          img.onload = () => res();
-          img.onerror = () => rej(new Error(`Failed to load image from object URL`));
-          img.src = url;
-        });
-        const c = document.createElement('canvas');
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        try {
-          const ctx = c.getContext('2d', { willReadFrequently: true, alpha: false });
-          if (!ctx) {
-            throw new Error('Failed to get 2D context for fallback image decode canvas', { cause: error });
-          }
-          ctx.drawImage(img, 0, 0);
-          return await createImageBitmap(c);
-        } finally {
-          c.width = 1;
-          c.height = 1;
-        }
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    }
-  }
-
-  const loadAndDrawFirstImage = async (firstImageFile?: File): Promise<ImageBitmap | null> => {
-    if (!firstImageFile) return null;
-    try {
-      const bitmap = await decodeFirst(firstImageFile); // Call decodeFirst
-      return bitmap;
-    } catch (error) {
-      console.error("Failed to decode first image even with fallback:", error);
-      throw new Error('First image failed to load.', { cause: error });
-    }
-  };
-
   const processImages = async () => {
     if (isProcessing) return;
     if (images.length === 0) {
@@ -909,8 +869,11 @@ const ImageProcessor: React.FC = () => {
       const needsSelfOcr = settings.selfMaskEnabled && settings.selfMaskMode === 'ocr';
 
       // Always check first image dimensions (also runs auto-crop / OCR ROI when needed).
-      firstImageBitmap = await loadAndDrawFirstImage(orderedImages[0]);
-      if (!firstImageBitmap) return;
+      firstImageBitmap = await decodeImageWithFallback<File, ImageBitmap>(orderedImages[0]);
+      const expectedDimensions: ImageDimensions = {
+        width: firstImageBitmap.width,
+        height: firstImageBitmap.height,
+      };
 
       if (settings.cropAuto) {
         const autoCropResult = detectAutoCropFromImage(firstImageBitmap);
@@ -1166,7 +1129,9 @@ const ImageProcessor: React.FC = () => {
         cropRect,
         masks: tileMasks,
         montageCtx,
-        decodeImage: (file) => createImageBitmap(file),
+        expectedDimensions,
+        getFileName: (file) => file.name,
+        decodeImage: (file) => decodeImageWithFallback<File, ImageBitmap>(file),
       });
 
       let mimeType = 'image/webp';
@@ -1181,7 +1146,7 @@ const ImageProcessor: React.FC = () => {
           const pad = (n: number) => n.toString().padStart(2, '0');
           return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
         };
-        const ext = finalSettings.outputFormat === 'jpeg' ? 'jpg' : finalSettings.outputFormat;
+        const ext = resolveOutputExtension(montageBlob.type, finalSettings.outputFormat);
         setDownloadFilename(`tile-${getTimestamp()}.${ext}`);
         setProcessedImageUrl(URL.createObjectURL(montageBlob));
       } else {
@@ -1189,6 +1154,27 @@ const ImageProcessor: React.FC = () => {
       }
 
     } catch (error) {
+      if (error instanceof ImageDecodeError) {
+        console.error(`Failed to decode image "${error.fileName}":`, error);
+        alert(t('alert_image_decode_failed', { fileName: error.fileName }));
+        return;
+      }
+      if (error instanceof ImageResolutionMismatchError) {
+        console.warn(
+          `Image resolution mismatch for "${error.fileName}": expected ${error.expectedWidth}x${error.expectedHeight}, got ${error.actualWidth}x${error.actualHeight}`
+        );
+        alert(
+          t('alert_image_resolution_mismatch', {
+            fileName: error.fileName,
+            actualWidth: error.actualWidth,
+            actualHeight: error.actualHeight,
+            expectedWidth: error.expectedWidth,
+            expectedHeight: error.expectedHeight,
+          })
+        );
+        return;
+      }
+
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error("An unexpected error occurred during image processing:", error);
       alert(`${t('alert_processing_failed')}: ${errorMessage}`);
