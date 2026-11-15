@@ -993,12 +993,9 @@ const ImageProcessor: React.FC = () => {
       if (renderResult.status === 'context_failed') {
         throw new Error(t('alert_failed_to_get_context'));
       }
-      if (renderResult.status === 'allocation_failed') {
+      if (renderResult.status === 'allocation_failed' || renderResult.status === 'encode_failed') {
         alert(t('alert_image_generation_failed'));
         return;
-      }
-      if (renderResult.status === 'encode_failed') {
-        throw new Error(t('alert_image_generation_failed'));
       }
 
       const montageBlob = renderResult.blob;
