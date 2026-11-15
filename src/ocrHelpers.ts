@@ -318,7 +318,7 @@ export const canvasToBlob = (
 
 const captureSpawnedWorkers = <T>(
   fn: () => T,
-  onSpawn: (worker: Worker) => void
+  onSpawn: (worker: Worker, scriptUrl?: unknown) => void
 ): T => {
   const OriginalWorker = globalThis.Worker;
   if (typeof OriginalWorker !== 'function') {
@@ -328,7 +328,7 @@ const captureSpawnedWorkers = <T>(
   const ProxiedWorker = new Proxy(OriginalWorker, {
     construct(target, args, newTarget) {
       const instance = Reflect.construct(target, args, newTarget) as Worker;
-      onSpawn(instance);
+      onSpawn(instance, args[0]);
       return instance;
     },
   });
@@ -343,8 +343,8 @@ const captureSpawnedWorkers = <T>(
 
 /**
  * Starts an OCR session with initialization/recognition timeouts, worker error forwarding,
- * safe app-side Canvas-to-Blob conversion, and immediate termination of even still-initializing
- * Web Workers on timeout, error, or abort.
+ * safe app-side Canvas-to-Blob conversion, immediate termination of even still-initializing
+ * Web Workers on timeout, error, or abort, and revocation of Worker `blob:` URLs on shutdown.
  */
 export const startOcrSession = <
   W extends OcrWorkerLike<I>,
@@ -361,6 +361,7 @@ export const startOcrSession = <
 }: StartOcrSessionOptions<W, I>): OcrSessionController<W, C, I> => {
   let resolvedWorker: W | null = null;
   const spawnedNativeWorkers: Worker[] = [];
+  const spawnedBlobUrls: string[] = [];
   const detachNativeErrorListeners: (() => void)[] = [];
   let terminated = false;
   let activeErrorRejector: ((err: Error) => void) | null = null;
@@ -387,6 +388,7 @@ export const startOcrSession = <
         // Ignore cleanup failures on partially initialized workers.
       }
     }
+    spawnedNativeWorkers.length = 0;
     if (resolvedWorker) {
       try {
         await resolvedWorker.terminate();
@@ -394,6 +396,16 @@ export const startOcrSession = <
         // Ignore cleanup failures during shutdown.
       }
     }
+    if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+      for (const blobUrl of spawnedBlobUrls) {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch {
+          // Ignore cleanup failures for already-revoked or synthetic URLs.
+        }
+      }
+    }
+    spawnedBlobUrls.length = 0;
   };
 
   const raceWithGuards = async <T>(
@@ -480,8 +492,13 @@ export const startOcrSession = <
             activeErrorRejector?.(toError(err));
           },
         }),
-      (nativeWorker) => {
+      (nativeWorker, scriptUrl) => {
         spawnedNativeWorkers.push(nativeWorker);
+        const normalizedUrl =
+          typeof URL !== 'undefined' && scriptUrl instanceof URL ? scriptUrl.href : scriptUrl;
+        if (typeof normalizedUrl === 'string' && normalizedUrl.startsWith('blob:')) {
+          spawnedBlobUrls.push(normalizedUrl);
+        }
         if (typeof nativeWorker.addEventListener === 'function') {
           const onWorkerError = (event: ErrorEvent) => {
             const detail =

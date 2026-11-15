@@ -14,9 +14,11 @@ import {
 } from '../src/ocrHelpers.ts';
 
 const OriginalWorker = globalThis.Worker;
+const OriginalRevokeObjectURL = URL.revokeObjectURL;
 
 afterEach(() => {
   globalThis.Worker = OriginalWorker;
+  URL.revokeObjectURL = OriginalRevokeObjectURL;
 });
 
 describe('validateOcrRois and isRectWithinBounds', () => {
@@ -429,6 +431,82 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
       /native worker crashed during recognize/
     );
     assert.equal(nativeTerminated, 1);
+  });
+
+  it('revokes spawned blob: Worker URLs after termination once, leaving non-blob URLs untouched', async () => {
+    const events = [];
+    const revokedUrls = [];
+    URL.revokeObjectURL = (url) => {
+      events.push(`revoke:${url}`);
+      revokedUrls.push(url);
+    };
+
+    class TrackingWorker {
+      terminate() {
+        events.push('native-terminate');
+      }
+    }
+    globalThis.Worker = TrackingWorker;
+
+    const handle = startOcrSession({
+      createWorkerFn: async () => {
+        new globalThis.Worker('blob:https://example.com/worker-1');
+        new globalThis.Worker(new URL('blob:https://example.com/worker-2'));
+        new globalThis.Worker('https://example.com/worker.js');
+        return {
+          recognize: async () => ({ data: { blocks: [] } }),
+          terminate: async () => {
+            events.push('worker-terminate');
+          },
+        };
+      },
+    });
+
+    const session = await handle.ready;
+    assert.deepEqual(revokedUrls, []);
+
+    await session.terminate();
+    await session.terminate();
+
+    assert.deepEqual(revokedUrls, [
+      'blob:https://example.com/worker-1',
+      'blob:https://example.com/worker-2',
+    ]);
+    assert.deepEqual(events, [
+      'native-terminate',
+      'native-terminate',
+      'native-terminate',
+      'worker-terminate',
+      'revoke:blob:https://example.com/worker-1',
+      'revoke:blob:https://example.com/worker-2',
+    ]);
+  });
+
+  it('revokes spawned blob: Worker URLs when worker initialization times out', async () => {
+    const revokedUrls = [];
+    let nativeTerminated = 0;
+    URL.revokeObjectURL = (url) => {
+      revokedUrls.push(url);
+    };
+
+    class HangingBlobWorker {
+      terminate() {
+        nativeTerminated += 1;
+      }
+    }
+    globalThis.Worker = HangingBlobWorker;
+
+    const handle = startOcrSession({
+      initTimeoutMs: 25,
+      createWorkerFn: () => {
+        new globalThis.Worker('blob:https://example.com/hanging-worker');
+        return new Promise(() => {});
+      },
+    });
+
+    await assert.rejects(handle.ready, /initialization timed out/i);
+    assert.equal(nativeTerminated, 1);
+    assert.deepEqual(revokedUrls, ['blob:https://example.com/hanging-worker']);
   });
 });
 
