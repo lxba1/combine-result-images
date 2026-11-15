@@ -908,6 +908,9 @@ const ImageProcessor: React.FC = () => {
           case 'invalid_mask_area':
             alert(t('alert_invalid_mask_area'));
             break;
+          case 'mask_outside_crop':
+            alert(t('alert_mask_outside_crop'));
+            break;
           case 'ocr_aborted':
             setOcrStatus('');
             break;

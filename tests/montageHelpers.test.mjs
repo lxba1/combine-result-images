@@ -97,6 +97,22 @@ describe('buildTileMaskRects', () => {
       { x: 190, y: 80, width: 60, height: 25, color: '#ffffff' },
     ]);
   });
+
+  it('clips partially overlapping masks to crop bounds and skips disjoint masks', () => {
+    const masks = buildTileMaskRects({
+      cropRect: { x: 31, y: 117, width: 1538, height: 665 },
+      maskEnabled: true,
+      maskRect: { x: 0, y: 100, width: 100, height: 100 },
+      maskColor: '#112233',
+      selfMaskEnabled: true,
+      selfMaskRect: { x: 0, y: 0, width: 100, height: 100 },
+      selfMaskColor: '#445566',
+    });
+
+    assert.deepEqual(masks, [
+      { x: 0, y: 0, width: 69, height: 83, color: '#112233' },
+    ]);
+  });
 });
 
 describe('renderMontageTiles', () => {
@@ -761,5 +777,97 @@ describe('prepareMontagePlan', () => {
     assert.deepEqual(retryPlan.tileMasks, [
       { x: 969, y: 103, width: 150, height: 30, color: settings.maskColor },
     ]);
+  });
+
+  it('aborts with mask_outside_crop when manual mask or selfMask does not overlap cropRect', async () => {
+    let ocrCalled = false;
+
+    const enemyOutPlan = await prepareMontagePlan({
+      settings: {
+        ...createDefaultSettings(),
+        cropAuto: false,
+        maskEnabled: true,
+        maskMode: 'manual',
+        // default maskX=0, maskY=0, maskWidth=100, maskHeight=100 vs cropY=117
+        selfMaskEnabled: true,
+        selfMaskMode: 'ocr',
+      },
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async () => {
+        ocrCalled = true;
+        return { status: 'not_found', enemyMissing: false, selfMissing: false };
+      },
+    });
+
+    assert.equal(enemyOutPlan.status, 'abort');
+    assert.deepEqual(enemyOutPlan.alert, { kind: 'mask_outside_crop' });
+    assert.equal(ocrCalled, false);
+
+    const selfOutPlan = await prepareMontagePlan({
+      settings: {
+        ...createDefaultSettings(),
+        maskEnabled: true,
+        maskMode: 'ratio',
+        selfMaskEnabled: true,
+        selfMaskMode: 'manual',
+        selfMaskX: 1600,
+        selfMaskY: 200,
+        selfMaskWidth: 100,
+        selfMaskHeight: 50,
+      },
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({
+        status: 'ok',
+        rect: { x: 31, y: 117, width: 1538, height: 665 },
+      }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+
+    assert.equal(selfOutPlan.status, 'abort');
+    assert.deepEqual(selfOutPlan.alert, { kind: 'mask_outside_crop' });
+
+    const zeroAreaPlan = await prepareMontagePlan({
+      settings: {
+        ...createDefaultSettings(),
+        cropAuto: false,
+        maskEnabled: true,
+        maskMode: 'manual',
+        maskWidth: 0,
+      },
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+
+    assert.equal(zeroAreaPlan.status, 'abort');
+    assert.deepEqual(zeroAreaPlan.alert, { kind: 'invalid_mask_area' });
+  });
+
+  it('clips partially overlapping manual mask to cropRect without mutating manual mask coordinates', async () => {
+    const plan = await prepareMontagePlan({
+      settings: {
+        ...createDefaultSettings(),
+        cropAuto: false,
+        maskEnabled: true,
+        maskMode: 'manual',
+        maskX: 0,
+        maskY: 100,
+        maskWidth: 100,
+        maskHeight: 100,
+        selfMaskEnabled: false,
+      },
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+
+    assert.equal(plan.status, 'ok');
+    assert.deepEqual(plan.settingsPatch, {});
+    assert.deepEqual(plan.tileMasks, [
+      { x: 0, y: 0, width: 69, height: 83, color: '#ffffff' },
+    ]);
+    assert.equal(plan.finalSettings.maskX, 0);
+    assert.equal(plan.finalSettings.maskY, 100);
   });
 });

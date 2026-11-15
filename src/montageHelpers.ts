@@ -3,6 +3,7 @@ import {
   computeRatioMaskRect,
   cropRectToSettings,
   hasCropOverlapWithImage,
+  intersectPixelRects,
   type ImageSettings,
   type OutputFormat,
 } from './settingsHelpers.ts';
@@ -95,32 +96,27 @@ export interface RenderMontageTilesOptions<
   createTempCanvas?: () => C;
 }
 
-/** Converts enabled mask rectangles from full-image space into tile-relative coordinates. */
+/** Converts enabled mask rectangles from full-image space into crop-clipped tile-relative coordinates. */
 export const buildTileMaskRects = (params: BuildTileMaskRectsParams): TileMaskRect[] => {
   const masks: TileMaskRect[] = [];
-  if (params.maskEnabled && params.maskRect && params.maskRect.width > 0 && params.maskRect.height > 0) {
+  const appendClippedMask = (
+    enabled: boolean,
+    rect: PixelRect | null | undefined,
+    color: string
+  ) => {
+    if (!enabled || !rect) return;
+    const clipped = intersectPixelRects(rect, params.cropRect);
+    if (!clipped) return;
     masks.push({
-      x: params.maskRect.x - params.cropRect.x,
-      y: params.maskRect.y - params.cropRect.y,
-      width: params.maskRect.width,
-      height: params.maskRect.height,
-      color: params.maskColor,
+      x: clipped.x - params.cropRect.x,
+      y: clipped.y - params.cropRect.y,
+      width: clipped.width,
+      height: clipped.height,
+      color,
     });
-  }
-  if (
-    params.selfMaskEnabled &&
-    params.selfMaskRect &&
-    params.selfMaskRect.width > 0 &&
-    params.selfMaskRect.height > 0
-  ) {
-    masks.push({
-      x: params.selfMaskRect.x - params.cropRect.x,
-      y: params.selfMaskRect.y - params.cropRect.y,
-      width: params.selfMaskRect.width,
-      height: params.selfMaskRect.height,
-      color: params.selfMaskColor,
-    });
-  }
+  };
+  appendClippedMask(params.maskEnabled, params.maskRect, params.maskColor);
+  appendClippedMask(params.selfMaskEnabled, params.selfMaskRect, params.selfMaskColor);
   return masks;
 };
 
@@ -446,6 +442,7 @@ export type PrepareMontagePlanAlert =
   | { kind: 'auto_crop_not_found' }
   | { kind: 'crop_outside_image'; width: number; height: number }
   | { kind: 'invalid_mask_area' }
+  | { kind: 'mask_outside_crop' }
   | { kind: 'ocr_not_found'; enemyMissing: boolean; selfMissing: boolean }
   | { kind: 'ocr_error'; error: unknown }
   | { kind: 'ocr_aborted' };
@@ -492,17 +489,33 @@ const resolveStaticMaskRect = (
   manualRect: PixelRect,
   ratioRect: ImageSettings['maskRatioRect'],
   cropRect: PixelRect
-): { ok: true; rect: PixelRect | null; needsRatioPatch: boolean } | { ok: false } => {
+):
+  | { ok: true; rect: PixelRect | null; needsRatioPatch: boolean }
+  | { ok: false; reason: 'invalid_mask_area' | 'mask_outside_crop' } => {
   if (!enabled) {
     return { ok: true, rect: null, needsRatioPatch: false };
   }
   if (mode === 'manual') {
-    return { ok: true, rect: manualRect, needsRatioPatch: false };
+    if (
+      !Number.isFinite(manualRect.x) ||
+      !Number.isFinite(manualRect.y) ||
+      !Number.isFinite(manualRect.width) ||
+      !Number.isFinite(manualRect.height) ||
+      manualRect.width <= 0 ||
+      manualRect.height <= 0
+    ) {
+      return { ok: false, reason: 'invalid_mask_area' };
+    }
+    const clipped = intersectPixelRects(manualRect, cropRect);
+    if (!clipped) {
+      return { ok: false, reason: 'mask_outside_crop' };
+    }
+    return { ok: true, rect: clipped, needsRatioPatch: false };
   }
   if (mode === 'ratio') {
     const computed = computeRatioMaskRect(ratioRect, cropRect);
     if (!computed) {
-      return { ok: false };
+      return { ok: false, reason: 'invalid_mask_area' };
     }
     return { ok: true, rect: computed, needsRatioPatch: true };
   }
@@ -572,7 +585,7 @@ export const prepareMontagePlan = async ({
     return {
       status: 'abort',
       settingsPatch,
-      alert: { kind: 'invalid_mask_area' },
+      alert: { kind: enemyStatic.reason },
     };
   }
 
@@ -592,7 +605,7 @@ export const prepareMontagePlan = async ({
     return {
       status: 'abort',
       settingsPatch,
-      alert: { kind: 'invalid_mask_area' },
+      alert: { kind: selfStatic.reason },
     };
   }
 

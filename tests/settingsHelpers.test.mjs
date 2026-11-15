@@ -16,6 +16,7 @@ import {
   cropRectToSettings,
   evaluateMontageCanvasSize,
   hasCropOverlapWithImage,
+  intersectPixelRects,
   loadSettingsFromStorage,
   normalizeHexColor,
   parseSavedSettings,
@@ -430,5 +431,38 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.equal(hasCropOverlapWithImage({ x: 1600, y: 100, width: 200, height: 200 }, image), false);
     assert.equal(hasCropOverlapWithImage({ x: 100, y: 900, width: 200, height: 200 }, image), false);
     assert.equal(hasCropOverlapWithImage({ x: 0, y: 0, width: 0, height: 200 }, image), false);
+  });
+
+  it('computes intersecting pixel rectangles and returns null for disjoint or empty rects', () => {
+    assert.deepEqual(
+      intersectPixelRects(
+        { x: 0, y: 100, width: 100, height: 100 },
+        { x: 31, y: 117, width: 1538, height: 665 }
+      ),
+      { x: 31, y: 117, width: 69, height: 83 }
+    );
+    // Disjoint default manual mask (y=0..100) vs default crop (y=117..782)
+    assert.equal(
+      intersectPixelRects(
+        { x: 0, y: 0, width: 100, height: 100 },
+        { x: 31, y: 117, width: 1538, height: 665 }
+      ),
+      null
+    );
+    // Touching edges without area overlap
+    assert.equal(
+      intersectPixelRects(
+        { x: 0, y: 17, width: 100, height: 100 },
+        { x: 31, y: 117, width: 1538, height: 665 }
+      ),
+      null
+    );
+    assert.equal(
+      intersectPixelRects(
+        { x: 10, y: 10, width: 0, height: 50 },
+        { x: 0, y: 0, width: 100, height: 100 }
+      ),
+      null
+    );
   });
 });

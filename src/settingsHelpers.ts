@@ -529,30 +529,46 @@ export const computeRatioMaskRect = (
 };
 
 /**
+ * Returns the intersection of two positive finite rectangles, or `null` if they have zero overlap.
+ */
+export const intersectPixelRects = (a: PixelRect, b: PixelRect): PixelRect | null => {
+  if (
+    !Number.isFinite(a.x) ||
+    !Number.isFinite(a.y) ||
+    !Number.isFinite(a.width) ||
+    !Number.isFinite(a.height) ||
+    !Number.isFinite(b.x) ||
+    !Number.isFinite(b.y) ||
+    !Number.isFinite(b.width) ||
+    !Number.isFinite(b.height) ||
+    a.width <= 0 ||
+    a.height <= 0 ||
+    b.width <= 0 ||
+    b.height <= 0
+  ) {
+    return null;
+  }
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.width, b.x + b.width);
+  const y1 = Math.min(a.y + a.height, b.y + b.height);
+  if (x1 <= x0 || y1 <= y0) {
+    return null;
+  }
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+};
+
+/**
  * Returns true if `cropRect` shares at least a 1x1 pixel overlap with `imageBounds`.
  * Partial overhangs are tolerated as long as there is overlap.
  */
 export const hasCropOverlapWithImage = (
   cropRect: PixelRect,
   imageBounds: Pick<PixelRect, 'width' | 'height'>
-): boolean => {
-  if (
-    !Number.isFinite(cropRect.x) ||
-    !Number.isFinite(cropRect.y) ||
-    !Number.isFinite(cropRect.width) ||
-    !Number.isFinite(cropRect.height) ||
-    !Number.isFinite(imageBounds.width) ||
-    !Number.isFinite(imageBounds.height) ||
-    cropRect.width <= 0 ||
-    cropRect.height <= 0 ||
-    imageBounds.width <= 0 ||
-    imageBounds.height <= 0
-  ) {
-    return false;
-  }
-  const overlapX0 = Math.max(0, cropRect.x);
-  const overlapY0 = Math.max(0, cropRect.y);
-  const overlapX1 = Math.min(imageBounds.width, cropRect.x + cropRect.width);
-  const overlapY1 = Math.min(imageBounds.height, cropRect.y + cropRect.height);
-  return overlapX1 > overlapX0 && overlapY1 > overlapY0;
-};
+): boolean =>
+  intersectPixelRects(cropRect, {
+    x: 0,
+    y: 0,
+    width: imageBounds.width,
+    height: imageBounds.height,
+  }) !== null;
