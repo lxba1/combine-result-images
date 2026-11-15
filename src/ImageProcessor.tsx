@@ -322,6 +322,7 @@ const ColorSwatchInput = styled('input')({
   cursor: 'pointer',
   flexShrink: 0,
   display: 'block',
+  '&:disabled': { cursor: 'not-allowed', opacity: 0.5 },
   '&::-webkit-color-swatch-wrapper': { padding: 0 },
   '&::-webkit-color-swatch': { border: 'none', borderRadius: 3 },
   '&::-moz-color-swatch': { border: 'none', borderRadius: 3 },
@@ -331,11 +332,18 @@ interface ColorSettingFieldProps {
   label: string;
   name: string;
   value: string;
+  disabled?: boolean;
   onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
 }
 
 /** Compact outlined hex color field with an inline clickable color swatch. */
-const ColorSettingField: React.FC<ColorSettingFieldProps> = ({ label, name, value, onChange }) => (
+const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
+  label,
+  name,
+  value,
+  disabled = false,
+  onChange,
+}) => (
   <TextField
     label={label}
     variant="outlined"
@@ -343,6 +351,7 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({ label, name, valu
     fullWidth
     name={name}
     value={value}
+    disabled={disabled}
     onChange={onChange}
     slotProps={{
       input: {
@@ -352,6 +361,7 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({ label, name, valu
               type="color"
               name={name}
               value={isValidHexColor(value) ? value : '#000000'}
+              disabled={disabled}
               onChange={onChange}
               aria-label={label}
             />
@@ -499,6 +509,7 @@ interface MaskAccordionProps {
   rectValues: { x: number; y: number; width: number; height: number };
   colorName: 'maskColor' | 'selfMaskColor';
   colorValue: string;
+  disabled?: boolean;
   onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
   onNumericCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
   onRatioSliderChange: (axis: 'horizontal' | 'vertical') => (event: Event, value: number | number[]) => void;
@@ -519,6 +530,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   rectValues,
   colorName,
   colorValue,
+  disabled = false,
   onSettingChange,
   onNumericCommit,
   onRatioSliderChange,
@@ -538,13 +550,14 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
       </AccordionSummary>
       <AccordionDetails>
         <FormControlLabel
-          control={<Switch checked={enabled} onChange={onSettingChange} name={enabledName} />}
+          disabled={disabled}
+          control={<Switch checked={enabled} disabled={disabled} onChange={onSettingChange} name={enabledName} />}
           label={t('enable')}
         />
         {enabled && (
           <Grid container spacing={2} sx={{ mt: 1 }}>
             <Grid size={{ xs: 6 }}>
-              <FormControl fullWidth size="small">
+              <FormControl fullWidth size="small" disabled={disabled}>
                 <InputLabel id={`${modeName}-label`}>{t('mode')}</InputLabel>
                 <Select labelId={`${modeName}-label`} name={modeName} value={mode} label={t('mode')} onChange={onSettingChange}>
                   <MenuItem value="manual">{t('mode_manual')}</MenuItem>
@@ -554,12 +567,12 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
               </FormControl>
             </Grid>
             <Grid size={{ xs: 6 }}>
-              <ColorSettingField label={t('color')} name={colorName} value={colorValue} onChange={onSettingChange} />
+              <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} onChange={onSettingChange} />
             </Grid>
             {mode === 'ratio' ? (
               <>
                 <Grid size={{ xs: 12 }}>
-                  <FormControl fullWidth size="small">
+                  <FormControl fullWidth size="small" disabled={disabled}>
                     <InputLabel id={`${ratioKey}-preset-label`}>{t('preset')}</InputLabel>
                     <Select
                       labelId={`${ratioKey}-preset-label`}
@@ -575,10 +588,11 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
-                  <Typography variant="body2" color="text.secondary" gutterBottom>{t('range_horizontal')}</Typography>
+                  <Typography variant="body2" color={disabled ? 'text.disabled' : 'text.secondary'} gutterBottom>{t('range_horizontal')}</Typography>
                   <Box sx={{ px: 1 }}>
                     <Slider
                       size="small"
+                      disabled={disabled}
                       value={[Math.min(ratioRect.rx0, ratioRect.rx1), Math.max(ratioRect.rx0, ratioRect.rx1)]}
                       onChange={onRatioSliderChange('horizontal')}
                       valueLabelDisplay="auto"
@@ -587,10 +601,11 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                       step={0.001}
                     />
                   </Box>
-                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }} gutterBottom>{t('range_vertical')}</Typography>
+                  <Typography variant="body2" color={disabled ? 'text.disabled' : 'text.secondary'} sx={{ mt: 1 }} gutterBottom>{t('range_vertical')}</Typography>
                   <Box sx={{ px: 1 }}>
                     <Slider
                       size="small"
+                      disabled={disabled}
                       value={[Math.min(ratioRect.ry0, ratioRect.ry1), Math.max(ratioRect.ry0, ratioRect.ry1)]}
                       onChange={onRatioSliderChange('vertical')}
                       valueLabelDisplay="auto"
@@ -600,17 +615,17 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                     />
                   </Box>
                 </Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
               </>
             ) : (
               <>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name={`${rectPrefix}X`} value={rectValues.x} min={0} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name={`${rectPrefix}Y`} value={rectValues.y} min={0} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name={`${rectPrefix}Width`} value={rectValues.width} min={1} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name={`${rectPrefix}Height`} value={rectValues.height} min={1} integer disabled={mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name={`${rectPrefix}X`} value={rectValues.x} min={0} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name={`${rectPrefix}Y`} value={rectValues.y} min={0} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name={`${rectPrefix}Width`} value={rectValues.width} min={1} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name={`${rectPrefix}Height`} value={rectValues.height} min={1} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
               </>
             )}
           </Grid>
@@ -696,6 +711,7 @@ const ImageProcessor: React.FC = () => {
   const isDefaultSettings = areSettingsDefault(settings);
 
   const handleResetSettings = () => {
+    if (isProcessing) return;
     setSettings(createDefaultSettings());
     setResetDialogOpen(false);
   };
@@ -733,6 +749,10 @@ const ImageProcessor: React.FC = () => {
   );
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (isProcessing) {
+      event.target.value = '';
+      return;
+    }
     const files = event.target.files;
     if (files && files.length > 0) {
       setImages(Array.from(files));
@@ -743,12 +763,14 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleClearImages = () => {
+    if (isProcessing) return;
     setImages([]);
     setProcessedImageUrl(null);
     setFileListExpanded(true);
   };
 
   const handleRemoveImage = (targetFile: File) => {
+    if (isProcessing) return;
     if (images.length <= 1) {
       setFileListExpanded(true);
     }
@@ -757,6 +779,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleNumericSettingCommit = (name: string, newValue: number, options?: { finalize?: boolean }) => {
+    if (isProcessing) return;
     if (name.startsWith('maskRatioRect.') || name.startsWith('selfMaskRatioRect.')) {
       const [parent, key] = name.split('.') as ['maskRatioRect' | 'selfMaskRatioRect', keyof RatioRect];
       setSettings(prev => {
@@ -779,6 +802,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => {
+    if (isProcessing) return;
     const name = event.target.name;
     let newValue: string | number | boolean;
 
@@ -810,6 +834,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleSliderChange = (name: string) => (_event: Event, value: number | number[]) => {
+    if (isProcessing) return;
     const numValue = value as number;
     setSettings(prev => {
         if (name === 'offsetX') { // If the offset slider is moved, update both X and Y
@@ -820,6 +845,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleRatioSliderChange = (parent: 'maskRatioRect' | 'selfMaskRatioRect', axis: 'horizontal' | 'vertical') => (_event: Event, value: number | number[]) => {
+    if (isProcessing) return;
     if (!Array.isArray(value)) return;
     const [start, end] = value;
     setSettings(prev => ({
@@ -832,6 +858,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handlePresetChange = (parent: 'maskRatioRect' | 'selfMaskRatioRect') => (event: SelectChangeEvent<string>) => {
+    if (isProcessing) return;
     const presetKey = event.target.value;
     const presets = parent === 'maskRatioRect' ? MASK_PRESETS : SELF_MASK_PRESETS;
     if (presetKey && presets[presetKey]) {
@@ -882,6 +909,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const processImages = async () => {
+    if (isProcessing) return;
     if (images.length === 0) {
       alert(t('alert_select_images_first'));
       return;
@@ -1351,7 +1379,7 @@ const ImageProcessor: React.FC = () => {
             <AccordionDetails>
               <Grid container spacing={2}>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small">
+                  <FormControl fullWidth size="small" disabled={isProcessing}>
                     <InputLabel id="col-count-label">{t('columns')}</InputLabel>
                     <Select labelId="col-count-label" name="colCount" value={settings.colCount} label={t('columns')} onChange={handleSettingChange}>
                       {[...Array(10)].map((_, i) => (
@@ -1361,7 +1389,7 @@ const ImageProcessor: React.FC = () => {
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small">
+                  <FormControl fullWidth size="small" disabled={isProcessing}>
                     <InputLabel id="offset-label">{t('offset_px')}</InputLabel>
                     <Select labelId="offset-label" name="offsetX" value={settings.offsetX} label={t('offset_px')} onChange={handleSettingChange}>
                       {[...Array(51)].map((_, i) => (
@@ -1371,7 +1399,7 @@ const ImageProcessor: React.FC = () => {
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
-                  <FormControl fullWidth size="small">
+                  <FormControl fullWidth size="small" disabled={isProcessing}>
                     <InputLabel id="sort-order-label">{t('sort_order')}</InputLabel>
                     <Select labelId="sort-order-label" name="sortOrder" value={settings.sortOrder} label={t('sort_order')} onChange={handleSettingChange}>
                       <MenuItem value="date_asc">{t('sort_date_asc')}</MenuItem>
@@ -1382,9 +1410,9 @@ const ImageProcessor: React.FC = () => {
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} onChange={handleSettingChange} /></Grid>
+                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} disabled={isProcessing} onChange={handleSettingChange} /></Grid>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small">
+                  <FormControl fullWidth size="small" disabled={isProcessing}>
                     <InputLabel id="output-format-label">{t('output_format')}</InputLabel>
                     <Select labelId="output-format-label" name="outputFormat" value={settings.outputFormat} label={t('output_format')} onChange={handleSettingChange}>
                       <MenuItem value="webp">WebP</MenuItem>
@@ -1397,7 +1425,7 @@ const ImageProcessor: React.FC = () => {
                   <Typography
                     id="quality-slider-label"
                     variant="body2"
-                    color={settings.outputFormat === 'png' ? 'text.disabled' : 'text.secondary'}
+                    color={isProcessing || settings.outputFormat === 'png' ? 'text.disabled' : 'text.secondary'}
                     gutterBottom
                   >
                     {t('quality')}: {settings.quality}%
@@ -1412,7 +1440,7 @@ const ImageProcessor: React.FC = () => {
                       min={1}
                       max={100}
                       valueLabelDisplay="auto"
-                      disabled={settings.outputFormat === 'png'}
+                      disabled={isProcessing || settings.outputFormat === 'png'}
                     />
                   </Box>
                 </Grid>
@@ -1430,12 +1458,16 @@ const ImageProcessor: React.FC = () => {
               </Box>
             </AccordionSummary>
             <AccordionDetails>
-              <FormControlLabel control={<Switch checked={settings.cropAuto} onChange={handleSettingChange} name="cropAuto" />} label={t('auto_mode')} />
+              <FormControlLabel
+                disabled={isProcessing}
+                control={<Switch checked={settings.cropAuto} disabled={isProcessing} onChange={handleSettingChange} name="cropAuto" />}
+                label={t('auto_mode')}
+              />
               <Grid container spacing={2} sx={{ mt: 1 }}>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name="cropWidth" value={settings.cropWidth} min={1} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name="cropHeight" value={settings.cropHeight} min={1} integer disabled={settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name="cropWidth" value={settings.cropWidth} min={1} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name="cropHeight" value={settings.cropHeight} min={1} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
               </Grid>
             </AccordionDetails>
           </Accordion>
@@ -1453,6 +1485,7 @@ const ImageProcessor: React.FC = () => {
             rectValues={{ x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight }}
             colorName="maskColor"
             colorValue={settings.maskColor}
+            disabled={isProcessing}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
             onRatioSliderChange={(axis) => handleRatioSliderChange('maskRatioRect', axis)}
@@ -1472,6 +1505,7 @@ const ImageProcessor: React.FC = () => {
             rectValues={{ x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight }}
             colorName="selfMaskColor"
             colorValue={settings.selfMaskColor}
+            disabled={isProcessing}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
             onRatioSliderChange={(axis) => handleRatioSliderChange('selfMaskRatioRect', axis)}
@@ -1483,7 +1517,7 @@ const ImageProcessor: React.FC = () => {
               color="inherit"
               fullWidth
               startIcon={<RestartAltIcon />}
-              disabled={isDefaultSettings}
+              disabled={isProcessing || isDefaultSettings}
               onClick={() => setResetDialogOpen(true)}
               sx={{ '&:not(.Mui-disabled)': { color: 'text.secondary', borderColor: 'divider' } }}
             >
@@ -1495,9 +1529,23 @@ const ImageProcessor: React.FC = () => {
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" sx={{ mb: 2 }}>{t('upload_and_process')}</Typography>
-              <Button variant="contained" component="label" fullWidth size="large" startIcon={<AddPhotoIcon />}>
+              <Button
+                variant="contained"
+                component="label"
+                fullWidth
+                size="large"
+                startIcon={<AddPhotoIcon />}
+                disabled={isProcessing}
+              >
                 {t('upload_images')}
-                <input type="file" hidden accept="image/png, image/jpeg" multiple onChange={handleFileChange} />
+                <input
+                  type="file"
+                  hidden
+                  accept="image/png, image/jpeg"
+                  multiple
+                  disabled={isProcessing}
+                  onChange={handleFileChange}
+                />
               </Button>
               {images.length > 0 && (
                 <Box sx={{ mt: 1.5 }}>
@@ -1674,7 +1722,7 @@ const ImageProcessor: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setResetDialogOpen(false)}>{t('cancel')}</Button>
-          <Button onClick={handleResetSettings} color="error" variant="contained">
+          <Button onClick={handleResetSettings} color="error" variant="contained" disabled={isProcessing}>
             {t('reset')}
           </Button>
         </DialogActions>
