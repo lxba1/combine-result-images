@@ -12,7 +12,7 @@ i18n
   .init({
     supportedLngs: ['en', 'ja'],
     fallbackLng: 'en',
-    debug: true, // Set to false in production
+    debug: import.meta.env.DEV,
     detection: {
       order: ['localStorage', 'navigator'],
       lookupLocalStorage: LANGUAGE_STORAGE_KEY,
