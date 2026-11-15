@@ -115,10 +115,37 @@ describe('buildTileMaskRects', () => {
   });
 });
 
+const createMockMontageContext = ({ throwOnDraw = false, events } = {}) => {
+  const ops = [];
+  let fillStyle = '#000000';
+  return {
+    ops,
+    ctx: {
+      get fillStyle() {
+        return fillStyle;
+      },
+      set fillStyle(v) {
+        fillStyle = v;
+      },
+      drawImage(...args) {
+        if (throwOnDraw) {
+          throw new Error('montage draw failed');
+        }
+        ops.push({ type: 'drawImage', args });
+        events?.push({ type: 'montageDrawImage', args });
+      },
+      fillRect(x, y, width, height) {
+        ops.push({ type: 'fillRect', color: fillStyle, args: [x, y, width, height] });
+        events?.push({ type: 'montageFillRect', color: fillStyle, args: [x, y, width, height] });
+      },
+    },
+  };
+};
+
 describe('renderMontageTiles', () => {
-  it('draws directly onto montageCtx without creating a temp canvas when no masks are active', async () => {
+  it('draws directly onto montageCtx without touching fillRect when no masks are active', async () => {
     const events = [];
-    let tempCanvasCount = 0;
+    const montage = createMockMontageContext({ events });
 
     await renderMontageTiles({
       files: ['img-0', 'img-1', 'img-2'],
@@ -127,27 +154,22 @@ describe('renderMontageTiles', () => {
       offsetY: 20,
       cropRect: { x: 5, y: 15, width: 100, height: 80 },
       masks: [],
-      createTempCanvas: () => {
-        tempCanvasCount++;
-        return createMockTempCanvas().canvas;
-      },
       decodeImage: async (file) => ({
         id: file,
         close() {
           events.push({ type: 'close', id: file });
         },
       }),
-      montageCtx: {
-        drawImage(...args) {
-          events.push({ type: 'montageDrawImage', args });
-        },
-      },
+      montageCtx: montage.ctx,
       yieldFrame: async () => {
         events.push({ type: 'yield' });
       },
     });
 
-    assert.equal(tempCanvasCount, 0);
+    assert.equal(
+      montage.ops.filter((op) => op.type === 'fillRect').length,
+      0
+    );
     assert.deepEqual(
       events.filter((e) => e.type !== 'montageDrawImage'),
       [
@@ -168,6 +190,7 @@ describe('renderMontageTiles', () => {
   });
 
   it('guarantees ImageBitmap.close runs in finally when direct drawImage throws', async () => {
+    const montage = createMockMontageContext({ throwOnDraw: true });
     let closed = false;
 
     await assert.rejects(
@@ -178,163 +201,111 @@ describe('renderMontageTiles', () => {
           offsetX: 0,
           offsetY: 0,
           cropRect: { x: 0, y: 0, width: 100, height: 100 },
-          masks: [],
+          masks: [{ x: 10, y: 10, width: 20, height: 20, color: '#000000' }],
           decodeImage: async () => ({
             close() {
               closed = true;
             },
           }),
-          montageCtx: {
-            drawImage() {
-              throw new Error('montage draw failed');
-            },
-          },
+          montageCtx: montage.ctx,
           yieldFrame: async () => {},
         }),
       /montage draw failed/
     );
 
     assert.equal(closed, true);
+    assert.equal(montage.ops.filter((op) => op.type === 'fillRect').length, 0);
   });
 
-  it('allocates temp canvas once without per-frame size reassignment or willReadFrequently when masks are enabled', async () => {
-    const temp = createMockTempCanvas();
-    let createCalls = 0;
+  it('draws tiles and clipped masks directly onto montageCtx without allocating a temp canvas', async () => {
     const lifecycle = [];
+    const montage = createMockMontageContext({ events: lifecycle });
 
     await renderMontageTiles({
       files: ['a', 'b', 'c'],
       colCount: 2,
       offsetX: 8,
       offsetY: 12,
-      bgColor: '#123456',
       cropRect: { x: 10, y: 20, width: 200, height: 150 },
-      masks: [{ x: 30, y: 40, width: 50, height: 20, color: '#000000' }],
-      createTempCanvas: () => {
-        createCalls++;
-        return temp.canvas;
-      },
+      masks: [
+        { x: 30, y: 40, width: 50, height: 20, color: '#112233' },
+        { x: 10, y: 15, width: 40, height: 12, color: '#ffffff' },
+      ],
       decodeImage: async (name) => ({
         name,
         close() {
-          lifecycle.push(`close:${name}`);
+          lifecycle.push({ type: 'close', name });
         },
       }),
-      montageCtx: {
-        drawImage(src, dx, dy) {
-          assert.equal(src, temp.canvas);
-          lifecycle.push(`composite:${dx},${dy}`);
-        },
-      },
+      montageCtx: montage.ctx,
       yieldFrame: async () => {
-        lifecycle.push('yield');
+        lifecycle.push({ type: 'yield' });
       },
     });
 
-    assert.equal(createCalls, 1);
-    assert.deepEqual(temp.contextCalls, [{ id: '2d', options: { alpha: false } }]);
-    // Size assigned once at setup (200x150) and once at final cleanup (1x1), never inside loop.
-    assert.deepEqual(temp.widthWrites, [200, 1]);
-    assert.deepEqual(temp.heightWrites, [150, 1]);
-    assert.equal(temp.canvas.width, 1);
-    assert.equal(temp.canvas.height, 1);
+    assert.deepEqual(
+      lifecycle.map((e) => e.type),
+      [
+        'montageDrawImage',
+        'close',
+        'montageFillRect',
+        'montageFillRect',
+        'yield',
+        'montageDrawImage',
+        'close',
+        'montageFillRect',
+        'montageFillRect',
+        'yield',
+        'montageDrawImage',
+        'close',
+        'montageFillRect',
+        'montageFillRect',
+        'yield',
+      ]
+    );
 
-    // Every tile is closed BEFORE compositing tempCanvas onto montageCtx.
-    assert.deepEqual(lifecycle, [
-      'close:a',
-      'composite:8,12',
-      'yield',
-      'close:b',
-      'composite:216,12',
-      'yield',
-      'close:c',
-      'composite:8,174',
-      'yield',
+    const drawCalls = montage.ops.filter((op) => op.type === 'drawImage').map((op) => op.args);
+    assert.deepEqual(drawCalls[0].slice(1), [10, 20, 200, 150, 8, 12, 200, 150]);
+    assert.deepEqual(drawCalls[1].slice(1), [10, 20, 200, 150, 216, 12, 200, 150]);
+    assert.deepEqual(drawCalls[2].slice(1), [10, 20, 200, 150, 8, 174, 200, 150]);
+
+    const fillCalls = montage.ops.filter((op) => op.type === 'fillRect');
+    assert.deepEqual(fillCalls, [
+      { type: 'fillRect', color: '#112233', args: [38, 52, 50, 20] },
+      { type: 'fillRect', color: '#ffffff', args: [18, 27, 40, 12] },
+      { type: 'fillRect', color: '#112233', args: [246, 52, 50, 20] },
+      { type: 'fillRect', color: '#ffffff', args: [226, 27, 40, 12] },
+      { type: 'fillRect', color: '#112233', args: [38, 214, 50, 20] },
+      { type: 'fillRect', color: '#ffffff', args: [18, 189, 40, 12] },
     ]);
-
-    const clearOps = temp.ops.filter((op) => op.type === 'clearRect');
-    assert.equal(clearOps.length, 0);
-
-    const fillOps = temp.ops.filter((op) => op.type === 'fillRect');
-    assert.equal(fillOps.length, 6);
-    for (let i = 0; i < 3; i++) {
-      assert.deepEqual(fillOps[i * 2], {
-        type: 'fillRect',
-        color: '#123456',
-        args: [0, 0, 200, 150],
-      });
-      assert.deepEqual(fillOps[i * 2 + 1], {
-        type: 'fillRect',
-        color: '#000000',
-        args: [30, 40, 50, 20],
-      });
-    }
   });
 
-  it('closes bitmap and releases temp canvas to 1x1 when masked draw throws', async () => {
-    const temp = createMockTempCanvas({ throwOnDraw: true });
-    let closed = false;
+  it('clips unclipped tile masks to tile bounds so masks cannot paint into offsets or neighbor tiles', async () => {
+    const montage = createMockMontageContext();
 
-    await assert.rejects(
-      () =>
-        renderMontageTiles({
-          files: ['a'],
-          colCount: 1,
-          offsetX: 0,
-          offsetY: 0,
-          cropRect: { x: 0, y: 0, width: 320, height: 240 },
-          masks: [{ x: 10, y: 10, width: 40, height: 20, color: '#000000' }],
-          createTempCanvas: () => temp.canvas,
-          decodeImage: async () => ({
-            close() {
-              closed = true;
-            },
-          }),
-          montageCtx: {
-            drawImage() {},
-          },
-          yieldFrame: async () => {},
-        }),
-      /simulated temp draw error/
-    );
+    await renderMontageTiles({
+      files: ['a'],
+      colCount: 1,
+      offsetX: 10,
+      offsetY: 15,
+      cropRect: { x: 0, y: 0, width: 200, height: 100 },
+      masks: [
+        { x: -10, y: 20, width: 50, height: 150, color: '#000000' },
+        { x: 250, y: 0, width: 20, height: 20, color: '#ff0000' },
+      ],
+      decodeImage: async () => ({ close() {} }),
+      montageCtx: montage.ctx,
+      yieldFrame: async () => {},
+    });
 
-    assert.equal(closed, true);
-    assert.equal(temp.canvas.width, 1);
-    assert.equal(temp.canvas.height, 1);
+    const fillCalls = montage.ops.filter((op) => op.type === 'fillRect');
+    assert.deepEqual(fillCalls, [
+      { type: 'fillRect', color: '#000000', args: [10, 35, 40, 80] },
+    ]);
   });
 
-  it('releases temp canvas to 1x1 if temporary getContext returns null', async () => {
-    const temp = createMockTempCanvas({ returnNullContext: true });
-    let decoded = false;
-
-    await assert.rejects(
-      () =>
-        renderMontageTiles({
-          files: ['a'],
-          colCount: 1,
-          offsetX: 0,
-          offsetY: 0,
-          cropRect: { x: 0, y: 0, width: 320, height: 240 },
-          masks: [{ x: 10, y: 10, width: 40, height: 20, color: '#000000' }],
-          createTempCanvas: () => temp.canvas,
-          decodeImage: async () => {
-            decoded = true;
-            return { close() {} };
-          },
-          montageCtx: {
-            drawImage() {},
-          },
-        }),
-      /Could not get reusable temporary canvas context/
-    );
-
-    assert.equal(decoded, false);
-    assert.equal(temp.canvas.width, 1);
-    assert.equal(temp.canvas.height, 1);
-  });
-
-  it('returns immediately on empty file list without creating a temp canvas', async () => {
-    let tempCalls = 0;
+  it('returns immediately on empty file list without drawing or filling masks', async () => {
+    const montage = createMockMontageContext();
 
     await renderMontageTiles({
       files: [],
@@ -343,28 +314,19 @@ describe('renderMontageTiles', () => {
       offsetY: 0,
       cropRect: { x: 0, y: 0, width: 100, height: 100 },
       masks: [{ x: 0, y: 0, width: 10, height: 10, color: '#000000' }],
-      createTempCanvas: () => {
-        tempCalls++;
-        return createMockTempCanvas().canvas;
-      },
       decodeImage: async () => {
         throw new Error('should not decode');
       },
-      montageCtx: {
-        drawImage() {
-          throw new Error('should not draw');
-        },
-      },
+      montageCtx: montage.ctx,
     });
 
-    assert.equal(tempCalls, 0);
+    assert.equal(montage.ops.length, 0);
   });
 
-  it('rejects images whose dimensions differ from expectedDimensions and still closes bitmaps and temp canvas', async () => {
-    const temp = createMockTempCanvas();
+  it('rejects images whose dimensions differ from expectedDimensions and still closes bitmaps', async () => {
+    const montage = createMockMontageContext();
     const closed = [];
     const decoded = [];
-    let montageDraws = 0;
 
     await assert.rejects(
       () =>
@@ -377,7 +339,6 @@ describe('renderMontageTiles', () => {
           masks: [{ x: 0, y: 0, width: 10, height: 10, color: '#000000' }],
           expectedDimensions: { width: 1920, height: 1080 },
           getFileName: (f) => f.name,
-          createTempCanvas: () => temp.canvas,
           decodeImage: async (f) => {
             decoded.push(f.name);
             const size =
@@ -391,11 +352,7 @@ describe('renderMontageTiles', () => {
               },
             };
           },
-          montageCtx: {
-            drawImage() {
-              montageDraws++;
-            },
-          },
+          montageCtx: montage.ctx,
           yieldFrame: async () => {},
         }),
       (err) =>
@@ -409,57 +366,8 @@ describe('renderMontageTiles', () => {
 
     assert.deepEqual(decoded, ['ok.png', 'wrong.png']);
     assert.deepEqual(closed, ['ok.png', 'wrong.png']);
-    assert.equal(montageDraws, 1);
-    assert.equal(temp.canvas.width, 1);
-    assert.equal(temp.canvas.height, 1);
-  });
-
-  it('paints masked overhang background with bgColor instead of clearRect while keeping alpha: false', async () => {
-    const temp = createMockTempCanvas();
-    const img = { close() {} };
-
-    await renderMontageTiles({
-      files: ['overhang.png'],
-      colCount: 1,
-      offsetX: 0,
-      offsetY: 0,
-      bgColor: '#ffffff',
-      cropRect: { x: 1500, y: 800, width: 300, height: 300 },
-      masks: [{ x: 10, y: 20, width: 40, height: 25, color: '#000000' }],
-      createTempCanvas: () => temp.canvas,
-      decodeImage: async () => img,
-      montageCtx: { drawImage() {} },
-      yieldFrame: async () => {},
-    });
-
-    assert.deepEqual(temp.contextCalls, [{ id: '2d', options: { alpha: false } }]);
-    assert.equal(temp.ops.filter((op) => op.type === 'clearRect').length, 0);
-
-    const drawIndex = temp.ops.findIndex((op) => op.type === 'tempDrawImage');
-    const bgFillIndex = temp.ops.findIndex(
-      (op) =>
-        op.type === 'fillRect' &&
-        op.color === '#ffffff' &&
-        op.args[0] === 0 &&
-        op.args[1] === 0 &&
-        op.args[2] === 300 &&
-        op.args[3] === 300
-    );
-    const maskFillIndex = temp.ops.findIndex(
-      (op) =>
-        op.type === 'fillRect' &&
-        op.color === '#000000' &&
-        op.args[0] === 10 &&
-        op.args[1] === 20 &&
-        op.args[2] === 40 &&
-        op.args[3] === 25
-    );
-
-    assert.ok(bgFillIndex !== -1, 'expected temp canvas background fillRect');
-    assert.ok(drawIndex !== -1, 'expected tempDrawImage');
-    assert.ok(maskFillIndex !== -1, 'expected mask fillRect');
-    assert.ok(bgFillIndex < drawIndex, 'bgColor must be painted before drawImage');
-    assert.ok(drawIndex < maskFillIndex, 'mask must be painted after drawImage');
+    assert.equal(montage.ops.filter((op) => op.type === 'drawImage').length, 1);
+    assert.equal(montage.ops.filter((op) => op.type === 'fillRect').length, 1);
   });
 });
 

@@ -976,14 +976,13 @@ const ImageProcessor: React.FC = () => {
       montageCtx.fillStyle = finalSettings.bgColor;
       montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
-      await renderMontageTiles<File, ImageBitmap, HTMLCanvasElement>({
+      await renderMontageTiles<File, ImageBitmap>({
         files: orderedImages,
         colCount: finalSettings.colCount,
         offsetX: finalSettings.offsetX,
         offsetY: finalSettings.offsetY,
         cropRect,
         masks: tileMasks,
-        bgColor: finalSettings.bgColor,
         montageCtx,
         expectedDimensions,
         getFileName: (file) => file.name,

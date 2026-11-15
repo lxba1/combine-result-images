@@ -23,26 +23,8 @@ export interface TileMaskRect extends PixelRect {
   color: string;
 }
 
-export interface MontageContextLike<B extends BitmapLike, C> {
-  drawImage: {
-    (image: C, dx: number, dy: number): void;
-    (
-      image: B,
-      sx: number,
-      sy: number,
-      sw: number,
-      sh: number,
-      dx: number,
-      dy: number,
-      dw: number,
-      dh: number
-    ): void;
-  };
-}
-
-export interface TileTempContextLike<B extends BitmapLike> {
+export interface MontageContextLike<B extends BitmapLike> {
   fillStyle: string | CanvasGradient | CanvasPattern;
-  clearRect?: (x: number, y: number, w: number, h: number) => void;
   fillRect: (x: number, y: number, w: number, h: number) => void;
   drawImage: (
     image: B,
@@ -57,15 +39,6 @@ export interface TileTempContextLike<B extends BitmapLike> {
   ) => void;
 }
 
-export interface TileTempCanvasLike<B extends BitmapLike> {
-  width: number;
-  height: number;
-  getContext: (
-    contextId: '2d',
-    options?: CanvasRenderingContext2DSettings
-  ) => TileTempContextLike<B> | null;
-}
-
 export interface BuildTileMaskRectsParams {
   cropRect: PixelRect;
   maskEnabled: boolean;
@@ -76,24 +49,18 @@ export interface BuildTileMaskRectsParams {
   selfMaskColor: string;
 }
 
-export interface RenderMontageTilesOptions<
-  F,
-  B extends BitmapLike,
-  C extends TileTempCanvasLike<B> = TileTempCanvasLike<B>,
-> {
+export interface RenderMontageTilesOptions<F, B extends BitmapLike> {
   files: readonly F[];
   colCount: number;
   offsetX: number;
   offsetY: number;
   cropRect: PixelRect;
   masks: readonly TileMaskRect[];
-  bgColor?: string;
-  montageCtx: MontageContextLike<B, C>;
+  montageCtx: MontageContextLike<B>;
   decodeImage: (file: F) => Promise<B>;
   expectedDimensions?: ImageDimensions;
   getFileName?: (file: F) => string;
   yieldFrame?: () => Promise<void>;
-  createTempCanvas?: () => C;
 }
 
 /** Converts enabled mask rectangles from full-image space into crop-clipped tile-relative coordinates. */
@@ -163,15 +130,11 @@ export class ImageResolutionMismatchError extends Error {
 }
 
 /**
- * Draws cropped image tiles onto the montage context, guaranteeing each decoded ImageBitmap is
- * closed in a `finally` block and allocating a temporary canvas only once when masks are active.
+ * Draws cropped image tiles and clipped mask rectangles directly onto the montage context,
+ * guaranteeing each decoded ImageBitmap is closed in a `finally` block without allocating a temp canvas.
  */
-export const renderMontageTiles = async <
-  F,
-  B extends BitmapLike,
-  C extends TileTempCanvasLike<B> = TileTempCanvasLike<B>,
->(
-  options: RenderMontageTilesOptions<F, B, C>
+export const renderMontageTiles = async <F, B extends BitmapLike>(
+  options: RenderMontageTilesOptions<F, B>
 ): Promise<void> => {
   const {
     files,
@@ -180,103 +143,70 @@ export const renderMontageTiles = async <
     offsetY,
     cropRect,
     masks,
-    bgColor = '#000000',
     montageCtx,
     decodeImage,
     expectedDimensions,
     getFileName = defaultGetFileName,
     yieldFrame = defaultYieldFrame,
-    createTempCanvas = () => document.createElement('canvas') as unknown as C,
   } = options;
 
   if (files.length === 0) {
     return;
   }
 
-  let tempCanvas: C | null = null;
-  let tempCtx: TileTempContextLike<B> | null = null;
-
-  try {
-    if (masks.length > 0) {
-      tempCanvas = createTempCanvas();
-      tempCanvas.width = cropRect.width;
-      tempCanvas.height = cropRect.height;
-      tempCtx = tempCanvas.getContext('2d', { alpha: false });
-      if (!tempCtx) {
-        throw new Error('Could not get reusable temporary canvas context');
-      }
+  // Clamp masks to tile bounds so direct callers cannot paint into offsets or neighbor tiles.
+  const tileBounds: PixelRect = { x: 0, y: 0, width: cropRect.width, height: cropRect.height };
+  const clippedMasks: TileMaskRect[] = [];
+  for (const mask of masks) {
+    const clipped = intersectPixelRects(mask, tileBounds);
+    if (clipped) {
+      clippedMasks.push({ ...clipped, color: mask.color });
     }
+  }
 
-    for (let i = 0; i < files.length; i++) {
-      const row = Math.floor(i / colCount);
-      const col = i % colCount;
-      const drawX = offsetX + col * (cropRect.width + offsetX);
-      const drawY = offsetY + row * (cropRect.height + offsetY);
+  for (let i = 0; i < files.length; i++) {
+    const row = Math.floor(i / colCount);
+    const col = i % colCount;
+    const drawX = offsetX + col * (cropRect.width + offsetX);
+    const drawY = offsetY + row * (cropRect.height + offsetY);
 
-      const bitmap = await decodeImage(files[i]);
-      try {
-        if (
-          expectedDimensions &&
-          (bitmap.width !== expectedDimensions.width ||
-            bitmap.height !== expectedDimensions.height)
-        ) {
-          throw new ImageResolutionMismatchError({
-            fileName: getFileName(files[i]),
-            expectedWidth: expectedDimensions.width,
-            expectedHeight: expectedDimensions.height,
-            actualWidth: typeof bitmap.width === 'number' ? bitmap.width : 0,
-            actualHeight: typeof bitmap.height === 'number' ? bitmap.height : 0,
-          });
-        }
-
-        if (tempCanvas && tempCtx) {
-          // Fill with bgColor rather than clearRect (which clears to black on alpha:false)
-          // so any partial crop overhang matches montageCanvas's background color.
-          tempCtx.fillStyle = bgColor;
-          tempCtx.fillRect(0, 0, cropRect.width, cropRect.height);
-          tempCtx.drawImage(
-            bitmap,
-            cropRect.x,
-            cropRect.y,
-            cropRect.width,
-            cropRect.height,
-            0,
-            0,
-            cropRect.width,
-            cropRect.height
-          );
-        } else {
-          montageCtx.drawImage(
-            bitmap,
-            cropRect.x,
-            cropRect.y,
-            cropRect.width,
-            cropRect.height,
-            drawX,
-            drawY,
-            cropRect.width,
-            cropRect.height
-          );
-        }
-      } finally {
-        bitmap.close();
+    const bitmap = await decodeImage(files[i]);
+    try {
+      if (
+        expectedDimensions &&
+        (bitmap.width !== expectedDimensions.width ||
+          bitmap.height !== expectedDimensions.height)
+      ) {
+        throw new ImageResolutionMismatchError({
+          fileName: getFileName(files[i]),
+          expectedWidth: expectedDimensions.width,
+          expectedHeight: expectedDimensions.height,
+          actualWidth: typeof bitmap.width === 'number' ? bitmap.width : 0,
+          actualHeight: typeof bitmap.height === 'number' ? bitmap.height : 0,
+        });
       }
 
-      if (tempCanvas && tempCtx) {
-        for (const mask of masks) {
-          tempCtx.fillStyle = mask.color;
-          tempCtx.fillRect(mask.x, mask.y, mask.width, mask.height);
-        }
-        montageCtx.drawImage(tempCanvas, drawX, drawY);
-      }
+      montageCtx.drawImage(
+        bitmap,
+        cropRect.x,
+        cropRect.y,
+        cropRect.width,
+        cropRect.height,
+        drawX,
+        drawY,
+        cropRect.width,
+        cropRect.height
+      );
+    } finally {
+      bitmap.close();
+    }
 
-      await yieldFrame();
+    for (const mask of clippedMasks) {
+      montageCtx.fillStyle = mask.color;
+      montageCtx.fillRect(drawX + mask.x, drawY + mask.y, mask.width, mask.height);
     }
-  } finally {
-    if (tempCanvas) {
-      tempCanvas.width = 1;
-      tempCanvas.height = 1;
-    }
+
+    await yieldFrame();
   }
 };
 
