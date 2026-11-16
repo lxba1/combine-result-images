@@ -11,6 +11,8 @@ import {
   formatFileSize,
   formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
+  guardWindowFileDragEvent,
+  hasExternalFilesDataTransfer,
   isSupportedInputImageFile,
   mergeImageFiles,
   parseImageDimensionsFromBytes,
@@ -1979,5 +1981,52 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
       }),
       true
     );
+  });
+
+  it('guards unhandled window file dragover/drop without blocking handled or non-file drags', () => {
+    assert.equal(hasExternalFilesDataTransfer(null), false);
+    assert.equal(hasExternalFilesDataTransfer({ types: ['text/plain'] }), false);
+    assert.equal(hasExternalFilesDataTransfer({ types: ['text/plain', 'Files'] }), true);
+
+    const makeDragEvent = ({
+      defaultPrevented = false,
+      types = ['Files'],
+      dropEffect = 'copy',
+    } = {}) => {
+      let prevented = defaultPrevented;
+      const dt = { types, dropEffect };
+      return {
+        get defaultPrevented() {
+          return prevented;
+        },
+        preventDefault: () => {
+          prevented = true;
+        },
+        dataTransfer: dt,
+        wasPrevented: () => prevented,
+      };
+    };
+
+    // Unhandled external file dragover -> preventDefault + dropEffect = 'none'
+    const unhandledDragOver = makeDragEvent();
+    assert.equal(guardWindowFileDragEvent(unhandledDragOver, 'dragover'), true);
+    assert.equal(unhandledDragOver.wasPrevented(), true);
+    assert.equal(unhandledDragOver.dataTransfer.dropEffect, 'none');
+
+    // Unhandled external file drop -> preventDefault
+    const unhandledDrop = makeDragEvent({ dropEffect: 'none' });
+    assert.equal(guardWindowFileDragEvent(unhandledDrop, 'drop'), true);
+    assert.equal(unhandledDrop.wasPrevented(), true);
+
+    // Already handled by card -> do not clobber dropEffect = 'copy'
+    const cardHandledDragOver = makeDragEvent({ defaultPrevented: true, dropEffect: 'copy' });
+    assert.equal(guardWindowFileDragEvent(cardHandledDragOver, 'dragover'), false);
+    assert.equal(cardHandledDragOver.dataTransfer.dropEffect, 'copy');
+
+    // Non-file drag (e.g. text selection) -> leave untouched
+    const textDragOver = makeDragEvent({ types: ['text/plain'], dropEffect: 'move' });
+    assert.equal(guardWindowFileDragEvent(textDragOver, 'dragover'), false);
+    assert.equal(textDragOver.wasPrevented(), false);
+    assert.equal(textDragOver.dataTransfer.dropEffect, 'move');
   });
 });

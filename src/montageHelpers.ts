@@ -1251,3 +1251,37 @@ export const canShareImageFile = (
     return false;
   }
 };
+
+export interface DragDataTransferLike {
+  types?: readonly string[] | DOMStringList | null;
+  dropEffect: DataTransfer['dropEffect'];
+}
+
+export interface GuardableDragEventLike {
+  defaultPrevented: boolean;
+  preventDefault: () => void;
+  dataTransfer?: DragDataTransferLike | null;
+}
+
+/** Returns whether a drag DataTransfer carries external files (`'Files'` in `types`). */
+export const hasExternalFilesDataTransfer = (
+  dataTransfer: Pick<DragDataTransferLike, 'types'> | null | undefined
+): boolean => Array.from(dataTransfer?.types ?? []).includes('Files');
+
+/**
+ * Prevents default browser file-open navigation when an external file drag/drop reaches `window`
+ * unhandled (`defaultPrevented === false`), and sets `dropEffect = 'none'` on `dragover`.
+ */
+export const guardWindowFileDragEvent = (
+  event: GuardableDragEventLike,
+  type: 'dragover' | 'drop'
+): boolean => {
+  if (event.defaultPrevented || !hasExternalFilesDataTransfer(event.dataTransfer)) {
+    return false;
+  }
+  event.preventDefault();
+  if (type === 'dragover' && event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'none';
+  }
+  return true;
+};

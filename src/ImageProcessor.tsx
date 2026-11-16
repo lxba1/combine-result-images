@@ -51,6 +51,8 @@ import {
   formatFileSize,
   formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
+  guardWindowFileDragEvent,
+  hasExternalFilesDataTransfer,
   isSupportedInputImageFile,
   mergeImageFiles,
   prepareMontagePlan,
@@ -951,6 +953,24 @@ const ImageProcessor: React.FC = () => {
   }, [isCompactViewport]);
 
   useEffect(() => {
+    const handleWindowDragOver = (event: DragEvent) => {
+      guardWindowFileDragEvent(event, 'dragover');
+    };
+    const handleWindowDrop = (event: DragEvent) => {
+      if (guardWindowFileDragEvent(event, 'drop')) {
+        fileDragDepthRef.current = 0;
+        setIsFileDragOver(false);
+      }
+    };
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, []);
+
+  useEffect(() => {
     if (processError) {
       processAlertRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
@@ -1155,24 +1175,22 @@ const ImageProcessor: React.FC = () => {
     }
   };
 
-  const isExternalFileDrag = (event: React.DragEvent): boolean =>
-    Array.from(event.dataTransfer?.types ?? []).includes('Files');
-
   const handleCardDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
-    if (isProcessing || !isExternalFileDrag(event)) return;
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
     event.preventDefault();
+    if (isProcessing) return;
     fileDragDepthRef.current += 1;
     setIsFileDragOver(true);
   };
 
   const handleCardDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (isProcessing || !isExternalFileDrag(event)) return;
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
+    event.dataTransfer.dropEffect = isProcessing ? 'none' : 'copy';
   };
 
   const handleCardDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isExternalFileDrag(event)) return;
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
     if (
       event.relatedTarget !== null &&
       !event.currentTarget.contains(event.relatedTarget as Node)
@@ -1188,7 +1206,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleCardDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isExternalFileDrag(event)) return;
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
     event.preventDefault();
     fileDragDepthRef.current = 0;
     setIsFileDragOver(false);
