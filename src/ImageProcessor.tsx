@@ -1459,19 +1459,27 @@ const ImageProcessor: React.FC = () => {
   });
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, pb: 20, minHeight: '100vh' }}>
+    <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
-          <Typography variant="h4" component="h1">{t('title')}</Typography>
-          <Typography variant="caption" color="text.secondary">v{packageJson.version}</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}>
+          <Typography
+            variant="h4"
+            component="h1"
+            sx={{ fontSize: { xs: '1.375rem', sm: '1.875rem', md: '2.125rem' } }}
+          >
+            {t('title')}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+            v{packageJson.version}
+          </Typography>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
           <LanguageButton />
           <ThemeModeButton />
         </Box>
       </Box>
       <Grid container spacing={3}>
-        <Grid size={{ xs: 12, md: 5, lg: 4 }}>
+        <Grid size={{ xs: 12, md: 5, lg: 4 }} sx={{ order: { xs: 2, md: 1 } }}>
           <Accordion expanded={expandedAccordions.settings} onChange={handleAccordionChange('settings')}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
@@ -1640,7 +1648,7 @@ const ImageProcessor: React.FC = () => {
             </Button>
           </Box>
         </Grid>
-        <Grid size={{ xs: 12, md: 7, lg: 8 }}>
+        <Grid size={{ xs: 12, md: 7, lg: 8 }} sx={{ order: { xs: 1, md: 2 } }}>
           <Card>
             <CardContent>
               <Typography variant="h5" component="h2" sx={{ mb: 0.75 }}>{t('upload_and_process')}</Typography>
