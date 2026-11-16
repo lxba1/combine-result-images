@@ -1087,6 +1087,7 @@ const ImageProcessor: React.FC = () => {
   const requestedPreviewFileRef = useRef<File | null>(null);
   const ratioPreviewKeyRef = useRef<{ file: File; cropKey: string } | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const fileSelectionNoticeRef = useRef<HTMLDivElement>(null);
   const processAlertRef = useRef<HTMLDivElement>(null);
   const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const isMountedRef = useRef(true);
@@ -1203,6 +1204,12 @@ const ImageProcessor: React.FC = () => {
       window.removeEventListener('drop', handleWindowDrop);
     };
   }, []);
+
+  useEffect(() => {
+    if (fileSelectionNotice) {
+      fileSelectionNoticeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [fileSelectionNotice]);
 
   useEffect(() => {
     if (processError) {
@@ -1358,17 +1365,9 @@ const ImageProcessor: React.FC = () => {
       setFileSelectionNotice(null);
       return;
     }
-    const message =
-      notice.messageKey === 'alert_no_supported_images'
-        ? t('alert_no_supported_images')
-        : notice.messageKey === 'notice_skipped_both'
-          ? t('notice_skipped_both', notice.params)
-          : notice.messageKey === 'notice_skipped_unsupported'
-            ? t('notice_skipped_unsupported', notice.params)
-            : t('notice_skipped_duplicate', notice.params);
     setFileSelectionNotice({
       severity: notice.severity,
-      message,
+      message: 'params' in notice ? t(notice.messageKey, notice.params) : t(notice.messageKey),
     });
   };
 
@@ -2450,6 +2449,7 @@ const ImageProcessor: React.FC = () => {
               </Typography>
               {fileSelectionNotice && (
                 <Alert
+                  ref={fileSelectionNoticeRef}
                   severity={fileSelectionNotice.severity}
                   onClose={() => setFileSelectionNotice(null)}
                   closeText={t('close')}
