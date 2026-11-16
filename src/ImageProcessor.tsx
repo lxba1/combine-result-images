@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, ButtonBase, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, FormHelperText, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
 import { useColorScheme, useTheme, styled, alpha } from '@mui/material/styles';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon, ChevronLeft as ChevronLeftIcon, ChevronRight as ChevronRightIcon } from '@mui/icons-material';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, Share as ShareIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon, ChevronLeft as ChevronLeftIcon, ChevronRight as ChevronRightIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
@@ -46,6 +46,7 @@ import { detectAutoCropFromImage } from './cropHelpers.ts';
 import {
   ImageDecodeError,
   ImageResolutionMismatchError,
+  canShareImageFile,
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
@@ -303,7 +304,9 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
   error = false,
   onCommit,
 }) => {
+  const { t } = useTranslation();
   const normalizedValue = normalizeHexColor(value) ?? '#000000';
+  const colorPickerLabel = t('color_picker_aria', { label });
   const inputRef = useRef<HTMLInputElement>(null);
   const isFocusedRef = useRef(false);
   const isDirtyRef = useRef(false);
@@ -392,11 +395,11 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
             <InputAdornment position="start">
               <ColorSwatchInput
                 type="color"
-                name={name}
                 value={normalizedValue}
                 disabled={disabled}
                 onChange={handleSwatchChange}
-                aria-label={label}
+                aria-label={colorPickerLabel}
+                title={colorPickerLabel}
               />
             </InputAdornment>
           ),
@@ -742,6 +745,7 @@ type ProcessingProgressState =
   | { phase: 'releasing' };
 
 interface ProcessedMontageResult {
+  blob: Blob;
   url: string;
   filename: string;
   width: number;
@@ -819,6 +823,8 @@ const ImageProcessor: React.FC = () => {
   const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
   const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
   const [processedResult, setProcessedResult] = useState<ProcessedMontageResult | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgressState | null>(null);
@@ -1032,6 +1038,7 @@ const ImageProcessor: React.FC = () => {
     requestedPreviewFileRef.current = null;
     setImages([]);
     setProcessedResult(null);
+    setShareError(null);
     setProcessError(null);
     setFileListExpanded(true);
     setPreviewOpen(false);
@@ -1044,6 +1051,7 @@ const ImageProcessor: React.FC = () => {
     if (nextImages.length === 0) {
       setFileListExpanded(true);
       setProcessedResult(null);
+      setShareError(null);
     }
     setImages(nextImages);
     setProcessError(null);
@@ -1347,6 +1355,7 @@ const ImageProcessor: React.FC = () => {
     setIsFileDragOver(false);
     setProcessError(null);
     setProcessedResult(null);
+    setShareError(null);
     setProcessingProgress({ phase: 'preparing' });
 
     // Add a short delay to allow the UI to update (e.g., show progress) before blocking the main thread.
@@ -1581,6 +1590,7 @@ const ImageProcessor: React.FC = () => {
       };
       const ext = resolveOutputExtension(montageBlob.type, finalSettings.outputFormat);
       setProcessedResult({
+        blob: montageBlob,
         url: URL.createObjectURL(montageBlob),
         filename: `tile-${getTimestamp()}.${ext}`,
         width: sizeEval.width,
@@ -1713,6 +1723,53 @@ const ImageProcessor: React.FC = () => {
     hasImages: images.length > 0,
     hasFreshResult: Boolean(processedResult) && resultStaleReason === 'none',
   });
+
+  const shareableResultFile = useMemo(() => {
+    if (!processedResult) return null;
+    return new File([processedResult.blob], processedResult.filename, {
+      type: processedResult.blob.type || 'application/octet-stream',
+    });
+  }, [processedResult]);
+
+  const canShareResult = useMemo(
+    () => canShareImageFile(shareableResultFile),
+    [shareableResultFile]
+  );
+
+  const handleShareResult = async () => {
+    if (
+      !shareableResultFile ||
+      isSharing ||
+      typeof navigator === 'undefined' ||
+      typeof navigator.share !== 'function'
+    ) {
+      return;
+    }
+    setIsSharing(true);
+    setShareError(null);
+    try {
+      await navigator.share({
+        files: [shareableResultFile],
+        title: t('title'),
+      });
+    } catch (error) {
+      const isCancelled =
+        isAbortError(error) ||
+        (typeof DOMException !== 'undefined' &&
+          error instanceof DOMException &&
+          error.name === 'AbortError');
+      if (!isCancelled) {
+        console.warn('Failed to share result image:', error);
+        if (isMountedRef.current) {
+          setShareError(t('alert_share_failed'));
+        }
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsSharing(false);
+      }
+    }
+  };
 
   const activePreviewFile = renderedPreview?.file ?? requestedPreviewFile;
   const previewDimensions =
@@ -2308,7 +2365,7 @@ const ImageProcessor: React.FC = () => {
                   <Box
                     component="img"
                     src={processedResult.url}
-                    alt="Processed Montage"
+                    alt={t('result_image_alt')}
                     width={processedResult.width}
                     height={processedResult.height}
                     sx={{
@@ -2320,17 +2377,41 @@ const ImageProcessor: React.FC = () => {
                       borderRadius: 1,
                     }}
                   />
-                  <Button
-                    variant={buttonVariants.download}
-                    href={processedResult.url}
-                    download={processedResult.filename}
-                    fullWidth
-                    size="large"
-                    sx={{ mt: 2 }}
-                    startIcon={<DownloadIcon />}
-                  >
-                    {t('download_image')}
-                  </Button>
+                  {shareError && (
+                    <Alert
+                      severity="warning"
+                      onClose={() => setShareError(null)}
+                      sx={{ mt: 1.5 }}
+                    >
+                      {shareError}
+                    </Alert>
+                  )}
+                  <Box sx={{ mt: 2, display: 'flex', gap: 1.5, alignItems: 'stretch' }}>
+                    <Button
+                      variant={buttonVariants.download}
+                      href={processedResult.url}
+                      download={processedResult.filename}
+                      fullWidth={!canShareResult}
+                      size="large"
+                      sx={{ flex: 1 }}
+                      startIcon={<DownloadIcon />}
+                    >
+                      {t('download_image')}
+                    </Button>
+                    {canShareResult && (
+                      <Button
+                        variant="outlined"
+                        color="primary"
+                        size="large"
+                        startIcon={<ShareIcon />}
+                        onClick={handleShareResult}
+                        disabled={isSharing}
+                        sx={{ flexShrink: 0, whiteSpace: 'nowrap', minWidth: { xs: 112, sm: 128 } }}
+                      >
+                        {t('share_image')}
+                      </Button>
+                    )}
+                  </Box>
                 </Box>
               )}
             </CardContent>

@@ -1,69 +1,43 @@
-# React + TypeScript + Vite
+# Image Combiner (ブルアカ対抗戦リザルト結合)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+複数の対抗戦リザルト画像（PNG / JPEG）をブラウザ上だけで 1 枚のグリッド画像に結合し、名前・称号・アイコンなどのプライバシー部分をマスクできる Web アプリです。すべての画像処理はブラウザ内で完結し、画像データが外部サーバーへ送信されることはありません。
 
-Currently, two official plugins are available:
+## 主な機能
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **ファイル選択・確認**
+  - PNG / JPEG の複数選択、カード全体へのドラッグ＆ドロップによる追加、重複ファイル除外に対応
+  - 一覧からタップ／クリックで単体プレビュー（前後送り・一覧からの削除に対応）
+  - 更新日時・ファイル名・選択順での並び替え
+- **クロップ**
+  - 背景を自動検出して切り抜くオートモード、またはピクセル単位の手動クロップ
+- **マスク / セルフマスク**
+  - 相手側（右側）・自分側（左側）を個別に ON/OFF・色指定可能
+  - **比率**（プリセット + `%` スライダー + 数値入力）、**手動**（元画像基準ピクセル座標）、**OCR**（`tesseract.js` による「Lv.」自動検出）に対応
+- **出力設定・保存**
+  - カラム数、オフセット余白、背景色、保存形式（WebP / PNG / JPEG）、品質調整
+  - 保存ダウンロードに加え、対応環境では Web Share API による共有に対応
+- **その他**
+  - 日本語 / 英語切替、ライト / ダーク / システムテーマ対応、`localStorage` への設定保存
 
-## Expanding the ESLint configuration
+## 開発コマンド
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+```bash
+# 開発サーバー起動
+npm run dev
 
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+# 単体テスト実行
+npm test
 
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
+# Lint チェック
+npm run lint
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# 型チェック & 本番ビルド
+npm run build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## 技術スタック
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+- React 19 / TypeScript / Vite
+- Material UI (`@mui/material`)
+- `tesseract.js` (ブラウザ内 OCR)
+- `i18next` / `react-i18next`

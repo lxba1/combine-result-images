@@ -6,6 +6,7 @@ import {
   MONTAGE_MEMORY_RELEASE_DELAY_MS,
   OCR_MEMORY_RELEASE_DELAY_MS,
   buildTileMaskRects,
+  canShareImageFile,
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
@@ -1946,5 +1947,37 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
     assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f3), f2);
     assert.equal(resolveNextPreviewAfterRemoval([f1], f1), null);
     assert.equal(resolveNextPreviewAfterRemoval([f1, f2], { name: 'missing.png' }), null);
+  });
+
+  it('checks Web Share API file support safely across missing, rejecting, and throwing browsers', () => {
+    const sampleFile = new File(['abc'], 'tile.png', { type: 'image/png' });
+
+    assert.equal(canShareImageFile(null, { share: async () => {}, canShare: () => true }), false);
+    assert.equal(canShareImageFile(sampleFile, undefined), false);
+    assert.equal(canShareImageFile(sampleFile, {}), false);
+    assert.equal(canShareImageFile(sampleFile, { share: async () => {} }), false);
+    assert.equal(
+      canShareImageFile(sampleFile, {
+        share: async () => {},
+        canShare: () => false,
+      }),
+      false
+    );
+    assert.equal(
+      canShareImageFile(sampleFile, {
+        share: async () => {},
+        canShare: () => {
+          throw new TypeError('unsupported');
+        },
+      }),
+      false
+    );
+    assert.equal(
+      canShareImageFile(sampleFile, {
+        share: async () => {},
+        canShare: (data) => Array.isArray(data?.files) && data.files[0] === sampleFile,
+      }),
+      true
+    );
   });
 });

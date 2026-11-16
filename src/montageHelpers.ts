@@ -1231,3 +1231,23 @@ export const resolveNextPreviewAfterRemoval = <F>(
   }
   return remaining[Math.min(index, remaining.length - 1)];
 };
+
+export interface NavigatorShareLike {
+  share?: (data: ShareData) => Promise<void>;
+  canShare?: (data?: ShareData) => boolean;
+}
+
+/** Returns whether the browser supports sharing `file` via the Web Share API. */
+export const canShareImageFile = (
+  file: File | null | undefined,
+  nav: NavigatorShareLike | undefined = typeof navigator !== 'undefined' ? navigator : undefined
+): boolean => {
+  if (!file || !nav || typeof nav.share !== 'function' || typeof nav.canShare !== 'function') {
+    return false;
+  }
+  try {
+    return nav.canShare({ files: [file] });
+  } catch {
+    return false;
+  }
+};
