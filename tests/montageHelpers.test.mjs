@@ -13,6 +13,7 @@ import {
   readEncodedImageDimensions,
   renderMontageTiles,
   renderMontageToBlob,
+  resolveMontageAbortUiTarget,
   resolveOutputExtension,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
@@ -772,7 +773,7 @@ describe('prepareMontagePlan', () => {
     });
 
     assert.equal(enemyOutPlan.status, 'abort');
-    assert.deepEqual(enemyOutPlan.alert, { kind: 'mask_outside_crop' });
+    assert.deepEqual(enemyOutPlan.alert, { kind: 'mask_outside_crop', target: 'mask' });
     assert.equal(ocrCalled, false);
 
     const selfOutPlan = await prepareMontagePlan({
@@ -796,7 +797,7 @@ describe('prepareMontagePlan', () => {
     });
 
     assert.equal(selfOutPlan.status, 'abort');
-    assert.deepEqual(selfOutPlan.alert, { kind: 'mask_outside_crop' });
+    assert.deepEqual(selfOutPlan.alert, { kind: 'mask_outside_crop', target: 'selfMask' });
 
     const zeroAreaPlan = await prepareMontagePlan({
       settings: {
@@ -812,7 +813,33 @@ describe('prepareMontagePlan', () => {
     });
 
     assert.equal(zeroAreaPlan.status, 'abort');
-    assert.deepEqual(zeroAreaPlan.alert, { kind: 'invalid_mask_area' });
+    assert.deepEqual(zeroAreaPlan.alert, {
+      kind: 'invalid_mask_area',
+      target: 'mask',
+      mode: 'manual',
+    });
+
+    const collapsedRatioSelfPlan = await prepareMontagePlan({
+      settings: {
+        ...createDefaultSettings(),
+        cropAuto: false,
+        cropWidth: 100,
+        cropHeight: 100,
+        selfMaskEnabled: true,
+        selfMaskMode: 'ratio',
+        selfMaskRatioRect: { rx0: 0.5, ry0: 0.1, rx1: 0.501, ry1: 0.4 },
+      },
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+
+    assert.equal(collapsedRatioSelfPlan.status, 'abort');
+    assert.deepEqual(collapsedRatioSelfPlan.alert, {
+      kind: 'invalid_mask_area',
+      target: 'selfMask',
+      mode: 'ratio',
+    });
   });
 
   it('clips partially overlapping manual mask to cropRect without mutating manual mask coordinates', async () => {
@@ -883,6 +910,60 @@ describe('prepareMontagePlan', () => {
     const updated = { ...initial, ...plan.settingsPatch };
     assert.equal(updated.cropWidth, 1846);
     assert.equal(areSettingsDefault(updated), true);
+  });
+
+  it('resolves UI accordion and field error targets for prepareMontagePlan abort alerts', () => {
+    const base = createDefaultSettings();
+
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'auto_crop_context_error' }, base),
+      { accordions: [], fields: [] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'auto_crop_not_found' }, base),
+      { accordions: ['crop'], fields: [] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'crop_outside_image', width: 1600, height: 900 }, base),
+      { accordions: ['crop'], fields: ['cropX', 'cropY', 'cropWidth', 'cropHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'mask_outside_crop', target: 'mask' }, base),
+      { accordions: ['mask'], fields: ['maskX', 'maskY', 'maskWidth', 'maskHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'mask_outside_crop', target: 'selfMask' }, base),
+      { accordions: ['selfMask'], fields: ['selfMaskX', 'selfMaskY', 'selfMaskWidth', 'selfMaskHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'invalid_mask_area', target: 'selfMask', mode: 'ratio' },
+        base
+      ),
+      {
+        accordions: ['selfMask'],
+        fields: [
+          'selfMaskRatioRect.rx0',
+          'selfMaskRatioRect.ry0',
+          'selfMaskRatioRect.rx1',
+          'selfMaskRatioRect.ry1',
+        ],
+      }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'ocr_not_found', enemyMissing: false, selfMissing: true },
+        base
+      ),
+      { accordions: ['selfMask'], fields: [] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'ocr_error', error: new Error('fail') },
+        { ...base, maskEnabled: true, maskMode: 'ocr', selfMaskEnabled: false, selfMaskMode: 'ocr' }
+      ),
+      { accordions: ['mask'], fields: [] }
+    );
   });
 });
 

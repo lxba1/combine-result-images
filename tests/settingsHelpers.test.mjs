@@ -22,6 +22,7 @@ import {
   normalizeHexColor,
   normalizeRatioRect,
   parseSavedSettings,
+  resolveCanvasSizeErrorUiTarget,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
 } from '../src/settingsHelpers.ts';
@@ -417,49 +418,63 @@ describe('loadSettingsFromStorage and saveSettingsToStorage', () => {
 });
 
 describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverlapWithImage', () => {
-  it('accepts valid defaults and rejects invalid colCount, offsets, colors, crop, and zero-area masks', () => {
+  it('accepts valid defaults and rejects invalid colCount, offsets, colors, crop, and zero-area masks with target accordion/fields', () => {
     assert.deepEqual(validateSettingsBeforeProcess(createDefaultSettings()), { valid: true });
 
     const invalidCols = { ...createDefaultSettings(), colCount: 0 };
     assert.deepEqual(validateSettingsBeforeProcess(invalidCols), {
       valid: false,
       alertKey: 'alert_columns_must_be_positive',
+      accordion: 'settings',
+      fields: ['colCount'],
     });
 
     const fractionalCols = { ...createDefaultSettings(), colCount: 2.5 };
     assert.deepEqual(validateSettingsBeforeProcess(fractionalCols), {
       valid: false,
       alertKey: 'alert_columns_must_be_positive',
+      accordion: 'settings',
+      fields: ['colCount'],
     });
 
     const invalidOffset = { ...createDefaultSettings(), offsetY: -1 };
     assert.deepEqual(validateSettingsBeforeProcess(invalidOffset), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const fractionalOffsetX = { ...createDefaultSettings(), offsetX: 1.5 };
     assert.deepEqual(validateSettingsBeforeProcess(fractionalOffsetX), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const fractionalOffsetY = { ...createDefaultSettings(), offsetY: 2.5 };
     assert.deepEqual(validateSettingsBeforeProcess(fractionalOffsetY), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const oversizedOffsetX = { ...createDefaultSettings(), offsetX: MAX_OFFSET_PX + 1 };
     assert.deepEqual(validateSettingsBeforeProcess(oversizedOffsetX), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const oversizedOffsetY = { ...createDefaultSettings(), offsetY: MAX_OFFSET_PX + 1 };
     assert.deepEqual(validateSettingsBeforeProcess(oversizedOffsetY), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     assert.deepEqual(
@@ -475,6 +490,8 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(transparentBg), {
       valid: false,
       alertKey: 'alert_invalid_color_setting',
+      accordion: 'settings',
+      fields: ['bgColor'],
     });
 
     const inactiveBadMaskColor = { ...createDefaultSettings(), maskEnabled: false, maskColor: 'transparent' };
@@ -484,12 +501,28 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(activeBadMaskColor), {
       valid: false,
       alertKey: 'alert_invalid_color_setting',
+      accordion: 'mask',
+      fields: ['maskColor'],
     });
 
-    const zeroManualCrop = { ...createDefaultSettings(), cropAuto: false, cropWidth: 0 };
+    const activeBadSelfMaskColor = {
+      ...createDefaultSettings(),
+      selfMaskEnabled: true,
+      selfMaskColor: 'invalid',
+    };
+    assert.deepEqual(validateSettingsBeforeProcess(activeBadSelfMaskColor), {
+      valid: false,
+      alertKey: 'alert_invalid_color_setting',
+      accordion: 'selfMask',
+      fields: ['selfMaskColor'],
+    });
+
+    const zeroManualCrop = { ...createDefaultSettings(), cropAuto: false, cropX: -1, cropWidth: 0 };
     assert.deepEqual(validateSettingsBeforeProcess(zeroManualCrop), {
       valid: false,
       alertKey: 'alert_invalid_crop_setting',
+      accordion: 'crop',
+      fields: ['cropX', 'cropWidth'],
     });
 
     const invalidCropIgnoredWhenAuto = { ...createDefaultSettings(), cropAuto: true, cropWidth: 0 };
@@ -504,6 +537,8 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(zeroRatioEnemyMask), {
       valid: false,
       alertKey: 'alert_invalid_mask_area',
+      accordion: 'mask',
+      fields: ['maskRatioRect.rx0', 'maskRatioRect.rx1'],
     });
 
     const zeroManualSelfMask = {
@@ -515,6 +550,23 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(zeroManualSelfMask), {
       valid: false,
       alertKey: 'alert_invalid_mask_area',
+      accordion: 'selfMask',
+      fields: ['selfMaskHeight'],
+    });
+  });
+
+  it('resolves canvas size error UI targets for WebP limits and general overflow', () => {
+    assert.deepEqual(resolveCanvasSizeErrorUiTarget('exceeds_webp_dimension', true), {
+      accordions: ['settings'],
+      fields: ['outputFormat', 'colCount'],
+    });
+    assert.deepEqual(resolveCanvasSizeErrorUiTarget('non_positive_or_overflow', true), {
+      accordions: ['settings'],
+      fields: ['colCount', 'offsetX'],
+    });
+    assert.deepEqual(resolveCanvasSizeErrorUiTarget('non_positive_or_overflow', false), {
+      accordions: ['settings', 'crop'],
+      fields: ['colCount', 'offsetX', 'cropWidth', 'cropHeight'],
     });
   });
 

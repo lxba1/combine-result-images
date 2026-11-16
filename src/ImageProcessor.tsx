@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
+import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
 import { useColorScheme, styled } from '@mui/material/styles';
 import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
@@ -17,6 +17,8 @@ import {
   type ImageSettings,
   type MaskMode,
   type RatioRect,
+  type SettingFieldKey,
+  type SettingsAccordionId,
   type SortOrder,
   MASK_PRESETS,
   MAX_COL_COUNT,
@@ -32,6 +34,7 @@ import {
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
+  resolveCanvasSizeErrorUiTarget,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
 } from './settingsHelpers.ts';
@@ -43,6 +46,7 @@ import {
   getMemoryReleaseDelayMs,
   prepareMontagePlan,
   renderMontageToBlob,
+  resolveMontageAbortUiTarget,
   resolveOutputExtension,
   type ImageDimensions,
 } from './montageHelpers.ts';
@@ -259,6 +263,7 @@ interface ColorSettingFieldProps {
   name: string;
   value: string;
   disabled?: boolean;
+  error?: boolean;
   onCommit: (name: string, value: string) => void;
 }
 
@@ -271,6 +276,7 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
   name,
   value,
   disabled = false,
+  error = false,
   onCommit,
 }) => {
   const normalizedValue = normalizeHexColor(value) ?? '#000000';
@@ -349,6 +355,7 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
       name={name}
       defaultValue={normalizedValue}
       disabled={disabled}
+      error={error}
       inputRef={inputRef}
       onFocus={handleFocus}
       onChange={handleTextChange}
@@ -384,6 +391,7 @@ interface NumericTextFieldProps {
   step?: number;
   integer?: boolean;
   disabled?: boolean;
+  error?: boolean;
   onCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
 }
 
@@ -400,6 +408,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
   step = 1,
   integer = false,
   disabled = false,
+  error = false,
   onCommit,
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -497,6 +506,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
       name={name}
       defaultValue={value}
       disabled={disabled}
+      error={error}
       inputRef={inputRef}
       onFocus={handleFocus}
       onChange={handleChange}
@@ -519,6 +529,8 @@ const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>)
 
 interface MaskAccordionProps {
   title: string;
+  expanded: boolean;
+  onAccordionChange: (event: React.SyntheticEvent, isExpanded: boolean) => void;
   enabledName: 'maskEnabled' | 'selfMaskEnabled';
   enabled: boolean;
   modeName: 'maskMode' | 'selfMaskMode';
@@ -531,6 +543,7 @@ interface MaskAccordionProps {
   colorName: 'maskColor' | 'selfMaskColor';
   colorValue: string;
   disabled?: boolean;
+  errorFields?: ReadonlySet<SettingFieldKey>;
   onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
   onNumericCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
   onColorCommit: (name: string, value: string) => void;
@@ -541,6 +554,8 @@ interface MaskAccordionProps {
 /** Shared settings accordion for target and self masking controls with compact 2-column pairing. */
 const MaskAccordion: React.FC<MaskAccordionProps> = ({
   title,
+  expanded,
+  onAccordionChange,
   enabledName,
   enabled,
   modeName,
@@ -553,6 +568,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   colorName,
   colorValue,
   disabled = false,
+  errorFields,
   onSettingChange,
   onNumericCommit,
   onColorCommit,
@@ -560,9 +576,10 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   onPresetChange,
 }) => {
   const { t } = useTranslation();
+  const hasError = (field: SettingFieldKey): boolean => Boolean(errorFields?.has(field));
 
   return (
-    <Accordion sx={{ mt: 2 }}>
+    <Accordion expanded={expanded} onChange={onAccordionChange} sx={{ mt: 2 }}>
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
           <Typography variant="h6">{title}</Typography>
@@ -580,7 +597,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
         {enabled && (
           <Grid container spacing={2} sx={{ mt: 1 }}>
             <Grid size={{ xs: 6 }}>
-              <FormControl fullWidth size="small" disabled={disabled}>
+              <FormControl fullWidth size="small" disabled={disabled} error={hasError(modeName)}>
                 <InputLabel id={`${modeName}-label`}>{t('mode')}</InputLabel>
                 <Select labelId={`${modeName}-label`} name={modeName} value={mode} label={t('mode')} onChange={onSettingChange}>
                   <MenuItem value="manual">{t('mode_manual')}</MenuItem>
@@ -590,7 +607,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
               </FormControl>
             </Grid>
             <Grid size={{ xs: 6 }}>
-              <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} onCommit={onColorCommit} />
+              <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} error={hasError(colorName)} onCommit={onColorCommit} />
             </Grid>
             {mode === 'ratio' ? (
               <>
@@ -638,17 +655,17 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                     />
                   </Box>
                 </Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx0`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry0`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx1`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry1`)} onCommit={onNumericCommit} /></Grid>
               </>
             ) : (
               <>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name={`${rectPrefix}X`} value={rectValues.x} min={0} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name={`${rectPrefix}Y`} value={rectValues.y} min={0} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name={`${rectPrefix}Width`} value={rectValues.width} min={1} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name={`${rectPrefix}Height`} value={rectValues.height} min={1} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name={`${rectPrefix}X`} value={rectValues.x} min={0} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}X`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name={`${rectPrefix}Y`} value={rectValues.y} min={0} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}Y`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name={`${rectPrefix}Width`} value={rectValues.width} min={1} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}Width`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name={`${rectPrefix}Height`} value={rectValues.height} min={1} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}Height`)} onCommit={onNumericCommit} /></Grid>
               </>
             )}
           </Grid>
@@ -674,25 +691,111 @@ const ImageProcessor: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [expandedAccordions, setExpandedAccordions] = useState<Record<SettingsAccordionId, boolean>>({
+    settings: false,
+    crop: false,
+    mask: false,
+    selfMask: false,
+  });
+  const [processError, setProcessError] = useState<{
+    message: string;
+    fields: ReadonlySet<SettingFieldKey>;
+  } | null>(null);
+  const [largeCanvasConfirm, setLargeCanvasConfirm] = useState<{ open: boolean; message: string }>({
+    open: false,
+    message: '',
+  });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const processAlertRef = useRef<HTMLDivElement>(null);
+  const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const isMountedRef = useRef(true);
 
   const isDefaultSettings = areSettingsDefault(settings);
+
+  const hasFieldError = (field: SettingFieldKey): boolean =>
+    Boolean(processError?.fields.has(field));
+
+  const handleAccordionChange =
+    (id: SettingsAccordionId) => (_event: React.SyntheticEvent, isExpanded: boolean) => {
+      setExpandedAccordions((prev) => ({ ...prev, [id]: isExpanded }));
+    };
+
+  const expandAccordions = (ids: readonly SettingsAccordionId[]) => {
+    if (ids.length === 0) return;
+    setExpandedAccordions((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id of ids) {
+        if (!next[id]) {
+          next[id] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  };
+
+  const reportProcessError = (
+    message: string,
+    target: { accordions?: readonly SettingsAccordionId[]; fields?: readonly SettingFieldKey[] } = {}
+  ) => {
+    if (!isMountedRef.current) return;
+    expandAccordions(target.accordions ?? []);
+    setProcessError({
+      message,
+      fields: new Set(target.fields ?? []),
+    });
+  };
+
+  const resolveLargeCanvasConfirm = (confirmed: boolean) => {
+    const resolve = largeCanvasConfirmResolverRef.current;
+    largeCanvasConfirmResolverRef.current = null;
+    if (isMountedRef.current) {
+      setLargeCanvasConfirm({ open: false, message: '' });
+    }
+    resolve?.(confirmed);
+  };
+
+  const requestLargeCanvasConfirm = (message: string): Promise<boolean> => {
+    if (largeCanvasConfirmResolverRef.current) {
+      largeCanvasConfirmResolverRef.current(false);
+      largeCanvasConfirmResolverRef.current = null;
+    }
+    return new Promise<boolean>((resolve) => {
+      largeCanvasConfirmResolverRef.current = resolve;
+      setLargeCanvasConfirm({ open: true, message });
+    });
+  };
 
   const handleResetSettings = () => {
     if (isProcessing) return;
     setSettings(createDefaultSettings());
     setResetDialogOpen(false);
+    setProcessError(null);
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     // Abort and terminate any active or still-initializing OCR worker on unmount
     return () => {
+      isMountedRef.current = false;
+      if (largeCanvasConfirmResolverRef.current) {
+        const resolve = largeCanvasConfirmResolverRef.current;
+        largeCanvasConfirmResolverRef.current = null;
+        resolve(false);
+      }
       void releaseOcrResources(ocrAbortRef, ocrSessionRef, { abort: true });
     };
   }, []);
+
+  useEffect(() => {
+    if (processError) {
+      processAlertRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [processError]);
 
   useEffect(() => {
     // This effect manages the lifecycle of the generated object URL.
@@ -725,6 +828,7 @@ const ImageProcessor: React.FC = () => {
     if (files && files.length > 0) {
       setImages(Array.from(files));
       setProcessedImageUrl(null); // This will also trigger the cleanup effect for the old URL
+      setProcessError(null);
     }
     // Reset input value so picking the exact same file(s) again still triggers onChange
     event.target.value = '';
@@ -734,6 +838,7 @@ const ImageProcessor: React.FC = () => {
     if (isProcessing) return;
     setImages([]);
     setProcessedImageUrl(null);
+    setProcessError(null);
     setFileListExpanded(true);
   };
 
@@ -744,16 +849,32 @@ const ImageProcessor: React.FC = () => {
     }
     setImages((prev) => prev.filter((file) => file !== targetFile));
     setProcessedImageUrl(null);
+    setProcessError(null);
   };
 
   const handleNumericSettingCommit = (name: string, newValue: number, options?: { finalize?: boolean }) => {
     if (isProcessing) return;
     if (name.startsWith('maskRatioRect.') || name.startsWith('selfMaskRatioRect.')) {
       const [parent, key] = name.split('.') as ['maskRatioRect' | 'selfMaskRatioRect', keyof RatioRect];
+      const currentRect = settings[parent];
+      const nextRect = commitRatioRectField(currentRect, key, newValue, options);
+      if (
+        currentRect.rx0 === nextRect.rx0 &&
+        currentRect.ry0 === nextRect.ry0 &&
+        currentRect.rx1 === nextRect.rx1 &&
+        currentRect.ry1 === nextRect.ry1
+      ) {
+        return;
+      }
       setSettings(prev => ({
         ...prev,
         [parent]: commitRatioRectField(prev[parent], key, newValue, options),
       }));
+      setProcessError(null);
+      return;
+    }
+
+    if (settings[name as keyof ImageSettings] === newValue) {
       return;
     }
 
@@ -761,14 +882,16 @@ const ImageProcessor: React.FC = () => {
       ...prev,
       [name]: newValue,
     }));
+    setProcessError(null);
   };
 
   const handleColorSettingCommit = (name: string, newValue: string) => {
     if (isProcessing) return;
     if (name !== 'bgColor' && name !== 'maskColor' && name !== 'selfMaskColor') return;
     const normalized = normalizeHexColor(newValue);
-    if (!normalized) return;
+    if (!normalized || settings[name] === normalized) return;
     setSettings(prev => (prev[name] === normalized ? prev : { ...prev, [name]: normalized }));
+    setProcessError(null);
   };
 
   const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => {
@@ -785,11 +908,19 @@ const ImageProcessor: React.FC = () => {
     }
     // Special handling for offsetX to also update offsetY
     if (name === 'offsetX') {
+        if (settings.offsetX === newValue && settings.offsetY === newValue) {
+            return;
+        }
         setSettings(prev => ({
             ...prev,
             offsetX: newValue as number,
             offsetY: newValue as number,
         }));
+        setProcessError(null);
+        return;
+    }
+
+    if (settings[name as keyof ImageSettings] === newValue) {
         return;
     }
 
@@ -801,23 +932,35 @@ const ImageProcessor: React.FC = () => {
       ...prev,
       [name]: newValue,
     }));
+    setProcessError(null);
   };
 
   const handleSliderChange = (name: string) => (_event: Event, value: number | number[]) => {
     if (isProcessing) return;
     const numValue = value as number;
+    if (name === 'offsetX') {
+        if (settings.offsetX === numValue && settings.offsetY === numValue) return;
+    } else if (settings[name as keyof ImageSettings] === numValue) {
+        return;
+    }
     setSettings(prev => {
         if (name === 'offsetX') { // If the offset slider is moved, update both X and Y
             return { ...prev, offsetX: numValue, offsetY: numValue };
         }
         return { ...prev, [name]: numValue };
     });
+    setProcessError(null);
   };
 
   const handleRatioSliderChange = (parent: 'maskRatioRect' | 'selfMaskRatioRect', axis: 'horizontal' | 'vertical') => (_event: Event, value: number | number[]) => {
     if (isProcessing) return;
     if (!Array.isArray(value)) return;
     const [start, end] = value;
+    const current = settings[parent];
+    const changed = axis === 'horizontal'
+      ? current.rx0 !== start || current.rx1 !== end
+      : current.ry0 !== start || current.ry1 !== end;
+    if (!changed) return;
     setSettings(prev => ({
         ...prev,
         [parent]: {
@@ -825,6 +968,7 @@ const ImageProcessor: React.FC = () => {
             ...(axis === 'horizontal' ? { rx0: start, rx1: end } : { ry0: start, ry1: end })
         }
     }));
+    setProcessError(null);
   };
 
   const handlePresetChange = (parent: 'maskRatioRect' | 'selfMaskRatioRect') => (event: SelectChangeEvent<string>) => {
@@ -832,27 +976,33 @@ const ImageProcessor: React.FC = () => {
     const presetKey = event.target.value;
     const presets = parent === 'maskRatioRect' ? MASK_PRESETS : SELF_MASK_PRESETS;
     if (presetKey && presets[presetKey]) {
+        if (isRatioRectEqual(settings[parent], presets[presetKey])) return;
         setSettings(prev => ({
             ...prev,
             [parent]: { ...presets[presetKey] }
         }));
+        setProcessError(null);
     }
   };
 
   const processImages = async () => {
     if (isProcessing) return;
     if (images.length === 0) {
-      alert(t('alert_select_images_first'));
+      reportProcessError(t('alert_select_images_first'));
       return;
     }
 
     const validation = validateSettingsBeforeProcess(settings);
     if (!validation.valid) {
-      alert(t(validation.alertKey));
+      reportProcessError(t(validation.alertKey), {
+        accordions: [validation.accordion],
+        fields: validation.fields,
+      });
       return;
     }
 
     setIsProcessing(true);
+    setProcessError(null);
     setProcessedImageUrl(null);
     setOcrStatus('');
 
@@ -907,31 +1057,37 @@ const ImageProcessor: React.FC = () => {
           }),
       });
 
+      const nextSettings =
+        Object.keys(plan.settingsPatch).length > 0
+          ? { ...settings, ...plan.settingsPatch }
+          : settings;
       if (Object.keys(plan.settingsPatch).length > 0) {
-        setSettings(prev => ({ ...prev, ...plan.settingsPatch }));
+        setSettings(nextSettings);
       }
 
       if (plan.status === 'abort') {
+        const uiTarget = resolveMontageAbortUiTarget(plan.alert, nextSettings);
         switch (plan.alert.kind) {
           case 'auto_crop_context_error':
-            alert(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'));
+            reportProcessError(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'), uiTarget);
             break;
           case 'auto_crop_not_found':
-            alert(t('alert_failed_to_detect_crop_area'));
+            reportProcessError(t('alert_failed_to_detect_crop_area'), uiTarget);
             break;
           case 'crop_outside_image':
-            alert(
+            reportProcessError(
               t('alert_crop_outside_image', {
                 width: plan.alert.width,
                 height: plan.alert.height,
-              })
+              }),
+              uiTarget
             );
             break;
           case 'invalid_mask_area':
-            alert(t('alert_invalid_mask_area'));
+            reportProcessError(t('alert_invalid_mask_area'), uiTarget);
             break;
           case 'mask_outside_crop':
-            alert(t('alert_mask_outside_crop'));
+            reportProcessError(t('alert_mask_outside_crop'), uiTarget);
             break;
           case 'ocr_aborted':
             setOcrStatus('');
@@ -939,15 +1095,16 @@ const ImageProcessor: React.FC = () => {
           case 'ocr_error':
             console.error(plan.alert.error);
             setOcrStatus('');
-            alert(t('alert_ocr_error'));
+            reportProcessError(t('alert_ocr_error'), uiTarget);
             break;
           case 'ocr_not_found':
             setOcrStatus('');
-            alert(
+            reportProcessError(
               [
                 plan.alert.enemyMissing ? t('alert_could_not_find_right_lv') : '',
                 plan.alert.selfMissing ? t('alert_could_not_find_left_lv') : '',
-              ].filter(Boolean).join('\n')
+              ].filter(Boolean).join('\n'),
+              uiTarget
             );
             break;
         }
@@ -964,16 +1121,21 @@ const ImageProcessor: React.FC = () => {
 
       const sizeEval = evaluateMontageCanvasSize(orderedImages.length, cropRect, finalSettings);
       if (sizeEval.status === 'invalid') {
+        const sizeUiTarget = resolveCanvasSizeErrorUiTarget(sizeEval.reason, finalSettings.cropAuto);
         if (sizeEval.reason === 'exceeds_webp_dimension') {
-          alert(
+          reportProcessError(
             t('alert_webp_canvas_size', {
               width: sizeEval.width.toLocaleString(),
               height: sizeEval.height.toLocaleString(),
               maxWebpDimension: MAX_WEBP_DIMENSION.toLocaleString(),
-            })
+            }),
+            sizeUiTarget
           );
         } else {
-          alert(t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }));
+          reportProcessError(
+            t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }),
+            sizeUiTarget
+          );
         }
         return;
       }
@@ -985,7 +1147,7 @@ const ImageProcessor: React.FC = () => {
           height: sizeEval.height.toLocaleString(),
           pixels: sizeEval.pixels.toLocaleString(),
         });
-        if (!window.confirm(confirmMessage)) {
+        if (!(await requestLargeCanvasConfirm(confirmMessage))) {
           return;
         }
       }
@@ -1031,7 +1193,7 @@ const ImageProcessor: React.FC = () => {
         console.warn(
           `Encoded output dimension mismatch: expected ${sizeEval.width}x${sizeEval.height}, got ${renderResult.actualWidth}x${renderResult.actualHeight}`
         );
-        alert(
+        reportProcessError(
           t('alert_output_dimension_mismatch', {
             expectedWidth: sizeEval.width.toLocaleString(),
             expectedHeight: sizeEval.height.toLocaleString(),
@@ -1042,7 +1204,7 @@ const ImageProcessor: React.FC = () => {
         return;
       }
       if (renderResult.status === 'allocation_failed' || renderResult.status === 'encode_failed') {
-        alert(t('alert_image_generation_failed'));
+        reportProcessError(t('alert_image_generation_failed'));
         return;
       }
 
@@ -1059,14 +1221,14 @@ const ImageProcessor: React.FC = () => {
     } catch (error) {
       if (error instanceof ImageDecodeError) {
         console.error(`Failed to decode image "${error.fileName}":`, error);
-        alert(t('alert_image_decode_failed', { fileName: error.fileName }));
+        reportProcessError(t('alert_image_decode_failed', { fileName: error.fileName }));
         return;
       }
       if (error instanceof ImageResolutionMismatchError) {
         console.warn(
           `Image resolution mismatch for "${error.fileName}": expected ${error.expectedWidth}x${error.expectedHeight}, got ${error.actualWidth}x${error.actualHeight}`
         );
-        alert(
+        reportProcessError(
           t('alert_image_resolution_mismatch', {
             fileName: error.fileName,
             actualWidth: error.actualWidth,
@@ -1092,18 +1254,22 @@ const ImageProcessor: React.FC = () => {
     } finally {
       releaseFirstImageBitmap();
       await releaseOcrResources(ocrAbortRef, ocrSessionRef);
-      const releaseDelayMs = getMemoryReleaseDelayMs({
-        ocrSessionStarted,
-        montageCanvasUsed,
-        reloadTriggered,
-      });
-      if (releaseDelayMs > 0) {
-        setOcrStatus(t('status_releasing_memory'));
-        // Add a small delay to allow GC to run before re-enabling the button
-        await new Promise(resolve => setTimeout(resolve, releaseDelayMs));
+      if (isMountedRef.current) {
+        const releaseDelayMs = getMemoryReleaseDelayMs({
+          ocrSessionStarted,
+          montageCanvasUsed,
+          reloadTriggered,
+        });
+        if (releaseDelayMs > 0) {
+          setOcrStatus(t('status_releasing_memory'));
+          // Add a small delay to allow GC to run before re-enabling the button
+          await new Promise(resolve => setTimeout(resolve, releaseDelayMs));
+        }
+        if (isMountedRef.current) {
+          setOcrStatus(''); // Clear OCR status message
+          setIsProcessing(false);
+        }
       }
-      setOcrStatus(''); // Clear OCR status message
-      setIsProcessing(false);
     }
   };
 
@@ -1121,7 +1287,7 @@ const ImageProcessor: React.FC = () => {
       </Box>
       <Grid container spacing={3}>
         <Grid size={{ xs: 12, md: 5, lg: 4 }}>
-          <Accordion>
+          <Accordion expanded={expandedAccordions.settings} onChange={handleAccordionChange('settings')}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
                 <Typography variant="h6">{t('settings')}</Typography>
@@ -1133,7 +1299,7 @@ const ImageProcessor: React.FC = () => {
             <AccordionDetails>
               <Grid container spacing={2}>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small" disabled={isProcessing}>
+                  <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('colCount')}>
                     <InputLabel id="col-count-label">{t('columns')}</InputLabel>
                     <Select labelId="col-count-label" name="colCount" value={settings.colCount} label={t('columns')} onChange={handleSettingChange}>
                       {Array.from({ length: MAX_COL_COUNT - MIN_COL_COUNT + 1 }, (_, i) => {
@@ -1144,7 +1310,7 @@ const ImageProcessor: React.FC = () => {
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small" disabled={isProcessing}>
+                  <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('offsetX')}>
                     <InputLabel id="offset-label">{t('offset_px')}</InputLabel>
                     <Select labelId="offset-label" name="offsetX" value={settings.offsetX} label={t('offset_px')} onChange={handleSettingChange}>
                       {Array.from({ length: MAX_OFFSET_PX - MIN_OFFSET_PX + 1 }, (_, i) => {
@@ -1166,9 +1332,9 @@ const ImageProcessor: React.FC = () => {
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} disabled={isProcessing} onCommit={handleColorSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} disabled={isProcessing} error={hasFieldError('bgColor')} onCommit={handleColorSettingCommit} /></Grid>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small" disabled={isProcessing}>
+                  <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('outputFormat')}>
                     <InputLabel id="output-format-label">{t('output_format')}</InputLabel>
                     <Select labelId="output-format-label" name="outputFormat" value={settings.outputFormat} label={t('output_format')} onChange={handleSettingChange}>
                       <MenuItem value="webp">WebP</MenuItem>
@@ -1204,7 +1370,7 @@ const ImageProcessor: React.FC = () => {
             </AccordionDetails>
           </Accordion>
 
-          <Accordion sx={{ mt: 2 }}>
+          <Accordion expanded={expandedAccordions.crop} onChange={handleAccordionChange('crop')} sx={{ mt: 2 }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
                 <Typography variant="h6">{t('cropping')}</Typography>
@@ -1220,16 +1386,18 @@ const ImageProcessor: React.FC = () => {
                 label={t('auto_mode')}
               />
               <Grid container spacing={2} sx={{ mt: 1 }}>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name="cropWidth" value={settings.cropWidth} min={1} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name="cropHeight" value={settings.cropHeight} min={1} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropX')} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropY')} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name="cropWidth" value={settings.cropWidth} min={1} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropWidth')} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name="cropHeight" value={settings.cropHeight} min={1} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropHeight')} onCommit={handleNumericSettingCommit} /></Grid>
               </Grid>
             </AccordionDetails>
           </Accordion>
 
           <MaskAccordion
             title={t('masking')}
+            expanded={expandedAccordions.mask}
+            onAccordionChange={handleAccordionChange('mask')}
             enabledName="maskEnabled"
             enabled={settings.maskEnabled}
             modeName="maskMode"
@@ -1242,6 +1410,7 @@ const ImageProcessor: React.FC = () => {
             colorName="maskColor"
             colorValue={settings.maskColor}
             disabled={isProcessing}
+            errorFields={processError?.fields}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
             onColorCommit={handleColorSettingCommit}
@@ -1251,6 +1420,8 @@ const ImageProcessor: React.FC = () => {
 
           <MaskAccordion
             title={t('self_mask')}
+            expanded={expandedAccordions.selfMask}
+            onAccordionChange={handleAccordionChange('selfMask')}
             enabledName="selfMaskEnabled"
             enabled={settings.selfMaskEnabled}
             modeName="selfMaskMode"
@@ -1263,6 +1434,7 @@ const ImageProcessor: React.FC = () => {
             colorName="selfMaskColor"
             colorValue={settings.selfMaskColor}
             disabled={isProcessing}
+            errorFields={processError?.fields}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
             onColorCommit={handleColorSettingCommit}
@@ -1451,6 +1623,16 @@ const ImageProcessor: React.FC = () => {
                   {isProcessing ? <CircularProgress size={24} color="inherit" /> : t('process_images')}
                 </Button>
               </Box>
+              {processError && (
+                <Alert
+                  ref={processAlertRef}
+                  severity="error"
+                  onClose={() => setProcessError(null)}
+                  sx={{ mt: 2, whiteSpace: 'pre-line' }}
+                >
+                  {processError.message}
+                </Alert>
+              )}
               {ocrStatus && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }} translate="no">
                   {ocrStatus}
@@ -1496,6 +1678,34 @@ const ImageProcessor: React.FC = () => {
           <Button onClick={() => setResetDialogOpen(false)}>{t('cancel')}</Button>
           <Button onClick={handleResetSettings} color="error" variant="contained" disabled={isProcessing}>
             {t('reset')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={largeCanvasConfirm.open}
+        onClose={() => resolveLargeCanvasConfirm(false)}
+        aria-labelledby="large-canvas-confirm-dialog-title"
+        aria-describedby="large-canvas-confirm-dialog-description"
+      >
+        <DialogTitle id="large-canvas-confirm-dialog-title">
+          {t('confirm_large_canvas_title')}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText
+            id="large-canvas-confirm-dialog-description"
+            sx={{ whiteSpace: 'pre-line' }}
+          >
+            {largeCanvasConfirm.message}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => resolveLargeCanvasConfirm(false)}>{t('cancel')}</Button>
+          <Button
+            onClick={() => resolveLargeCanvasConfirm(true)}
+            color="warning"
+            variant="contained"
+          >
+            {t('continue')}
           </Button>
         </DialogActions>
       </Dialog>
