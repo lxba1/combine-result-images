@@ -24,6 +24,7 @@ import {
   renderMontageToBlob,
   resolveActionButtonVariants,
   resolveAdjacentPreviewFile,
+  resolveMaskAccordionPreviewState,
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
@@ -2126,5 +2127,137 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
     assert.deepEqual(computeScaledPreviewDimensions(2000, 1000, 720), { width: 720, height: 360 });
     assert.deepEqual(computeScaledPreviewDimensions(400, 300, 720), { width: 400, height: 300 });
     assert.deepEqual(computeScaledPreviewDimensions(500, 1000, 720), { width: 360, height: 720 });
+  });
+
+  it('retains previous valid ratio preview while regenerating to prevent height jumps', () => {
+    const fileA = { name: 'a.png' };
+    const fileB = { name: 'b.png' };
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: false,
+        previewSourceImage: null,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:a',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      { hasImages: false, status: 'loading' }
+    );
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'auto',
+        cachedPreview: null,
+      }),
+      { hasImages: true, status: 'loading' }
+    );
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:a',
+          autoCropFallback: true,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      {
+        hasImages: true,
+        status: 'ok',
+        url: 'blob:a',
+        autoCropFallback: true,
+        isUpdating: false,
+      }
+    );
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'error',
+          url: '',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      { hasImages: true, status: 'error' }
+    );
+
+    // Switching first image keeps previous valid preview until new build finishes
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileB,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:a',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      {
+        hasImages: true,
+        status: 'ok',
+        url: 'blob:a',
+        autoCropFallback: false,
+        isUpdating: true,
+      }
+    );
+
+    // Editing manual crop key keeps previous valid preview until rebuild finishes
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'manual:12,0,100,100',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:manual-1',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'manual:1,0,100,100',
+        },
+      }),
+      {
+        hasImages: true,
+        status: 'ok',
+        url: 'blob:manual-1',
+        autoCropFallback: false,
+        isUpdating: true,
+      }
+    );
+
+    // Previous error should not be kept while loading a different image or crop key
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileB,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'error',
+          url: '',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      { hasImages: true, status: 'loading' }
+    );
   });
 });

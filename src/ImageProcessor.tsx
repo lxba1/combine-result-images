@@ -62,6 +62,7 @@ import {
   renderMontageToBlob,
   resolveActionButtonVariants,
   resolveAdjacentPreviewFile,
+  resolveMaskAccordionPreviewState,
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
@@ -69,6 +70,8 @@ import {
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
   type ImageDimensions,
+  type MaskAccordionPreviewState,
+  type RatioPreviewSnapshot,
 } from './montageHelpers.ts';
 
 const fileKeyMap = new WeakMap<File, number>();
@@ -576,14 +579,7 @@ interface MaskAccordionProps {
   rectValues: { x: number; y: number; width: number; height: number };
   colorName: 'maskColor' | 'selfMaskColor';
   colorValue: string;
-  ratioPreview?: {
-    hasImages: boolean;
-    status: 'loading' | 'ok' | 'error';
-    url?: string;
-    width?: number;
-    height?: number;
-    autoCropFallback?: boolean;
-  };
+  ratioPreview?: MaskAccordionPreviewState;
   disabled?: boolean;
   errorFields?: ReadonlySet<SettingFieldKey>;
   onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
@@ -715,6 +711,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                     ) : ratioPreview.status === 'ok' && ratioPreview.url ? (
                       <>
                         <Box
+                          aria-busy={ratioPreview.isUpdating || undefined}
                           sx={{
                             position: 'relative',
                             width: 'fit-content',
@@ -732,8 +729,6 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                             component="img"
                             src={ratioPreview.url}
                             alt={t('ratio_preview_alt')}
-                            width={ratioPreview.width}
-                            height={ratioPreview.height}
                             sx={{
                               display: 'block',
                               maxWidth: '100%',
@@ -761,6 +756,26 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                                 pointerEvents: 'none',
                               }}
                             />
+                          )}
+                          {ratioPreview.isUpdating && (
+                            <Box
+                              aria-hidden="true"
+                              sx={{
+                                position: 'absolute',
+                                top: 6,
+                                right: 6,
+                                p: 0.5,
+                                borderRadius: '50%',
+                                bgcolor: 'rgba(0, 0, 0, 0.6)',
+                                color: '#fff',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                pointerEvents: 'none',
+                              }}
+                            >
+                              <CircularProgress size={14} color="inherit" />
+                            </Box>
                           )}
                         </Box>
                         {ratioPreview.autoCropFallback && (
@@ -921,21 +936,9 @@ type RatioPreviewBuildResult =
   | {
       status: 'ok';
       url: string;
-      width: number;
-      height: number;
       autoCropFallback: boolean;
     }
   | { status: 'error' };
-
-interface RatioPreviewState {
-  status: 'ok' | 'error';
-  url: string;
-  width: number;
-  height: number;
-  autoCropFallback: boolean;
-  sourceFile: File;
-  cropKey: string;
-}
 
 const buildCroppedRatioPreview = async (params: {
   file: File;
@@ -1011,8 +1014,6 @@ const buildCroppedRatioPreview = async (params: {
     return {
       status: 'ok',
       url: URL.createObjectURL(blob),
-      width: previewSize.width,
-      height: previewSize.height,
       autoCropFallback,
     };
   } catch (error) {
@@ -1054,7 +1055,7 @@ const ImageProcessor: React.FC = () => {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
   const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
-  const [ratioPreview, setRatioPreview] = useState<RatioPreviewState | null>(null);
+  const [ratioPreview, setRatioPreview] = useState<RatioPreviewSnapshot<File> | null>(null);
   const [processedResult, setProcessedResult] = useState<ProcessedMontageResult | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
@@ -1307,8 +1308,6 @@ const ImageProcessor: React.FC = () => {
         setRatioPreview({
           status: 'ok',
           url: built.url,
-          width: built.width,
-          height: built.height,
           autoCropFallback: built.autoCropFallback,
           sourceFile: previewSourceImage,
           cropKey: activePreviewCropKey,
@@ -1317,8 +1316,6 @@ const ImageProcessor: React.FC = () => {
         setRatioPreview({
           status: 'error',
           url: '',
-          width: 0,
-          height: 0,
           autoCropFallback: false,
           sourceFile: previewSourceImage,
           cropKey: activePreviewCropKey,
@@ -2155,26 +2152,12 @@ const ImageProcessor: React.FC = () => {
   const canStepPreviewPrev = hasMultiplePreviewFiles && previewIndex > 0;
   const canStepPreviewNext = hasMultiplePreviewFiles && previewIndex < orderedImages.length - 1;
 
-  const matchedRatioPreview =
-    previewSourceImage &&
-    ratioPreview &&
-    ratioPreview.sourceFile === previewSourceImage &&
-    ratioPreview.cropKey === activePreviewCropKey
-      ? ratioPreview
-      : null;
-
-  const maskAccordionPreview = {
+  const maskAccordionPreview = resolveMaskAccordionPreviewState({
     hasImages: orderedImages.length > 0,
-    status: !matchedRatioPreview
-      ? ('loading' as const)
-      : matchedRatioPreview.status === 'error'
-        ? ('error' as const)
-        : ('ok' as const),
-    url: matchedRatioPreview?.status === 'ok' ? matchedRatioPreview.url : undefined,
-    width: matchedRatioPreview?.status === 'ok' ? matchedRatioPreview.width : undefined,
-    height: matchedRatioPreview?.status === 'ok' ? matchedRatioPreview.height : undefined,
-    autoCropFallback: matchedRatioPreview?.autoCropFallback,
-  };
+    previewSourceImage,
+    activeCropKey: activePreviewCropKey,
+    cachedPreview: ratioPreview,
+  });
 
   return (
     <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>

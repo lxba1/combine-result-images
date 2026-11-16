@@ -1388,3 +1388,72 @@ export const computeScaledPreviewDimensions = (
     height: Math.max(1, Math.round(safeH * scale)),
   };
 };
+
+export interface RatioPreviewSnapshot<TFile = unknown> {
+  status: 'ok' | 'error';
+  url: string;
+  autoCropFallback: boolean;
+  sourceFile: TFile;
+  cropKey: string;
+}
+
+export interface MaskAccordionPreviewState {
+  hasImages: boolean;
+  status: 'loading' | 'ok' | 'error';
+  url?: string;
+  autoCropFallback?: boolean;
+  isUpdating?: boolean;
+}
+
+/**
+ * Derives the mask-accordion ratio preview state, retaining the previous valid preview
+ * image while a replacement builds so the accordion height does not jump mid-edit.
+ */
+export const resolveMaskAccordionPreviewState = <TFile>({
+  hasImages,
+  previewSourceImage,
+  activeCropKey,
+  cachedPreview,
+}: {
+  hasImages: boolean;
+  previewSourceImage: TFile | null;
+  activeCropKey: string;
+  cachedPreview: RatioPreviewSnapshot<TFile> | null;
+}): MaskAccordionPreviewState => {
+  if (!hasImages || !previewSourceImage) {
+    return { hasImages: false, status: 'loading' };
+  }
+
+  const isExactMatch =
+    cachedPreview !== null &&
+    cachedPreview.sourceFile === previewSourceImage &&
+    cachedPreview.cropKey === activeCropKey;
+
+  if (isExactMatch) {
+    if (cachedPreview.status === 'error') {
+      return { hasImages: true, status: 'error' };
+    }
+    if (cachedPreview.url) {
+      return {
+        hasImages: true,
+        status: 'ok',
+        url: cachedPreview.url,
+        autoCropFallback: cachedPreview.autoCropFallback,
+        isUpdating: false,
+      };
+    }
+    return { hasImages: true, status: 'loading' };
+  }
+
+  if (cachedPreview?.status === 'ok' && cachedPreview.url) {
+    return {
+      hasImages: true,
+      status: 'ok',
+      url: cachedPreview.url,
+      autoCropFallback: cachedPreview.autoCropFallback,
+      isUpdating: true,
+    };
+  }
+
+  return { hasImages: true, status: 'loading' };
+};
