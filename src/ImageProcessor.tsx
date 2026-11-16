@@ -68,6 +68,7 @@ import {
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
   resolveRatioPreviewCropRect,
+  resolveRemovablePreviewTarget,
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
   type ImageDimensions,
@@ -1499,7 +1500,11 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleRemovePreviewImage = () => {
-    const targetFile = renderedPreview?.file ?? requestedPreviewFileRef.current;
+    const targetFile = resolveRemovablePreviewTarget({
+      orderedFiles: orderedImages,
+      renderedFile: renderedPreview?.file ?? null,
+      requestedFile: requestedPreviewFileRef.current,
+    });
     if (isProcessing || !targetFile) return;
     const nextFile = resolveNextPreviewAfterRemoval(orderedImages, targetFile);
     removeImageFile(targetFile);
@@ -2144,6 +2149,13 @@ const ImageProcessor: React.FC = () => {
   const hasMultiplePreviewFiles = orderedImages.length > 1 && previewIndex !== -1;
   const canStepPreviewPrev = hasMultiplePreviewFiles && previewIndex > 0;
   const canStepPreviewNext = hasMultiplePreviewFiles && previewIndex < orderedImages.length - 1;
+  const canRemovePreviewImage =
+    !isProcessing &&
+    resolveRemovablePreviewTarget({
+      orderedFiles: orderedImages,
+      renderedFile: renderedPreview?.file ?? null,
+      requestedFile: requestedPreviewFile,
+    }) !== null;
 
   const maskAccordionPreview = resolveMaskAccordionPreviewState({
     hasImages: orderedImages.length > 0,
@@ -2984,7 +2996,7 @@ const ImageProcessor: React.FC = () => {
             variant="outlined"
             startIcon={<DeleteOutlineIcon />}
             onClick={handleRemovePreviewImage}
-            disabled={isProcessing || !activePreviewFile}
+            disabled={!canRemovePreviewImage}
             sx={{ minHeight: { xs: 40, sm: 36 } }}
           >
             {t('remove_from_list')}

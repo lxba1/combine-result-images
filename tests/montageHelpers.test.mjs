@@ -30,6 +30,7 @@ import {
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
   resolveRatioPreviewCropRect,
+  resolveRemovablePreviewTarget,
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
 } from '../src/montageHelpers.ts';
@@ -2003,6 +2004,48 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
     assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f3), f2);
     assert.equal(resolveNextPreviewAfterRemoval([f1], f1), null);
     assert.equal(resolveNextPreviewAfterRemoval([f1, f2], { name: 'missing.png' }), null);
+
+    // Deleting while transitioning between files (or referencing a removed stale file) is blocked
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f1, f2, f3],
+        renderedFile: f1,
+        requestedFile: f1,
+      }),
+      f1
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f2, f3],
+        renderedFile: f1,
+        requestedFile: f2,
+      }),
+      null
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f1, f2, f3],
+        renderedFile: f1,
+        requestedFile: f2,
+      }),
+      null
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f2, f3],
+        renderedFile: f1,
+        requestedFile: null,
+      }),
+      null
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f2, f3],
+        renderedFile: null,
+        requestedFile: f2,
+      }),
+      null
+    );
   });
 
   it('checks Web Share API file support safely across missing, rejecting, and throwing browsers', () => {

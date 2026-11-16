@@ -1317,6 +1317,29 @@ export const resolveNextPreviewAfterRemoval = <F>(
   return remaining[Math.min(index, remaining.length - 1)];
 };
 
+/**
+ * Resolves the target file eligible for removal from the preview dialog, or `null` while
+ * a preview transition is in flight or the displayed file is no longer in `orderedFiles`.
+ */
+export const resolveRemovablePreviewTarget = <F>({
+  orderedFiles,
+  renderedFile,
+  requestedFile,
+}: {
+  orderedFiles: readonly F[];
+  renderedFile: F | null;
+  requestedFile: F | null;
+}): F | null => {
+  if (requestedFile !== null && renderedFile !== requestedFile) {
+    return null;
+  }
+  const targetFile = renderedFile ?? requestedFile;
+  if (!targetFile || !orderedFiles.includes(targetFile)) {
+    return null;
+  }
+  return targetFile;
+};
+
 export interface NavigatorShareLike {
   share?: (data: ShareData) => Promise<void>;
   canShare?: (data?: ShareData) => boolean;
