@@ -861,9 +861,9 @@ const ImageProcessor: React.FC = () => {
   const isMountedRef = useRef(true);
 
   const isDefaultSettings = areSettingsDefault(settings);
+  const isReleasingMemory = processingProgress?.phase === 'releasing';
 
-  const canCancelProcessing =
-    isProcessing && processingProgress?.phase !== 'releasing';
+  const canCancelProcessing = isProcessing && !isReleasingMemory;
 
   const handleCancelProcessing = () => {
     if (!canCancelProcessing || isCancelling || !processAbortRef.current) return;
@@ -1715,8 +1715,10 @@ const ImageProcessor: React.FC = () => {
 
   const processingStatusText = (() => {
     if (!processingProgress) return '';
-    if (processingProgress.phase === 'releasing') {
-      return t('status_releasing_memory');
+    if (isReleasingMemory) {
+      return processedResult
+        ? t('status_releasing_memory_ready')
+        : t('status_releasing_memory');
     }
     if (isCancelling) {
       return t('status_cancelling');
@@ -2319,7 +2321,7 @@ const ImageProcessor: React.FC = () => {
                   fullWidth={!canCancelProcessing}
                   size="large"
                   startIcon={
-                    isProcessing ? (
+                    isProcessing && !isReleasingMemory ? (
                       <CircularProgress size={20} color="inherit" />
                     ) : (
                       <PlayArrow />
@@ -2329,7 +2331,7 @@ const ImageProcessor: React.FC = () => {
                 >
                   {!isProcessing
                     ? t('process_images')
-                    : processingProgress?.phase === 'releasing'
+                    : isReleasingMemory
                       ? t('releasing_memory')
                       : t('processing')}
                 </Button>
@@ -2372,7 +2374,7 @@ const ImageProcessor: React.FC = () => {
                 >
                   {processingStatusText}
                 </Typography>
-                {isProcessing && processingStatusText && (
+                {isProcessing && !isReleasingMemory && processingStatusText && (
                   <LinearProgress
                     variant={drawingProgress ? 'determinate' : 'indeterminate'}
                     value={

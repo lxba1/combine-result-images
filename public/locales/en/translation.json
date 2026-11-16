@@ -122,5 +122,6 @@
   "status_processing_progress": "Processing… {{current}} / {{total}}",
   "status_encoding": "Encoding image...",
   "status_cancelling": "Cancelling processing...",
-  "status_releasing_memory": "Releasing memory..."
+  "status_releasing_memory": "Releasing memory...",
+  "status_releasing_memory_ready": "Releasing memory (output image is ready to save)"
 }
