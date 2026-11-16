@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
+import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
 import { useColorScheme, styled } from '@mui/material/styles';
 import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
@@ -9,6 +9,7 @@ import packageJson from '../package.json';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
 import {
   type OcrSessionController,
+  isAbortError,
   releaseOcrResources,
   runOcrMaskDetection,
   startOcrSession,
@@ -675,6 +676,31 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   );
 };
 
+type ProcessingProgressState =
+  | { phase: 'preparing' }
+  | { phase: 'ocr' }
+  | { phase: 'confirming' }
+  | { phase: 'drawing'; current: number; total: number }
+  | { phase: 'encoding' }
+  | { phase: 'releasing' };
+
+const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
+  if (signal.aborted || ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timerId);
+      resolve();
+    };
+    const timerId = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+};
+
 const ImageProcessor: React.FC = () => {
   const { t, i18n } = useTranslation();
 
@@ -689,7 +715,8 @@ const ImageProcessor: React.FC = () => {
   const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string>('tile.webp');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [ocrStatus, setOcrStatus] = useState('');
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState<ProcessingProgressState | null>(null);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [expandedAccordions, setExpandedAccordions] = useState<Record<SettingsAccordionId, boolean>>({
     settings: false,
@@ -708,12 +735,24 @@ const ImageProcessor: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
+  const processAbortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const processAlertRef = useRef<HTMLDivElement>(null);
   const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const isMountedRef = useRef(true);
 
   const isDefaultSettings = areSettingsDefault(settings);
+
+  const canCancelProcessing =
+    isProcessing && processingProgress?.phase !== 'releasing';
+
+  const handleCancelProcessing = () => {
+    if (!canCancelProcessing || isCancelling || !processAbortRef.current) return;
+    setIsCancelling(true);
+    processAbortRef.current.abort();
+    ocrAbortRef.current?.abort();
+    resolveLargeCanvasConfirm(false);
+  };
 
   const hasFieldError = (field: SettingFieldKey): boolean =>
     Boolean(processError?.fields.has(field));
@@ -779,9 +818,10 @@ const ImageProcessor: React.FC = () => {
 
   useEffect(() => {
     isMountedRef.current = true;
-    // Abort and terminate any active or still-initializing OCR worker on unmount
+    // Abort active processing and terminate any active or still-initializing OCR worker on unmount
     return () => {
       isMountedRef.current = false;
+      processAbortRef.current?.abort();
       if (largeCanvasConfirmResolverRef.current) {
         const resolve = largeCanvasConfirmResolverRef.current;
         largeCanvasConfirmResolverRef.current = null;
@@ -1001,13 +1041,22 @@ const ImageProcessor: React.FC = () => {
       return;
     }
 
+    const abortController = new AbortController();
+    processAbortRef.current = abortController;
+    const { signal } = abortController;
+    const forwardAbortToOcr = () => {
+      ocrAbortRef.current?.abort();
+    };
+    signal.addEventListener('abort', forwardAbortToOcr, { once: true });
+
     setIsProcessing(true);
+    setIsCancelling(false);
     setProcessError(null);
     setProcessedImageUrl(null);
-    setOcrStatus('');
+    setProcessingProgress({ phase: 'preparing' });
 
-    // Add a short delay to allow the UI to update (e.g., show spinner) before blocking the main thread.
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Add a short delay to allow the UI to update (e.g., show progress) before blocking the main thread.
+    await waitWithAbort(200, signal);
 
     let firstImageBitmap: ImageBitmap | null = null;
     let ocrSessionStarted = false;
@@ -1020,8 +1069,14 @@ const ImageProcessor: React.FC = () => {
       }
     };
     try {
+      if (signal.aborted) {
+        return;
+      }
       // Always check first image dimensions (also runs auto-crop / OCR ROI when needed).
       firstImageBitmap = await decodeImageWithFallback<File, ImageBitmap>(orderedImages[0]);
+      if (signal.aborted) {
+        return;
+      }
       const expectedDimensions: ImageDimensions = {
         width: firstImageBitmap.width,
         height: firstImageBitmap.height,
@@ -1032,8 +1087,11 @@ const ImageProcessor: React.FC = () => {
         settings,
         imageSize: expectedDimensions,
         detectAutoCrop: () => detectAutoCropFromImage(sourceBitmap),
-        detectOcrMasks: ({ cropRect, needsEnemyOcr, needsSelfOcr }) =>
-          runOcrMaskDetection<Tesseract.Worker, HTMLCanvasElement, ImageBitmap>({
+        detectOcrMasks: ({ cropRect, needsEnemyOcr, needsSelfOcr }) => {
+          if (signal.aborted) {
+            return Promise.resolve({ status: 'aborted' });
+          }
+          return runOcrMaskDetection<Tesseract.Worker, HTMLCanvasElement, ImageBitmap>({
             sourceImage: sourceBitmap,
             cropRect,
             needsEnemyOcr,
@@ -1041,21 +1099,26 @@ const ImageProcessor: React.FC = () => {
             abortHolder: ocrAbortRef,
             sessionHolder: ocrSessionRef,
             onSourceConsumed: releaseFirstImageBitmap,
-            startSession: (signal) => {
+            startSession: (ocrSignal) => {
               ocrSessionStarted = true;
               return startOcrSession({
                 createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
                 configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
-                signal,
+                signal: ocrSignal,
               });
             },
             onStatus: (status) => {
-              if (status === 'starting') {
-                setOcrStatus(t('ocr_status_starting'));
+              if (status === 'starting' && !signal.aborted && isMountedRef.current) {
+                setProcessingProgress({ phase: 'ocr' });
               }
             },
-          }),
+          });
+        },
       });
+
+      if (signal.aborted) {
+        return;
+      }
 
       const nextSettings =
         Object.keys(plan.settingsPatch).length > 0
@@ -1090,15 +1153,12 @@ const ImageProcessor: React.FC = () => {
             reportProcessError(t('alert_mask_outside_crop'), uiTarget);
             break;
           case 'ocr_aborted':
-            setOcrStatus('');
             break;
           case 'ocr_error':
             console.error(plan.alert.error);
-            setOcrStatus('');
             reportProcessError(t('alert_ocr_error'), uiTarget);
             break;
           case 'ocr_not_found':
-            setOcrStatus('');
             reportProcessError(
               [
                 plan.alert.enemyMissing ? t('alert_could_not_find_right_lv') : '',
@@ -1112,12 +1172,6 @@ const ImageProcessor: React.FC = () => {
       }
 
       const { cropRect, finalSettings, tileMasks } = plan;
-      if (
-        (finalSettings.maskEnabled && finalSettings.maskMode === 'ocr') ||
-        (finalSettings.selfMaskEnabled && finalSettings.selfMaskMode === 'ocr')
-      ) {
-        setOcrStatus(t('ocr_status_mask_detected'));
-      }
 
       const sizeEval = evaluateMontageCanvasSize(orderedImages.length, cropRect, finalSettings);
       if (sizeEval.status === 'invalid') {
@@ -1142,12 +1196,13 @@ const ImageProcessor: React.FC = () => {
       if (sizeEval.status === 'confirm_required') {
         // Release before blocking on user confirmation or allocating an oversized montage.
         releaseFirstImageBitmap();
+        setProcessingProgress({ phase: 'confirming' });
         const confirmMessage = t('confirm_large_canvas_size', {
           width: sizeEval.width.toLocaleString(),
           height: sizeEval.height.toLocaleString(),
           pixels: sizeEval.pixels.toLocaleString(),
         });
-        if (!(await requestLargeCanvasConfirm(confirmMessage))) {
+        if (!(await requestLargeCanvasConfirm(confirmMessage)) || signal.aborted) {
           return;
         }
       }
@@ -1175,6 +1230,19 @@ const ImageProcessor: React.FC = () => {
         cropRect,
         masks: tileMasks,
         expectedDimensions,
+        signal,
+        onPhaseChange: (phase) => {
+          if (signal.aborted || !isMountedRef.current) return;
+          if (phase === 'drawing') {
+            setProcessingProgress({ phase: 'drawing', current: 0, total: orderedImages.length });
+          } else {
+            setProcessingProgress({ phase: 'encoding' });
+          }
+        },
+        onProgress: (current, total) => {
+          if (signal.aborted || !isMountedRef.current) return;
+          setProcessingProgress({ phase: 'drawing', current, total });
+        },
         getFileName: (file) => file.name,
         decodeImage: (file, index) => {
           if (index === 0 && firstImageBitmap) {
@@ -1186,6 +1254,9 @@ const ImageProcessor: React.FC = () => {
         },
       });
 
+      if (renderResult.status === 'aborted' || signal.aborted) {
+        return;
+      }
       if (renderResult.status === 'context_failed') {
         throw new Error(t('alert_failed_to_get_context'));
       }
@@ -1219,6 +1290,9 @@ const ImageProcessor: React.FC = () => {
       setProcessedImageUrl(URL.createObjectURL(montageBlob));
 
     } catch (error) {
+      if (signal.aborted || isAbortError(error)) {
+        return;
+      }
       if (error instanceof ImageDecodeError) {
         console.error(`Failed to decode image "${error.fileName}":`, error);
         reportProcessError(t('alert_image_decode_failed', { fileName: error.fileName }));
@@ -1252,26 +1326,67 @@ const ImageProcessor: React.FC = () => {
       reloadTriggered = true;
       window.location.reload();
     } finally {
+      signal.removeEventListener('abort', forwardAbortToOcr);
+      if (processAbortRef.current === abortController) {
+        processAbortRef.current = null;
+      }
       releaseFirstImageBitmap();
+      const releaseDelayMs = isMountedRef.current
+        ? getMemoryReleaseDelayMs({
+            ocrSessionStarted,
+            montageCanvasUsed,
+            reloadTriggered,
+          })
+        : 0;
+      if (isMountedRef.current && releaseDelayMs > 0) {
+        setProcessingProgress({ phase: 'releasing' });
+      }
       await releaseOcrResources(ocrAbortRef, ocrSessionRef);
       if (isMountedRef.current) {
-        const releaseDelayMs = getMemoryReleaseDelayMs({
-          ocrSessionStarted,
-          montageCanvasUsed,
-          reloadTriggered,
-        });
         if (releaseDelayMs > 0) {
-          setOcrStatus(t('status_releasing_memory'));
           // Add a small delay to allow GC to run before re-enabling the button
           await new Promise(resolve => setTimeout(resolve, releaseDelayMs));
         }
         if (isMountedRef.current) {
-          setOcrStatus(''); // Clear OCR status message
+          setProcessingProgress(null);
+          setIsCancelling(false);
           setIsProcessing(false);
         }
       }
     }
   };
+
+  const processingStatusText = (() => {
+    if (!processingProgress) return '';
+    if (processingProgress.phase === 'releasing') {
+      return t('status_releasing_memory');
+    }
+    if (isCancelling) {
+      return t('status_cancelling');
+    }
+    switch (processingProgress.phase) {
+      case 'preparing':
+        return t('status_preparing');
+      case 'ocr':
+        return t('ocr_status_starting');
+      case 'confirming':
+        return '';
+      case 'drawing':
+        return t('status_processing_progress', {
+          current: processingProgress.current,
+          total: processingProgress.total,
+        });
+      case 'encoding':
+        return t('status_encoding');
+    }
+  })();
+
+  const drawingProgress =
+    !isCancelling &&
+    processingProgress?.phase === 'drawing' &&
+    processingProgress.total > 0
+      ? processingProgress
+      : null;
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, pb: 20, minHeight: '100vh' }}>
@@ -1610,18 +1725,47 @@ const ImageProcessor: React.FC = () => {
                   </Collapse>
                 </Box>
               )}
-              <Box sx={{ mt: 2 }}>
+              <Box sx={{ mt: 2, display: 'flex', gap: 1.5, alignItems: 'stretch' }}>
                 <Button
                   variant="contained"
                   color="primary"
                   onClick={processImages}
                   disabled={isProcessing || images.length === 0}
-                  fullWidth
+                  fullWidth={!canCancelProcessing}
                   size="large"
-                  startIcon={!isProcessing && <PlayArrow />}
+                  startIcon={
+                    isProcessing ? (
+                      <CircularProgress size={20} color="inherit" />
+                    ) : (
+                      <PlayArrow />
+                    )
+                  }
+                  sx={{ flex: 1 }}
                 >
-                  {isProcessing ? <CircularProgress size={24} color="inherit" /> : t('process_images')}
+                  {!isProcessing
+                    ? t('process_images')
+                    : processingProgress?.phase === 'releasing'
+                      ? t('releasing_memory')
+                      : t('processing')}
                 </Button>
+                {canCancelProcessing && (
+                  <Button
+                    variant="outlined"
+                    color="inherit"
+                    size="large"
+                    startIcon={<CloseIcon />}
+                    onClick={handleCancelProcessing}
+                    disabled={isCancelling}
+                    sx={{
+                      flexShrink: 0,
+                      whiteSpace: 'nowrap',
+                      color: 'text.secondary',
+                      borderColor: 'divider',
+                    }}
+                  >
+                    {isCancelling ? t('cancelling') : t('cancel')}
+                  </Button>
+                )}
               </Box>
               {processError && (
                 <Alert
@@ -1633,11 +1777,29 @@ const ImageProcessor: React.FC = () => {
                   {processError.message}
                 </Alert>
               )}
-              {ocrStatus && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }} translate="no">
-                  {ocrStatus}
+              <Box sx={{ mt: processingStatusText ? 1.5 : 0 }} translate="no">
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  {processingStatusText}
                 </Typography>
-              )}
+                {isProcessing && processingStatusText && (
+                  <LinearProgress
+                    variant={drawingProgress ? 'determinate' : 'indeterminate'}
+                    value={
+                      drawingProgress
+                        ? (drawingProgress.current / drawingProgress.total) * 100
+                        : undefined
+                    }
+                    aria-label={processingStatusText}
+                    sx={{ mt: 0.75, borderRadius: 1 }}
+                  />
+                )}
+              </Box>
               {processedImageUrl && (
                 <Box sx={{ mt: 3, overflowAnchor: 'none' }} ref={resultRef}>
                   <Typography variant="h6" gutterBottom>{t('result')}</Typography>

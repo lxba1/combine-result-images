@@ -1,4 +1,9 @@
-import type { OcrMaskDetectionResult, PixelRect } from './ocrHelpers.ts';
+import {
+  createAbortError,
+  isAbortError,
+  type OcrMaskDetectionResult,
+  type PixelRect,
+} from './ocrHelpers.ts';
 import {
   CROP_FIELD_KEYS,
   computeRatioMaskRect,
@@ -73,6 +78,8 @@ export interface RenderMontageTilesOptions<F, B extends BitmapLike> {
   expectedDimensions?: ImageDimensions;
   getFileName?: (file: F) => string;
   yieldFrame?: () => Promise<void>;
+  signal?: AbortSignal;
+  onProgress?: (completed: number, total: number) => void;
 }
 
 /** Converts enabled mask rectangles from full-image space into crop-clipped tile-relative coordinates. */
@@ -141,9 +148,16 @@ export class ImageResolutionMismatchError extends Error {
   }
 }
 
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+};
+
 /**
  * Draws cropped image tiles and clipped mask rectangles directly onto the montage context,
- * guaranteeing each decoded ImageBitmap is closed in a `finally` block without allocating a temp canvas.
+ * guaranteeing each decoded ImageBitmap is closed in a `finally` block without allocating a temp canvas,
+ * reporting tile progress and supporting cooperative AbortSignal cancellation between frames.
  */
 export const renderMontageTiles = async <F, B extends BitmapLike>(
   options: RenderMontageTilesOptions<F, B>
@@ -160,11 +174,16 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
     expectedDimensions,
     getFileName = defaultGetFileName,
     yieldFrame = defaultYieldFrame,
+    signal,
+    onProgress,
   } = options;
 
   if (files.length === 0) {
     return;
   }
+
+  throwIfAborted(signal);
+  onProgress?.(0, files.length);
 
   // Clamp masks to tile bounds so direct callers cannot paint into offsets or neighbor tiles.
   const tileBounds: PixelRect = { x: 0, y: 0, width: cropRect.width, height: cropRect.height };
@@ -177,6 +196,7 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
   }
 
   for (let i = 0; i < files.length; i++) {
+    throwIfAborted(signal);
     const row = Math.floor(i / colCount);
     const col = i % colCount;
     const drawX = offsetX + col * (cropRect.width + offsetX);
@@ -184,6 +204,7 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
 
     const bitmap = await decodeImage(files[i], i);
     try {
+      throwIfAborted(signal);
       if (
         expectedDimensions &&
         (bitmap.width !== expectedDimensions.width ||
@@ -218,7 +239,9 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
       montageCtx.fillRect(drawX + mask.x, drawY + mask.y, mask.width, mask.height);
     }
 
+    onProgress?.(i + 1, files.length);
     await yieldFrame();
+    throwIfAborted(signal);
   }
 };
 
@@ -395,10 +418,12 @@ export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
   canvas?: MontageCanvasLike<B> | null;
   createCanvas?: () => MontageCanvasLike<B>;
   inspectBlobDimensions?: (blob: Blob) => Promise<ImageDimensions | null>;
+  onPhaseChange?: (phase: 'drawing' | 'encoding') => void;
 }
 
 export type RenderMontageToBlobResult =
   | { status: 'ok'; blob: Blob }
+  | { status: 'aborted' }
   | { status: 'allocation_failed' }
   | { status: 'context_failed' }
   | { status: 'encode_failed' }
@@ -453,8 +478,12 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
   canvas,
   createCanvas = () => document.createElement('canvas') as unknown as MontageCanvasLike<B>,
   inspectBlobDimensions = readEncodedImageDimensions,
+  onPhaseChange,
   ...tileOptions
 }: RenderMontageToBlobOptions<F, B>): Promise<RenderMontageToBlobResult> => {
+  if (tileOptions.signal?.aborted) {
+    return { status: 'aborted' };
+  }
   const montageCanvas = canvas ?? createCanvas();
   const shrinkCanvas = () => {
     if (montageCanvas.width !== 1 || montageCanvas.height !== 1) {
@@ -481,19 +510,24 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
     montageCtx.fillStyle = bgColor;
     montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
+    onPhaseChange?.('drawing');
     await renderMontageTiles({
       ...tileOptions,
       montageCtx,
     });
+    throwIfAborted(tileOptions.signal);
 
+    onPhaseChange?.('encoding');
     const montageBlob = await new Promise<Blob | null>((resolve) =>
       montageCanvas.toBlob(resolve, mimeType, quality)
     );
     shrinkCanvas();
+    throwIfAborted(tileOptions.signal);
     if (!montageBlob || montageBlob.size === 0) {
       return { status: 'encode_failed' };
     }
     const actualDimensions = await inspectBlobDimensions(montageBlob);
+    throwIfAborted(tileOptions.signal);
     if (
       actualDimensions &&
       (actualDimensions.width !== dimensions.width ||
@@ -506,6 +540,11 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
       };
     }
     return { status: 'ok', blob: montageBlob };
+  } catch (error) {
+    if (tileOptions.signal?.aborted || isAbortError(error)) {
+      return { status: 'aborted' };
+    }
+    throw error;
   } finally {
     shrinkCanvas();
   }

@@ -83,5 +83,12 @@
   "continue": "Continue",
   "alert_webp_canvas_size": "The output size ({{width}} x {{height}} px) exceeds the WebP format limit of {{maxWebpDimension}} px.\nWebP cannot export images beyond this limit without silent truncation. Switch the Output Format to PNG or JPEG, or adjust the column count / number of images and try again.",
   "alert_output_dimension_mismatch": "The encoded image size ({{actualWidth}} x {{actualHeight}} px) does not match the expected size ({{expectedWidth}} x {{expectedHeight}} px).\nThe output may have been truncated due to format or browser size limits. Switch the Output Format (PNG / JPEG) or adjust the column count / number of images and try again.",
+  "processing": "Processing...",
+  "cancelling": "Cancelling...",
+  "releasing_memory": "Releasing memory...",
+  "status_preparing": "Preparing images...",
+  "status_processing_progress": "Processing… {{current}} / {{total}}",
+  "status_encoding": "Encoding image...",
+  "status_cancelling": "Cancelling processing...",
   "status_releasing_memory": "Releasing memory..."
 }

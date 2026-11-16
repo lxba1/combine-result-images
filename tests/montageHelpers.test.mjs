@@ -433,6 +433,101 @@ describe('renderMontageTiles', () => {
       ]
     );
   });
+
+  it('reports tile drawing progress and aborts cleanly on AbortSignal while closing decoded bitmaps', async () => {
+    const progressEvents = [];
+    const montage = createMockMontageContext();
+
+    await renderMontageTiles({
+      files: ['a.png', 'b.png', 'c.png'],
+      colCount: 2,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 100, height: 100 },
+      masks: [],
+      montageCtx: montage.ctx,
+      decodeImage: async () => ({ close() {} }),
+      yieldFrame: async () => {},
+      onProgress: (completed, total) => {
+        progressEvents.push([completed, total]);
+      },
+    });
+    assert.deepEqual(progressEvents, [
+      [0, 3],
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ]);
+
+    const abortDuringDecode = new AbortController();
+    const abortProgress = [];
+    const decodedFiles = [];
+    const closedFiles = [];
+    const abortMontage = createMockMontageContext();
+
+    await assert.rejects(
+      () =>
+        renderMontageTiles({
+          files: ['first.png', 'second.png', 'third.png'],
+          colCount: 2,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 100, height: 100 },
+          masks: [],
+          montageCtx: abortMontage.ctx,
+          signal: abortDuringDecode.signal,
+          onProgress: (completed, total) => {
+            abortProgress.push([completed, total]);
+          },
+          decodeImage: async (file) => {
+            decodedFiles.push(file);
+            if (file === 'second.png') {
+              abortDuringDecode.abort();
+            }
+            return {
+              close() {
+                closedFiles.push(file);
+              },
+            };
+          },
+          yieldFrame: async () => {},
+        }),
+      (err) => err instanceof Error && err.name === 'AbortError'
+    );
+
+    assert.deepEqual(decodedFiles, ['first.png', 'second.png']);
+    assert.deepEqual(closedFiles, ['first.png', 'second.png']);
+    assert.deepEqual(abortProgress, [
+      [0, 3],
+      [1, 3],
+    ]);
+    assert.equal(abortMontage.ops.filter((op) => op.type === 'drawImage').length, 1);
+
+    const abortDuringYield = new AbortController();
+    const yieldDecoded = [];
+    await assert.rejects(
+      () =>
+        renderMontageTiles({
+          files: ['one.png', 'two.png'],
+          colCount: 2,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 100, height: 100 },
+          masks: [],
+          montageCtx: createMockMontageContext().ctx,
+          signal: abortDuringYield.signal,
+          decodeImage: async (file) => {
+            yieldDecoded.push(file);
+            return { close() {} };
+          },
+          yieldFrame: async () => {
+            abortDuringYield.abort();
+          },
+        }),
+      (err) => err instanceof Error && err.name === 'AbortError'
+    );
+    assert.deepEqual(yieldDecoded, ['one.png']);
+  });
 });
 
 describe('decodeImageWithFallback', () => {
@@ -1467,6 +1562,133 @@ describe('renderMontageToBlob', () => {
     assert.equal(createCanvasCalls, 0);
     assert.equal(persistentMock.canvas.width, 1);
     assert.equal(persistentMock.canvas.height, 1);
+  });
+
+  it('reports drawing/encoding phases and aborts cleanly while shrinking the canvas', async () => {
+    const phases = [];
+    const progress = [];
+    const okMock = createMockOutputCanvas();
+    const okResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      createCanvas: () => okMock.canvas,
+      files: [{ name: 'a.png' }, { name: 'b.png' }],
+      colCount: 2,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 80, height: 120 },
+      masks: [],
+      getFileName: (f) => f.name,
+      yieldFrame: async () => {},
+      decodeImage: async () => ({ width: 80, height: 120, close: () => {} }),
+      onPhaseChange: (phase) => phases.push(phase),
+      onProgress: (completed, total) => progress.push([completed, total]),
+    });
+
+    assert.equal(okResult.status, 'ok');
+    assert.deepEqual(phases, ['drawing', 'encoding']);
+    assert.deepEqual(progress, [
+      [0, 2],
+      [1, 2],
+      [2, 2],
+    ]);
+
+    const preAborted = new AbortController();
+    preAborted.abort();
+    let getContextCalled = false;
+    const preAbortedResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      signal: preAborted.signal,
+      createCanvas: () => ({
+        width: 1,
+        height: 1,
+        getContext: () => {
+          getContextCalled = true;
+          return null;
+        },
+        toBlob: () => {},
+      }),
+      files: [{ name: 'a.png' }],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 160, height: 120 },
+      masks: [],
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(preAbortedResult.status, 'aborted');
+    assert.equal(getContextCalled, false);
+
+    const midDrawAbort = new AbortController();
+    const midDrawMock = createMockOutputCanvas();
+    const midDrawResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      signal: midDrawAbort.signal,
+      createCanvas: () => midDrawMock.canvas,
+      files: [{ name: 'a.png' }, { name: 'b.png' }],
+      colCount: 2,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 80, height: 120 },
+      masks: [],
+      yieldFrame: async () => {
+        midDrawAbort.abort();
+      },
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(midDrawResult.status, 'aborted');
+    assert.equal(midDrawMock.canvas.width, 1);
+    assert.equal(midDrawMock.canvas.height, 1);
+    assert.ok(!midDrawMock.events.some((e) => e.startsWith('toBlob:')));
+
+    const encodeAbort = new AbortController();
+    let canvasW = 1;
+    let canvasH = 1;
+    const encodeAbortCanvas = {
+      get width() {
+        return canvasW;
+      },
+      set width(v) {
+        canvasW = v;
+      },
+      get height() {
+        return canvasH;
+      },
+      set height(v) {
+        canvasH = v;
+      },
+      getContext: () => createMockMontageContext().ctx,
+      toBlob: (cb) => {
+        encodeAbort.abort();
+        cb(new Blob(['bytes'], { type: 'image/webp' }));
+      },
+    };
+    const encodeAbortResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      signal: encodeAbort.signal,
+      createCanvas: () => encodeAbortCanvas,
+      files: [],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 160, height: 120 },
+      masks: [],
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(encodeAbortResult.status, 'aborted');
+    assert.equal(canvasW, 1);
+    assert.equal(canvasH, 1);
   });
 });
 

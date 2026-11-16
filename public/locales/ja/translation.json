@@ -83,5 +83,12 @@
   "continue": "続行",
   "alert_webp_canvas_size": "出力サイズ（{{width}} × {{height}} px）が WebP 形式の上限（{{maxWebpDimension}} px）を超えています。\nWebP では上限を超える部分が切り捨てられるため出力できません。出力形式を PNG または JPEG に変更するか、カラム数・画像の枚数を調整して再度お試しください。",
   "alert_output_dimension_mismatch": "生成された画像のサイズ（{{actualWidth}} × {{actualHeight}} px）が期待サイズ（{{expectedWidth}} × {{expectedHeight}} px）と一致しません。\n画像形式やブラウザのサイズ上限により一部が切り捨てられた可能性があります。出力形式（PNG / JPEG）やカラム数・画像の枚数を調整して再度お試しください。",
+  "processing": "処理中...",
+  "cancelling": "キャンセル中...",
+  "releasing_memory": "メモリ解放中...",
+  "status_preparing": "画像を読み込んでいます...",
+  "status_processing_progress": "処理中… {{current}} / {{total}} 枚",
+  "status_encoding": "画像を書き出しています...",
+  "status_cancelling": "処理をキャンセルしています...",
   "status_releasing_memory": "メモリを解放しています..."
 }
