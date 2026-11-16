@@ -15,6 +15,7 @@ import {
   hasExternalFilesDataTransfer,
   isSupportedInputImageFile,
   mergeImageFiles,
+  mergeInputImageFiles,
   parseImageDimensionsFromBytes,
   prepareMontagePlan,
   readEncodedImageDimensions,
@@ -1903,6 +1904,25 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
     assert.deepEqual(onlyDuplicates.files, [f1]);
     assert.equal(onlyDuplicates.addedCount, 0);
     assert.equal(onlyDuplicates.skippedDuplicateCount, 1);
+  });
+
+  it('counts supported additions, unsupported rejections, and duplicates together', () => {
+    const f1 = { name: 'a.png', type: 'image/png', size: 100, lastModified: 1 };
+    const f1Duplicate = { name: 'a.png', type: 'image/png', size: 100, lastModified: 1 };
+    const f2 = { name: 'b.jpg', type: 'image/jpeg', size: 200, lastModified: 2 };
+    const bad = { name: 'c.webp', type: 'image/webp', size: 300, lastModified: 3 };
+
+    const mixed = mergeInputImageFiles([f1], [f2, bad, f1Duplicate]);
+    assert.deepEqual(mixed.files, [f1, f2]);
+    assert.equal(mixed.addedCount, 1);
+    assert.equal(mixed.unsupportedCount, 1);
+    assert.equal(mixed.duplicateCount, 1);
+
+    const allUnsupported = mergeInputImageFiles([f1], [bad]);
+    assert.deepEqual(allUnsupported.files, [f1]);
+    assert.equal(allUnsupported.addedCount, 0);
+    assert.equal(allUnsupported.unsupportedCount, 1);
+    assert.equal(allUnsupported.duplicateCount, 0);
   });
 
   it('splits long filenames for middle ellipsis while keeping short names and surrogate pairs intact', () => {

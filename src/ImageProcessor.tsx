@@ -53,8 +53,7 @@ import {
   getMemoryReleaseDelayMs,
   guardWindowFileDragEvent,
   hasExternalFilesDataTransfer,
-  isSupportedInputImageFile,
-  mergeImageFiles,
+  mergeInputImageFiles,
   prepareMontagePlan,
   renderMontageToBlob,
   resolveActionButtonVariants,
@@ -821,6 +820,10 @@ const ImageProcessor: React.FC = () => {
   const [images, setImages] = useState<File[]>([]);
   const [fileListExpanded, setFileListExpanded] = useState(true);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const [fileSelectionNotice, setFileSelectionNotice] = useState<{
+    severity: 'info' | 'warning';
+    message: string;
+  } | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
   const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
@@ -1027,15 +1030,36 @@ const ImageProcessor: React.FC = () => {
 
   const addImageFiles = (incoming: File[]) => {
     if (isProcessing || incoming.length === 0) return;
-    const supported = incoming.filter(isSupportedInputImageFile);
-    if (supported.length === 0) {
+    const merged = mergeInputImageFiles(images, incoming);
+    if (merged.addedCount === 0 && merged.duplicateCount === 0) {
+      setFileSelectionNotice(null);
       reportProcessError(t('alert_no_supported_images'));
       return;
     }
-    const merged = mergeImageFiles(images, supported);
     if (merged.addedCount > 0) {
       setImages(merged.files);
       setProcessError(null);
+    }
+    if (merged.unsupportedCount > 0 && merged.duplicateCount > 0) {
+      setFileSelectionNotice({
+        severity: 'warning',
+        message: t('notice_skipped_both', {
+          unsupportedCount: merged.unsupportedCount,
+          duplicateCount: merged.duplicateCount,
+        }),
+      });
+    } else if (merged.unsupportedCount > 0) {
+      setFileSelectionNotice({
+        severity: 'warning',
+        message: t('notice_skipped_unsupported', { count: merged.unsupportedCount }),
+      });
+    } else if (merged.duplicateCount > 0) {
+      setFileSelectionNotice({
+        severity: 'info',
+        message: t('notice_skipped_duplicate', { count: merged.duplicateCount }),
+      });
+    } else {
+      setFileSelectionNotice(null);
     }
   };
 
@@ -1059,6 +1083,7 @@ const ImageProcessor: React.FC = () => {
     setImages([]);
     setProcessedResult(null);
     setShareError(null);
+    setFileSelectionNotice(null);
     setProcessError(null);
     setFileListExpanded(true);
     setPreviewOpen(false);
@@ -1074,6 +1099,7 @@ const ImageProcessor: React.FC = () => {
       setShareError(null);
     }
     setImages(nextImages);
+    setFileSelectionNotice(null);
     setProcessError(null);
   };
 
@@ -1374,6 +1400,7 @@ const ImageProcessor: React.FC = () => {
     setProcessError(null);
     setProcessedResult(null);
     setShareError(null);
+    setFileSelectionNotice(null);
     setProcessingProgress({ phase: 'preparing' });
 
     // Add a short delay to allow the UI to update (e.g., show progress) before blocking the main thread.
@@ -2106,6 +2133,15 @@ const ImageProcessor: React.FC = () => {
               >
                 {t('drop_zone_hint')}
               </Typography>
+              {fileSelectionNotice && (
+                <Alert
+                  severity={fileSelectionNotice.severity}
+                  onClose={() => setFileSelectionNotice(null)}
+                  sx={{ mt: 1.5 }}
+                >
+                  {fileSelectionNotice.message}
+                </Alert>
+              )}
               {images.length > 0 && (
                 <Box sx={{ mt: 1.5 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>

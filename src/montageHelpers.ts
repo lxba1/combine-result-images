@@ -1176,6 +1176,32 @@ export const mergeImageFiles = <F extends FileIdentityLike>(
   };
 };
 
+export interface MergeInputImagesResult<F> {
+  files: F[];
+  addedCount: number;
+  unsupportedCount: number;
+  duplicateCount: number;
+}
+
+/**
+ * Filters `incoming` to supported PNG/JPEG images and appends non-duplicate files to
+ * `existing`, returning added, unsupported, and duplicate counts.
+ */
+export const mergeInputImageFiles = <F extends FileTypeLike & FileIdentityLike>(
+  existing: readonly F[],
+  incoming: readonly F[]
+): MergeInputImagesResult<F> => {
+  const supported = incoming.filter(isSupportedInputImageFile);
+  const unsupportedCount = incoming.length - supported.length;
+  const merged = mergeImageFiles(existing, supported);
+  return {
+    files: merged.files,
+    addedCount: merged.addedCount,
+    unsupportedCount,
+    duplicateCount: merged.skippedDuplicateCount,
+  };
+};
+
 /**
  * Splits long filenames into an ellipsized `head` and a fixed `tail` (preserving extension
  * and trailing identifiers) so narrow mobile rows keep the distinguishing suffix visible.
