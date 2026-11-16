@@ -33,6 +33,7 @@ import {
   commitRatioRectField,
   createDefaultSettings,
   evaluateMontageCanvasSize,
+  formatRatioPercent,
   getResultStaleReason,
   isRatioRectEqual,
   loadSettingsFromStorage,
@@ -602,6 +603,28 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
 }) => {
   const { t } = useTranslation();
   const hasError = (field: SettingFieldKey): boolean => Boolean(errorFields?.has(field));
+  const ratioAxes: ReadonlyArray<{
+    axis: 'horizontal' | 'vertical';
+    labelId: string;
+    label: string;
+    range: [number, number];
+    mt: number;
+  }> = [
+    {
+      axis: 'horizontal',
+      labelId: `${ratioKey}-horizontal-label`,
+      label: t('range_horizontal'),
+      range: [Math.min(ratioRect.rx0, ratioRect.rx1), Math.max(ratioRect.rx0, ratioRect.rx1)],
+      mt: 0,
+    },
+    {
+      axis: 'vertical',
+      labelId: `${ratioKey}-vertical-label`,
+      label: t('range_vertical'),
+      range: [Math.min(ratioRect.ry0, ratioRect.ry1), Math.max(ratioRect.ry0, ratioRect.ry1)],
+      mt: 1,
+    },
+  ];
 
   return (
     <Accordion expanded={expanded} onChange={onAccordionChange} sx={{ mt: 2 }}>
@@ -661,32 +684,34 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
-                  <Typography variant="body2" color={disabled ? 'text.disabled' : 'text.secondary'} gutterBottom>{t('range_horizontal')}</Typography>
-                  <Box sx={{ px: 1 }}>
-                    <Slider
-                      size="small"
-                      disabled={disabled}
-                      value={[Math.min(ratioRect.rx0, ratioRect.rx1), Math.max(ratioRect.rx0, ratioRect.rx1)]}
-                      onChange={onRatioSliderChange('horizontal')}
-                      valueLabelDisplay="auto"
-                      min={0}
-                      max={1}
-                      step={0.001}
-                    />
-                  </Box>
-                  <Typography variant="body2" color={disabled ? 'text.disabled' : 'text.secondary'} sx={{ mt: 1 }} gutterBottom>{t('range_vertical')}</Typography>
-                  <Box sx={{ px: 1 }}>
-                    <Slider
-                      size="small"
-                      disabled={disabled}
-                      value={[Math.min(ratioRect.ry0, ratioRect.ry1), Math.max(ratioRect.ry0, ratioRect.ry1)]}
-                      onChange={onRatioSliderChange('vertical')}
-                      valueLabelDisplay="auto"
-                      min={0}
-                      max={1}
-                      step={0.001}
-                    />
-                  </Box>
+                  {ratioAxes.map(({ axis, labelId, label, range, mt }) => (
+                    <React.Fragment key={axis}>
+                      <Typography
+                        id={labelId}
+                        variant="body2"
+                        color={disabled ? 'text.disabled' : 'text.secondary'}
+                        gutterBottom
+                        sx={{ mt, fontVariantNumeric: 'tabular-nums' }}
+                      >
+                        {label}: {formatRatioPercent(range[0])} – {formatRatioPercent(range[1])}
+                      </Typography>
+                      <Box sx={{ px: 1 }}>
+                        <Slider
+                          size="small"
+                          disabled={disabled}
+                          value={range}
+                          onChange={onRatioSliderChange(axis)}
+                          aria-labelledby={labelId}
+                          valueLabelDisplay="auto"
+                          valueLabelFormat={formatRatioPercent}
+                          getAriaValueText={formatRatioPercent}
+                          min={0}
+                          max={1}
+                          step={0.001}
+                        />
+                      </Box>
+                    </React.Fragment>
+                  ))}
                 </Grid>
                 <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx0`)} onCommit={onNumericCommit} /></Grid>
                 <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry0`)} onCommit={onNumericCommit} /></Grid>

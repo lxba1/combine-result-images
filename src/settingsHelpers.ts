@@ -842,3 +842,13 @@ export const hasCropOverlapWithImage = (
     width: imageBounds.width,
     height: imageBounds.height,
   }) !== null;
+
+/** Formats a normalized 0..1 ratio value as a compact percentage string (e.g., `0.785` -> `78.5%`). */
+export const formatRatioPercent = (value: number): string => {
+  if (!Number.isFinite(value)) {
+    return '0%';
+  }
+  const clamped = clamp01(value);
+  const percent = Number((clamped * 100).toFixed(1));
+  return `${percent}%`;
+};

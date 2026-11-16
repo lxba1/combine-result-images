@@ -18,6 +18,7 @@ import {
   createDefaultSettings,
   cropRectToSettings,
   evaluateMontageCanvasSize,
+  formatRatioPercent,
   getResultStaleReason,
   hasCropOverlapWithImage,
   intersectPixelRects,
@@ -745,5 +746,18 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
       rx1: 1,
       ry1: 0.9,
     });
+  });
+});
+
+describe('formatRatioPercent', () => {
+  it('formats 0..1 ratio values as compact percentages without float noise', () => {
+    assert.equal(formatRatioPercent(0), '0%');
+    assert.equal(formatRatioPercent(0.14), '14%');
+    assert.equal(formatRatioPercent(0.269), '26.9%');
+    assert.equal(formatRatioPercent(0.785), '78.5%');
+    assert.equal(formatRatioPercent(1), '100%');
+    assert.equal(formatRatioPercent(-0.2), '0%');
+    assert.equal(formatRatioPercent(1.5), '100%');
+    assert.equal(formatRatioPercent(Number.NaN), '0%');
   });
 });
