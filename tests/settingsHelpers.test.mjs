@@ -11,17 +11,23 @@ import {
   MIN_OFFSET_PX,
   SETTINGS_STORAGE_KEY,
   areSettingsDefault,
+  areSettingsEqual,
+  cloneSettings,
   commitRatioRectField,
+  computeRatioMaskOverlayBox,
   computeRatioMaskRect,
   createDefaultSettings,
   cropRectToSettings,
   evaluateMontageCanvasSize,
+  formatRatioPercent,
+  getResultStaleReason,
   hasCropOverlapWithImage,
   intersectPixelRects,
   loadSettingsFromStorage,
   normalizeHexColor,
   normalizeRatioRect,
   parseSavedSettings,
+  resolveCanvasSizeErrorUiTarget,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
 } from '../src/settingsHelpers.ts';
@@ -232,6 +238,69 @@ describe('hex color normalization and default comparison', () => {
       false
     );
   });
+
+  it('compares settings snapshots and reports stale reason across settings and image list changes', () => {
+    const base = cloneSettings(createDefaultSettings());
+    base.maskRatioRect.rx0 = 0.25;
+    assert.notEqual(base.maskRatioRect.rx0, DEFAULT_SETTINGS.maskRatioRect.rx0);
+
+    const snapshot = cloneSettings(createDefaultSettings());
+    const fileA = { name: 'a.png' };
+    const fileB = { name: 'b.png' };
+    const snapshotImages = [fileA, fileB];
+
+    assert.equal(areSettingsEqual(snapshot, cloneSettings(snapshot)), true);
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: cloneSettings(snapshot),
+        snapshotSettings: snapshot,
+        currentImages: [fileA, fileB],
+        snapshotImages,
+      }),
+      'none'
+    );
+
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: { ...snapshot, outputFormat: 'png' },
+        snapshotSettings: snapshot,
+        currentImages: [fileA, fileB],
+        snapshotImages,
+      }),
+      'settings'
+    );
+
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: cloneSettings(snapshot),
+        snapshotSettings: snapshot,
+        currentImages: [fileA],
+        snapshotImages,
+      }),
+      'images'
+    );
+
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: { ...snapshot, colCount: 4 },
+        snapshotSettings: snapshot,
+        currentImages: [fileA],
+        snapshotImages,
+      }),
+      'both'
+    );
+
+    // Ignoring runtime auto-managed coordinates keeps snapshot fresh when cropAuto stays true
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: { ...snapshot, cropAuto: true, cropX: 99 },
+        snapshotSettings: { ...snapshot, cropAuto: true, cropX: 31 },
+        currentImages: [fileA, fileB],
+        snapshotImages,
+      }),
+      'none'
+    );
+  });
 });
 
 describe('evaluateMontageCanvasSize', () => {
@@ -417,49 +486,63 @@ describe('loadSettingsFromStorage and saveSettingsToStorage', () => {
 });
 
 describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverlapWithImage', () => {
-  it('accepts valid defaults and rejects invalid colCount, offsets, colors, crop, and zero-area masks', () => {
+  it('accepts valid defaults and rejects invalid colCount, offsets, colors, crop, and zero-area masks with target accordion/fields', () => {
     assert.deepEqual(validateSettingsBeforeProcess(createDefaultSettings()), { valid: true });
 
     const invalidCols = { ...createDefaultSettings(), colCount: 0 };
     assert.deepEqual(validateSettingsBeforeProcess(invalidCols), {
       valid: false,
       alertKey: 'alert_columns_must_be_positive',
+      accordion: 'settings',
+      fields: ['colCount'],
     });
 
     const fractionalCols = { ...createDefaultSettings(), colCount: 2.5 };
     assert.deepEqual(validateSettingsBeforeProcess(fractionalCols), {
       valid: false,
       alertKey: 'alert_columns_must_be_positive',
+      accordion: 'settings',
+      fields: ['colCount'],
     });
 
     const invalidOffset = { ...createDefaultSettings(), offsetY: -1 };
     assert.deepEqual(validateSettingsBeforeProcess(invalidOffset), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const fractionalOffsetX = { ...createDefaultSettings(), offsetX: 1.5 };
     assert.deepEqual(validateSettingsBeforeProcess(fractionalOffsetX), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const fractionalOffsetY = { ...createDefaultSettings(), offsetY: 2.5 };
     assert.deepEqual(validateSettingsBeforeProcess(fractionalOffsetY), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const oversizedOffsetX = { ...createDefaultSettings(), offsetX: MAX_OFFSET_PX + 1 };
     assert.deepEqual(validateSettingsBeforeProcess(oversizedOffsetX), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     const oversizedOffsetY = { ...createDefaultSettings(), offsetY: MAX_OFFSET_PX + 1 };
     assert.deepEqual(validateSettingsBeforeProcess(oversizedOffsetY), {
       valid: false,
       alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
     });
 
     assert.deepEqual(
@@ -475,6 +558,8 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(transparentBg), {
       valid: false,
       alertKey: 'alert_invalid_color_setting',
+      accordion: 'settings',
+      fields: ['bgColor'],
     });
 
     const inactiveBadMaskColor = { ...createDefaultSettings(), maskEnabled: false, maskColor: 'transparent' };
@@ -484,12 +569,28 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(activeBadMaskColor), {
       valid: false,
       alertKey: 'alert_invalid_color_setting',
+      accordion: 'mask',
+      fields: ['maskColor'],
     });
 
-    const zeroManualCrop = { ...createDefaultSettings(), cropAuto: false, cropWidth: 0 };
+    const activeBadSelfMaskColor = {
+      ...createDefaultSettings(),
+      selfMaskEnabled: true,
+      selfMaskColor: 'invalid',
+    };
+    assert.deepEqual(validateSettingsBeforeProcess(activeBadSelfMaskColor), {
+      valid: false,
+      alertKey: 'alert_invalid_color_setting',
+      accordion: 'selfMask',
+      fields: ['selfMaskColor'],
+    });
+
+    const zeroManualCrop = { ...createDefaultSettings(), cropAuto: false, cropX: -1, cropWidth: 0 };
     assert.deepEqual(validateSettingsBeforeProcess(zeroManualCrop), {
       valid: false,
       alertKey: 'alert_invalid_crop_setting',
+      accordion: 'crop',
+      fields: ['cropX', 'cropWidth'],
     });
 
     const invalidCropIgnoredWhenAuto = { ...createDefaultSettings(), cropAuto: true, cropWidth: 0 };
@@ -504,6 +605,8 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(zeroRatioEnemyMask), {
       valid: false,
       alertKey: 'alert_invalid_mask_area',
+      accordion: 'mask',
+      fields: ['maskRatioRect.rx0', 'maskRatioRect.rx1'],
     });
 
     const zeroManualSelfMask = {
@@ -515,6 +618,23 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
     assert.deepEqual(validateSettingsBeforeProcess(zeroManualSelfMask), {
       valid: false,
       alertKey: 'alert_invalid_mask_area',
+      accordion: 'selfMask',
+      fields: ['selfMaskHeight'],
+    });
+  });
+
+  it('resolves canvas size error UI targets for WebP limits and general overflow', () => {
+    assert.deepEqual(resolveCanvasSizeErrorUiTarget('exceeds_webp_dimension', true), {
+      accordions: ['settings'],
+      fields: ['outputFormat', 'colCount'],
+    });
+    assert.deepEqual(resolveCanvasSizeErrorUiTarget('non_positive_or_overflow', true), {
+      accordions: ['settings'],
+      fields: ['colCount', 'offsetX'],
+    });
+    assert.deepEqual(resolveCanvasSizeErrorUiTarget('non_positive_or_overflow', false), {
+      accordions: ['settings', 'crop'],
+      fields: ['colCount', 'offsetX', 'cropWidth', 'cropHeight'],
     });
   });
 
@@ -627,5 +747,40 @@ describe('validateSettingsBeforeProcess, computeRatioMaskRect, and hasCropOverla
       rx1: 1,
       ry1: 0.9,
     });
+  });
+});
+
+describe('formatRatioPercent', () => {
+  it('formats 0..1 ratio values as compact percentages without float noise', () => {
+    assert.equal(formatRatioPercent(0), '0%');
+    assert.equal(formatRatioPercent(0.14), '14%');
+    assert.equal(formatRatioPercent(0.269), '26.9%');
+    assert.equal(formatRatioPercent(0.785), '78.5%');
+    assert.equal(formatRatioPercent(1), '100%');
+    assert.equal(formatRatioPercent(-0.2), '0%');
+    assert.equal(formatRatioPercent(1.5), '100%');
+    assert.equal(formatRatioPercent(Number.NaN), '0%');
+  });
+});
+
+describe('computeRatioMaskOverlayBox', () => {
+  it('computes clamped CSS percentages and rejects collapsed or invalid rectangles', () => {
+    const normal = computeRatioMaskOverlayBox({ rx0: 0.785, ry0: 0.14, rx1: 1, ry1: 0.2 });
+    assert.ok(normal !== null);
+    assert.ok(Math.abs(normal.leftPct - 78.5) < 1e-9);
+    assert.ok(Math.abs(normal.topPct - 14) < 1e-9);
+    assert.ok(Math.abs(normal.widthPct - 21.5) < 1e-9);
+    assert.ok(Math.abs(normal.heightPct - 6) < 1e-9);
+
+    assert.deepEqual(computeRatioMaskOverlayBox({ rx0: 0.5, ry0: 0.4, rx1: 0.2, ry1: 0.1 }), {
+      leftPct: 20,
+      topPct: 10,
+      widthPct: 30,
+      heightPct: 30,
+    });
+
+    assert.equal(computeRatioMaskOverlayBox({ rx0: 0.5, ry0: 0.1, rx1: 0.5, ry1: 0.4 }), null);
+    assert.equal(computeRatioMaskOverlayBox({ rx0: 0.1, ry0: 0.2, rx1: 0.5, ry1: 0.2 }), null);
+    assert.equal(computeRatioMaskOverlayBox({ rx0: Number.NaN, ry0: 0.1, rx1: 0.5, ry1: 0.4 }), null);
   });
 });

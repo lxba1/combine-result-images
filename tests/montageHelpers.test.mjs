@@ -6,14 +6,33 @@ import {
   MONTAGE_MEMORY_RELEASE_DELAY_MS,
   OCR_MEMORY_RELEASE_DELAY_MS,
   buildTileMaskRects,
+  canShareImageFile,
+  computeScaledPreviewDimensions,
   decodeImageWithFallback,
+  formatFileSize,
+  formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
+  guardWindowFileDragEvent,
+  hasExternalFilesDataTransfer,
+  isSupportedInputImageFile,
+  mergeImageFiles,
+  mergeInputImageFiles,
   parseImageDimensionsFromBytes,
   prepareMontagePlan,
   readEncodedImageDimensions,
   renderMontageTiles,
   renderMontageToBlob,
+  resolveActionButtonVariants,
+  resolveAdjacentPreviewFile,
+  resolveFileSelectionNotice,
+  resolveMaskAccordionPreviewState,
+  resolveMontageAbortUiTarget,
+  resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveRatioPreviewCropRect,
+  resolveRemovablePreviewTarget,
+  shouldScrollToResult,
+  splitFilenameForMiddleEllipsis,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
 
@@ -432,6 +451,101 @@ describe('renderMontageTiles', () => {
       ]
     );
   });
+
+  it('reports tile drawing progress and aborts cleanly on AbortSignal while closing decoded bitmaps', async () => {
+    const progressEvents = [];
+    const montage = createMockMontageContext();
+
+    await renderMontageTiles({
+      files: ['a.png', 'b.png', 'c.png'],
+      colCount: 2,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 100, height: 100 },
+      masks: [],
+      montageCtx: montage.ctx,
+      decodeImage: async () => ({ close() {} }),
+      yieldFrame: async () => {},
+      onProgress: (completed, total) => {
+        progressEvents.push([completed, total]);
+      },
+    });
+    assert.deepEqual(progressEvents, [
+      [0, 3],
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ]);
+
+    const abortDuringDecode = new AbortController();
+    const abortProgress = [];
+    const decodedFiles = [];
+    const closedFiles = [];
+    const abortMontage = createMockMontageContext();
+
+    await assert.rejects(
+      () =>
+        renderMontageTiles({
+          files: ['first.png', 'second.png', 'third.png'],
+          colCount: 2,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 100, height: 100 },
+          masks: [],
+          montageCtx: abortMontage.ctx,
+          signal: abortDuringDecode.signal,
+          onProgress: (completed, total) => {
+            abortProgress.push([completed, total]);
+          },
+          decodeImage: async (file) => {
+            decodedFiles.push(file);
+            if (file === 'second.png') {
+              abortDuringDecode.abort();
+            }
+            return {
+              close() {
+                closedFiles.push(file);
+              },
+            };
+          },
+          yieldFrame: async () => {},
+        }),
+      (err) => err instanceof Error && err.name === 'AbortError'
+    );
+
+    assert.deepEqual(decodedFiles, ['first.png', 'second.png']);
+    assert.deepEqual(closedFiles, ['first.png', 'second.png']);
+    assert.deepEqual(abortProgress, [
+      [0, 3],
+      [1, 3],
+    ]);
+    assert.equal(abortMontage.ops.filter((op) => op.type === 'drawImage').length, 1);
+
+    const abortDuringYield = new AbortController();
+    const yieldDecoded = [];
+    await assert.rejects(
+      () =>
+        renderMontageTiles({
+          files: ['one.png', 'two.png'],
+          colCount: 2,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 100, height: 100 },
+          masks: [],
+          montageCtx: createMockMontageContext().ctx,
+          signal: abortDuringYield.signal,
+          decodeImage: async (file) => {
+            yieldDecoded.push(file);
+            return { close() {} };
+          },
+          yieldFrame: async () => {
+            abortDuringYield.abort();
+          },
+        }),
+      (err) => err instanceof Error && err.name === 'AbortError'
+    );
+    assert.deepEqual(yieldDecoded, ['one.png']);
+  });
 });
 
 describe('decodeImageWithFallback', () => {
@@ -772,7 +886,7 @@ describe('prepareMontagePlan', () => {
     });
 
     assert.equal(enemyOutPlan.status, 'abort');
-    assert.deepEqual(enemyOutPlan.alert, { kind: 'mask_outside_crop' });
+    assert.deepEqual(enemyOutPlan.alert, { kind: 'mask_outside_crop', target: 'mask' });
     assert.equal(ocrCalled, false);
 
     const selfOutPlan = await prepareMontagePlan({
@@ -796,7 +910,7 @@ describe('prepareMontagePlan', () => {
     });
 
     assert.equal(selfOutPlan.status, 'abort');
-    assert.deepEqual(selfOutPlan.alert, { kind: 'mask_outside_crop' });
+    assert.deepEqual(selfOutPlan.alert, { kind: 'mask_outside_crop', target: 'selfMask' });
 
     const zeroAreaPlan = await prepareMontagePlan({
       settings: {
@@ -812,7 +926,33 @@ describe('prepareMontagePlan', () => {
     });
 
     assert.equal(zeroAreaPlan.status, 'abort');
-    assert.deepEqual(zeroAreaPlan.alert, { kind: 'invalid_mask_area' });
+    assert.deepEqual(zeroAreaPlan.alert, {
+      kind: 'invalid_mask_area',
+      target: 'mask',
+      mode: 'manual',
+    });
+
+    const collapsedRatioSelfPlan = await prepareMontagePlan({
+      settings: {
+        ...createDefaultSettings(),
+        cropAuto: false,
+        cropWidth: 100,
+        cropHeight: 100,
+        selfMaskEnabled: true,
+        selfMaskMode: 'ratio',
+        selfMaskRatioRect: { rx0: 0.5, ry0: 0.1, rx1: 0.501, ry1: 0.4 },
+      },
+      imageSize: { width: 1600, height: 900 },
+      detectAutoCrop: () => ({ status: 'not_found' }),
+      detectOcrMasks: async () => ({ status: 'not_found', enemyMissing: false, selfMissing: false }),
+    });
+
+    assert.equal(collapsedRatioSelfPlan.status, 'abort');
+    assert.deepEqual(collapsedRatioSelfPlan.alert, {
+      kind: 'invalid_mask_area',
+      target: 'selfMask',
+      mode: 'ratio',
+    });
   });
 
   it('clips partially overlapping manual mask to cropRect without mutating manual mask coordinates', async () => {
@@ -883,6 +1023,60 @@ describe('prepareMontagePlan', () => {
     const updated = { ...initial, ...plan.settingsPatch };
     assert.equal(updated.cropWidth, 1846);
     assert.equal(areSettingsDefault(updated), true);
+  });
+
+  it('resolves UI accordion and field error targets for prepareMontagePlan abort alerts', () => {
+    const base = createDefaultSettings();
+
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'auto_crop_context_error' }, base),
+      { accordions: [], fields: [] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'auto_crop_not_found' }, base),
+      { accordions: ['crop'], fields: [] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'crop_outside_image', width: 1600, height: 900 }, base),
+      { accordions: ['crop'], fields: ['cropX', 'cropY', 'cropWidth', 'cropHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'mask_outside_crop', target: 'mask' }, base),
+      { accordions: ['mask'], fields: ['maskX', 'maskY', 'maskWidth', 'maskHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget({ kind: 'mask_outside_crop', target: 'selfMask' }, base),
+      { accordions: ['selfMask'], fields: ['selfMaskX', 'selfMaskY', 'selfMaskWidth', 'selfMaskHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'invalid_mask_area', target: 'selfMask', mode: 'ratio' },
+        base
+      ),
+      {
+        accordions: ['selfMask'],
+        fields: [
+          'selfMaskRatioRect.rx0',
+          'selfMaskRatioRect.ry0',
+          'selfMaskRatioRect.rx1',
+          'selfMaskRatioRect.ry1',
+        ],
+      }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'ocr_not_found', enemyMissing: false, selfMissing: true },
+        base
+      ),
+      { accordions: ['selfMask'], fields: [] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'ocr_error', error: new Error('fail') },
+        { ...base, maskEnabled: true, maskMode: 'ocr', selfMaskEnabled: false, selfMaskMode: 'ocr' }
+      ),
+      { accordions: ['mask'], fields: [] }
+    );
   });
 });
 
@@ -1387,6 +1581,133 @@ describe('renderMontageToBlob', () => {
     assert.equal(persistentMock.canvas.width, 1);
     assert.equal(persistentMock.canvas.height, 1);
   });
+
+  it('reports drawing/encoding phases and aborts cleanly while shrinking the canvas', async () => {
+    const phases = [];
+    const progress = [];
+    const okMock = createMockOutputCanvas();
+    const okResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      createCanvas: () => okMock.canvas,
+      files: [{ name: 'a.png' }, { name: 'b.png' }],
+      colCount: 2,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 80, height: 120 },
+      masks: [],
+      getFileName: (f) => f.name,
+      yieldFrame: async () => {},
+      decodeImage: async () => ({ width: 80, height: 120, close: () => {} }),
+      onPhaseChange: (phase) => phases.push(phase),
+      onProgress: (completed, total) => progress.push([completed, total]),
+    });
+
+    assert.equal(okResult.status, 'ok');
+    assert.deepEqual(phases, ['drawing', 'encoding']);
+    assert.deepEqual(progress, [
+      [0, 2],
+      [1, 2],
+      [2, 2],
+    ]);
+
+    const preAborted = new AbortController();
+    preAborted.abort();
+    let getContextCalled = false;
+    const preAbortedResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      signal: preAborted.signal,
+      createCanvas: () => ({
+        width: 1,
+        height: 1,
+        getContext: () => {
+          getContextCalled = true;
+          return null;
+        },
+        toBlob: () => {},
+      }),
+      files: [{ name: 'a.png' }],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 160, height: 120 },
+      masks: [],
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(preAbortedResult.status, 'aborted');
+    assert.equal(getContextCalled, false);
+
+    const midDrawAbort = new AbortController();
+    const midDrawMock = createMockOutputCanvas();
+    const midDrawResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      signal: midDrawAbort.signal,
+      createCanvas: () => midDrawMock.canvas,
+      files: [{ name: 'a.png' }, { name: 'b.png' }],
+      colCount: 2,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 80, height: 120 },
+      masks: [],
+      yieldFrame: async () => {
+        midDrawAbort.abort();
+      },
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(midDrawResult.status, 'aborted');
+    assert.equal(midDrawMock.canvas.width, 1);
+    assert.equal(midDrawMock.canvas.height, 1);
+    assert.ok(!midDrawMock.events.some((e) => e.startsWith('toBlob:')));
+
+    const encodeAbort = new AbortController();
+    let canvasW = 1;
+    let canvasH = 1;
+    const encodeAbortCanvas = {
+      get width() {
+        return canvasW;
+      },
+      set width(v) {
+        canvasW = v;
+      },
+      get height() {
+        return canvasH;
+      },
+      set height(v) {
+        canvasH = v;
+      },
+      getContext: () => createMockMontageContext().ctx,
+      toBlob: (cb) => {
+        encodeAbort.abort();
+        cb(new Blob(['bytes'], { type: 'image/webp' }));
+      },
+    };
+    const encodeAbortResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/webp',
+      quality: 0.8,
+      signal: encodeAbort.signal,
+      createCanvas: () => encodeAbortCanvas,
+      files: [],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 160, height: 120 },
+      masks: [],
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(encodeAbortResult.status, 'aborted');
+    assert.equal(canvasW, 1);
+    assert.equal(canvasH, 1);
+  });
 });
 
 describe('getMemoryReleaseDelayMs', () => {
@@ -1445,6 +1766,572 @@ describe('getMemoryReleaseDelayMs', () => {
         reloadTriggered: true,
       }),
       0
+    );
+  });
+});
+
+describe('result summary formatting and scroll decision', () => {
+  it('formats byte sizes into B, KB, and MB', () => {
+    assert.equal(formatFileSize(0), '0 B');
+    assert.equal(formatFileSize(-10), '0 B');
+    assert.equal(formatFileSize(Number.NaN), '0 B');
+    assert.equal(formatFileSize(512), '512 B');
+    assert.equal(formatFileSize(1023), '1023 B');
+    assert.equal(formatFileSize(1024), '1.0 KB');
+    assert.equal(formatFileSize(1536), '1.5 KB');
+    assert.equal(formatFileSize(1024 * 1024), '1.00 MB');
+    assert.equal(formatFileSize(2.5 * 1024 * 1024), '2.50 MB');
+  });
+
+  it('normalizes output format display labels', () => {
+    assert.equal(formatOutputFormatLabel('webp'), 'WebP');
+    assert.equal(formatOutputFormatLabel('png'), 'PNG');
+    assert.equal(formatOutputFormatLabel('jpg'), 'JPEG');
+    assert.equal(formatOutputFormatLabel('jpeg'), 'JPEG');
+    assert.equal(formatOutputFormatLabel(' PNG '), 'PNG');
+    assert.equal(formatOutputFormatLabel('avif'), 'AVIF');
+  });
+
+  it('only scrolls on compact viewports when the result section is away from view', () => {
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: false,
+        resultTop: 1850,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: false,
+        resultTop: -200,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 200,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 520,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 521,
+        viewportHeight: 800,
+      }),
+      true
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 1850,
+        viewportHeight: 667,
+      }),
+      true
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: -10,
+        viewportHeight: 667,
+      }),
+      true
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 100,
+        viewportHeight: 0,
+      }),
+      false
+    );
+  });
+
+  it('highlights only the primary next action button as contained for each workflow state', () => {
+    // 1. No images selected yet -> upload is primary
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: false, hasFreshResult: false }),
+      { upload: 'contained', process: 'outlined', download: 'outlined' }
+    );
+    // 2. Images selected, no result (or stale result) -> process is primary
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: true, hasFreshResult: false }),
+      { upload: 'outlined', process: 'contained', download: 'outlined' }
+    );
+    // 3. Fresh result available -> download is primary
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: true, hasFreshResult: true }),
+      { upload: 'outlined', process: 'outlined', download: 'contained' }
+    );
+    // Guard against inconsistent state (no images + fresh result flag)
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: false, hasFreshResult: true }),
+      { upload: 'contained', process: 'outlined', download: 'contained' }
+    );
+  });
+});
+
+describe('file list selection, deduplication, and middle ellipsis helpers', () => {
+  it('accepts PNG and JPEG files by MIME type or extension fallback', () => {
+    assert.equal(isSupportedInputImageFile({ name: 'a.png', type: 'image/png' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'b.jpg', type: 'image/jpeg' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'c.JPEG', type: '' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'd.PNG', type: '' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'e.webp', type: 'image/webp' }), false);
+    assert.equal(isSupportedInputImageFile({ name: 'notes.txt', type: '' }), false);
+  });
+
+  it('appends new files while deduplicating against existing and incoming duplicates', () => {
+    const f1 = { name: 'a.png', size: 100, lastModified: 1 };
+    const f2 = { name: 'b.png', size: 200, lastModified: 2 };
+    const f1Duplicate = { name: 'a.png', size: 100, lastModified: 1 };
+    const f3 = { name: 'c.png', size: 300, lastModified: 3 };
+    const f3Duplicate = { name: 'c.png', size: 300, lastModified: 3 };
+
+    const merged = mergeImageFiles([f1, f2], [f1Duplicate, f3, f3Duplicate]);
+    assert.deepEqual(merged.files, [f1, f2, f3]);
+    assert.equal(merged.addedCount, 1);
+    assert.equal(merged.skippedDuplicateCount, 2);
+
+    const onlyDuplicates = mergeImageFiles([f1], [f1Duplicate]);
+    assert.deepEqual(onlyDuplicates.files, [f1]);
+    assert.equal(onlyDuplicates.addedCount, 0);
+    assert.equal(onlyDuplicates.skippedDuplicateCount, 1);
+  });
+
+  it('counts supported additions, unsupported rejections, and duplicates together', () => {
+    const f1 = { name: 'a.png', type: 'image/png', size: 100, lastModified: 1 };
+    const f1Duplicate = { name: 'a.png', type: 'image/png', size: 100, lastModified: 1 };
+    const f2 = { name: 'b.jpg', type: 'image/jpeg', size: 200, lastModified: 2 };
+    const bad = { name: 'c.webp', type: 'image/webp', size: 300, lastModified: 3 };
+
+    const mixed = mergeInputImageFiles([f1], [f2, bad, f1Duplicate]);
+    assert.deepEqual(mixed.files, [f1, f2]);
+    assert.equal(mixed.addedCount, 1);
+    assert.equal(mixed.unsupportedCount, 1);
+    assert.equal(mixed.duplicateCount, 1);
+
+    const allUnsupported = mergeInputImageFiles([f1], [bad]);
+    assert.deepEqual(allUnsupported.files, [f1]);
+    assert.equal(allUnsupported.addedCount, 0);
+    assert.equal(allUnsupported.unsupportedCount, 1);
+    assert.equal(allUnsupported.duplicateCount, 0);
+
+    assert.deepEqual(resolveFileSelectionNotice(allUnsupported), {
+      severity: 'error',
+      messageKey: 'alert_no_supported_images',
+    });
+    assert.deepEqual(resolveFileSelectionNotice(mixed), {
+      severity: 'warning',
+      messageKey: 'notice_skipped_both',
+      params: { unsupportedCount: 1, duplicateCount: 1 },
+    });
+    assert.deepEqual(
+      resolveFileSelectionNotice(mergeInputImageFiles([], [f1, bad])),
+      {
+        severity: 'warning',
+        messageKey: 'notice_skipped_unsupported',
+        params: { count: 1 },
+      }
+    );
+    assert.deepEqual(
+      resolveFileSelectionNotice(mergeInputImageFiles([f1], [f1Duplicate])),
+      {
+        severity: 'info',
+        messageKey: 'notice_skipped_duplicate',
+        params: { count: 1 },
+      }
+    );
+    assert.equal(
+      resolveFileSelectionNotice(mergeInputImageFiles([f1], [f2])),
+      null
+    );
+  });
+
+  it('splits long filenames for middle ellipsis while keeping short names and surrogate pairs intact', () => {
+    assert.deepEqual(splitFilenameForMiddleEllipsis('short.png'), {
+      head: '',
+      tail: 'short.png',
+    });
+
+    const longName = 'Screenshot_2026-11-16-180001.png';
+    const split = splitFilenameForMiddleEllipsis(longName);
+    assert.equal(split.head + split.tail, longName);
+    assert.equal(split.tail, '6-180001.png');
+
+    const emojiName = 'スクリーンショット_😀😀😀😀_123456.png';
+    const emojiSplit = splitFilenameForMiddleEllipsis(emojiName);
+    assert.equal(emojiSplit.head + emojiSplit.tail, emojiName);
+    assert.equal(Array.from(emojiSplit.tail).length, 12);
+  });
+
+  it('steps preview files cleanly without wrapping around ends', () => {
+    const f1 = { name: '1.png' };
+    const f2 = { name: '2.png' };
+    const f3 = { name: '3.png' };
+    const files = [f1, f2, f3];
+
+    assert.equal(resolveAdjacentPreviewFile([f1], f1, -1), null);
+    assert.equal(resolveAdjacentPreviewFile([f1], f1, 1), null);
+    assert.equal(resolveAdjacentPreviewFile(files, f1, -1), null);
+    assert.equal(resolveAdjacentPreviewFile(files, f1, 1), f2);
+    assert.equal(resolveAdjacentPreviewFile(files, f2, -1), f1);
+    assert.equal(resolveAdjacentPreviewFile(files, f2, 1), f3);
+    assert.equal(resolveAdjacentPreviewFile(files, f3, -1), f2);
+    assert.equal(resolveAdjacentPreviewFile(files, f3, 1), null);
+    assert.equal(resolveAdjacentPreviewFile(files, { name: 'missing.png' }, 1), null);
+  });
+
+  it('advances to next file (or previous if last) after removing previewed file', () => {
+    const f1 = { name: '1.png' };
+    const f2 = { name: '2.png' };
+    const f3 = { name: '3.png' };
+
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f1), f2);
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f2), f3);
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f3), f2);
+    assert.equal(resolveNextPreviewAfterRemoval([f1], f1), null);
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2], { name: 'missing.png' }), null);
+
+    // Deleting while transitioning between files (or referencing a removed stale file) is blocked
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f1, f2, f3],
+        renderedFile: f1,
+        requestedFile: f1,
+      }),
+      f1
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f2, f3],
+        renderedFile: f1,
+        requestedFile: f2,
+      }),
+      null
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f1, f2, f3],
+        renderedFile: f1,
+        requestedFile: f2,
+      }),
+      null
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f2, f3],
+        renderedFile: f1,
+        requestedFile: null,
+      }),
+      null
+    );
+    assert.equal(
+      resolveRemovablePreviewTarget({
+        orderedFiles: [f2, f3],
+        renderedFile: null,
+        requestedFile: f2,
+      }),
+      null
+    );
+  });
+
+  it('checks Web Share API file support safely across missing, rejecting, and throwing browsers', () => {
+    const sampleFile = new File(['abc'], 'tile.png', { type: 'image/png' });
+
+    assert.equal(canShareImageFile(null, { share: async () => {}, canShare: () => true }), false);
+    assert.equal(canShareImageFile(sampleFile, undefined), false);
+    assert.equal(canShareImageFile(sampleFile, {}), false);
+    assert.equal(canShareImageFile(sampleFile, { share: async () => {} }), false);
+    assert.equal(
+      canShareImageFile(sampleFile, {
+        share: async () => {},
+        canShare: () => false,
+      }),
+      false
+    );
+    assert.equal(
+      canShareImageFile(sampleFile, {
+        share: async () => {},
+        canShare: () => {
+          throw new TypeError('unsupported');
+        },
+      }),
+      false
+    );
+    assert.equal(
+      canShareImageFile(sampleFile, {
+        share: async () => {},
+        canShare: (data) => Array.isArray(data?.files) && data.files[0] === sampleFile,
+      }),
+      true
+    );
+  });
+
+  it('guards unhandled window file dragover/drop without blocking handled or non-file drags', () => {
+    assert.equal(hasExternalFilesDataTransfer(null), false);
+    assert.equal(hasExternalFilesDataTransfer({ types: ['text/plain'] }), false);
+    assert.equal(hasExternalFilesDataTransfer({ types: ['text/plain', 'Files'] }), true);
+
+    const makeDragEvent = ({
+      defaultPrevented = false,
+      types = ['Files'],
+      dropEffect = 'copy',
+    } = {}) => {
+      let prevented = defaultPrevented;
+      const dt = { types, dropEffect };
+      return {
+        get defaultPrevented() {
+          return prevented;
+        },
+        preventDefault: () => {
+          prevented = true;
+        },
+        dataTransfer: dt,
+        wasPrevented: () => prevented,
+      };
+    };
+
+    // Unhandled external file dragover -> preventDefault + dropEffect = 'none'
+    const unhandledDragOver = makeDragEvent();
+    assert.equal(guardWindowFileDragEvent(unhandledDragOver, 'dragover'), true);
+    assert.equal(unhandledDragOver.wasPrevented(), true);
+    assert.equal(unhandledDragOver.dataTransfer.dropEffect, 'none');
+
+    // Unhandled external file drop -> preventDefault
+    const unhandledDrop = makeDragEvent({ dropEffect: 'none' });
+    assert.equal(guardWindowFileDragEvent(unhandledDrop, 'drop'), true);
+    assert.equal(unhandledDrop.wasPrevented(), true);
+
+    // Already handled by card -> do not clobber dropEffect = 'copy'
+    const cardHandledDragOver = makeDragEvent({ defaultPrevented: true, dropEffect: 'copy' });
+    assert.equal(guardWindowFileDragEvent(cardHandledDragOver, 'dragover'), false);
+    assert.equal(cardHandledDragOver.dataTransfer.dropEffect, 'copy');
+
+    // Non-file drag (e.g. text selection) -> leave untouched
+    const textDragOver = makeDragEvent({ types: ['text/plain'], dropEffect: 'move' });
+    assert.equal(guardWindowFileDragEvent(textDragOver, 'dragover'), false);
+    assert.equal(textDragOver.wasPrevented(), false);
+    assert.equal(textDragOver.dataTransfer.dropEffect, 'move');
+  });
+
+  it('resolves crop regions and scaled preview dimensions safely with fallbacks', () => {
+    const sourceSize = { width: 2400, height: 1080 };
+
+    // Auto-crop succeeds
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: true,
+        cropX: 0,
+        cropY: 0,
+        cropWidth: 100,
+        cropHeight: 100,
+        detectAutoCrop: () => ({ status: 'ok', rect: { x: 100, y: 20, width: 2000, height: 1000 } }),
+      }),
+      {
+        cropRect: { x: 100, y: 20, width: 2000, height: 1000 },
+        autoCropFallback: false,
+      }
+    );
+
+    // Auto-crop fails -> full image with fallback flag
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: true,
+        cropX: 0,
+        cropY: 0,
+        cropWidth: 100,
+        cropHeight: 100,
+        detectAutoCrop: () => ({ status: 'not_found' }),
+      }),
+      {
+        cropRect: { x: 0, y: 0, width: 2400, height: 1080 },
+        autoCropFallback: true,
+      }
+    );
+
+    // Valid manual crop
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: false,
+        cropX: 50,
+        cropY: 10,
+        cropWidth: 1600,
+        cropHeight: 900,
+        detectAutoCrop: () => ({ status: 'not_found' }),
+      }),
+      {
+        cropRect: { x: 50, y: 10, width: 1600, height: 900 },
+        autoCropFallback: false,
+      }
+    );
+
+    // Out-of-bounds manual crop -> full image safely without fallback flag
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: false,
+        cropX: 5000,
+        cropY: 10,
+        cropWidth: 400,
+        cropHeight: 300,
+        detectAutoCrop: () => ({ status: 'not_found' }),
+      }),
+      {
+        cropRect: { x: 0, y: 0, width: 2400, height: 1080 },
+        autoCropFallback: false,
+      }
+    );
+
+    assert.deepEqual(computeScaledPreviewDimensions(2000, 1000, 720), { width: 720, height: 360 });
+    assert.deepEqual(computeScaledPreviewDimensions(400, 300, 720), { width: 400, height: 300 });
+    assert.deepEqual(computeScaledPreviewDimensions(500, 1000, 720), { width: 360, height: 720 });
+  });
+
+  it('retains previous valid ratio preview while regenerating to prevent height jumps', () => {
+    const fileA = { name: 'a.png' };
+    const fileB = { name: 'b.png' };
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: false,
+        previewSourceImage: null,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:a',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      { hasImages: false, status: 'loading' }
+    );
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'auto',
+        cachedPreview: null,
+      }),
+      { hasImages: true, status: 'loading' }
+    );
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:a',
+          autoCropFallback: true,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      {
+        hasImages: true,
+        status: 'ok',
+        url: 'blob:a',
+        autoCropFallback: true,
+        isUpdating: false,
+      }
+    );
+
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'error',
+          url: '',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      { hasImages: true, status: 'error' }
+    );
+
+    // Switching first image keeps previous valid preview until new build finishes
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileB,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:a',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      {
+        hasImages: true,
+        status: 'ok',
+        url: 'blob:a',
+        autoCropFallback: false,
+        isUpdating: true,
+      }
+    );
+
+    // Editing manual crop key keeps previous valid preview until rebuild finishes
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileA,
+        activeCropKey: 'manual:12,0,100,100',
+        cachedPreview: {
+          status: 'ok',
+          url: 'blob:manual-1',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'manual:1,0,100,100',
+        },
+      }),
+      {
+        hasImages: true,
+        status: 'ok',
+        url: 'blob:manual-1',
+        autoCropFallback: false,
+        isUpdating: true,
+      }
+    );
+
+    // Previous error should not be kept while loading a different image or crop key
+    assert.deepEqual(
+      resolveMaskAccordionPreviewState({
+        hasImages: true,
+        previewSourceImage: fileB,
+        activeCropKey: 'auto',
+        cachedPreview: {
+          status: 'error',
+          url: '',
+          autoCropFallback: false,
+          sourceFile: fileA,
+          cropKey: 'auto',
+        },
+      }),
+      { hasImages: true, status: 'loading' }
     );
   });
 });

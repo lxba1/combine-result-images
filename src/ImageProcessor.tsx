@@ -1,14 +1,16 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
-import { useColorScheme, styled } from '@mui/material/styles';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon } from '@mui/icons-material';
+import { Alert, Button, ButtonBase, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, FormHelperText, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
+import { useColorScheme, useTheme, styled, alpha } from '@mui/material/styles';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, Share as ShareIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon, ChevronLeft as ChevronLeftIcon, ChevronRight as ChevronRightIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
 import {
   type OcrSessionController,
+  canvasToBlob,
+  isAbortError,
   releaseOcrResources,
   runOcrMaskDetection,
   startOcrSession,
@@ -17,6 +19,8 @@ import {
   type ImageSettings,
   type MaskMode,
   type RatioRect,
+  type SettingFieldKey,
+  type SettingsAccordionId,
   type SortOrder,
   MASK_PRESETS,
   MAX_COL_COUNT,
@@ -26,12 +30,18 @@ import {
   MIN_OFFSET_PX,
   SELF_MASK_PRESETS,
   areSettingsDefault,
+  cloneSettings,
   commitRatioRectField,
+  computeRatioMaskOverlayBox,
   createDefaultSettings,
   evaluateMontageCanvasSize,
+  formatRatioPercent,
+  getResultStaleReason,
+  intersectPixelRects,
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
+  resolveCanvasSizeErrorUiTarget,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
 } from './settingsHelpers.ts';
@@ -39,13 +49,43 @@ import { detectAutoCropFromImage } from './cropHelpers.ts';
 import {
   ImageDecodeError,
   ImageResolutionMismatchError,
+  canShareImageFile,
+  computeScaledPreviewDimensions,
   decodeImageWithFallback,
+  formatFileSize,
+  formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
+  guardWindowFileDragEvent,
+  hasExternalFilesDataTransfer,
+  mergeInputImageFiles,
   prepareMontagePlan,
   renderMontageToBlob,
+  resolveActionButtonVariants,
+  resolveAdjacentPreviewFile,
+  resolveFileSelectionNotice,
+  resolveMaskAccordionPreviewState,
+  resolveMontageAbortUiTarget,
+  resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveRatioPreviewCropRect,
+  resolveRemovablePreviewTarget,
+  shouldScrollToResult,
+  splitFilenameForMiddleEllipsis,
   type ImageDimensions,
+  type MaskAccordionPreviewState,
+  type RatioPreviewSnapshot,
 } from './montageHelpers.ts';
+
+const fileKeyMap = new WeakMap<File, number>();
+let nextFileKeyId = 1;
+const getFileKey = (file: File): number => {
+  let id = fileKeyMap.get(file);
+  if (id === undefined) {
+    id = nextFileKeyId++;
+    fileKeyMap.set(file, id);
+  }
+  return id;
+};
 
 const compareFileNames = (a: File, b: File) =>
   a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -259,6 +299,7 @@ interface ColorSettingFieldProps {
   name: string;
   value: string;
   disabled?: boolean;
+  error?: boolean;
   onCommit: (name: string, value: string) => void;
 }
 
@@ -271,9 +312,12 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
   name,
   value,
   disabled = false,
+  error = false,
   onCommit,
 }) => {
+  const { t } = useTranslation();
   const normalizedValue = normalizeHexColor(value) ?? '#000000';
+  const colorPickerLabel = t('color_picker_aria', { label });
   const inputRef = useRef<HTMLInputElement>(null);
   const isFocusedRef = useRef(false);
   const isDirtyRef = useRef(false);
@@ -349,6 +393,7 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
       name={name}
       defaultValue={normalizedValue}
       disabled={disabled}
+      error={error}
       inputRef={inputRef}
       onFocus={handleFocus}
       onChange={handleTextChange}
@@ -361,11 +406,11 @@ const ColorSettingField: React.FC<ColorSettingFieldProps> = ({
             <InputAdornment position="start">
               <ColorSwatchInput
                 type="color"
-                name={name}
                 value={normalizedValue}
                 disabled={disabled}
                 onChange={handleSwatchChange}
-                aria-label={label}
+                aria-label={colorPickerLabel}
+                title={colorPickerLabel}
               />
             </InputAdornment>
           ),
@@ -384,6 +429,7 @@ interface NumericTextFieldProps {
   step?: number;
   integer?: boolean;
   disabled?: boolean;
+  error?: boolean;
   onCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
 }
 
@@ -400,6 +446,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
   step = 1,
   integer = false,
   disabled = false,
+  error = false,
   onCommit,
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -497,6 +544,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
       name={name}
       defaultValue={value}
       disabled={disabled}
+      error={error}
       inputRef={inputRef}
       onFocus={handleFocus}
       onChange={handleChange}
@@ -519,6 +567,9 @@ const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>)
 
 interface MaskAccordionProps {
   title: string;
+  description: string;
+  expanded: boolean;
+  onAccordionChange: (event: React.SyntheticEvent, isExpanded: boolean) => void;
   enabledName: 'maskEnabled' | 'selfMaskEnabled';
   enabled: boolean;
   modeName: 'maskMode' | 'selfMaskMode';
@@ -530,7 +581,9 @@ interface MaskAccordionProps {
   rectValues: { x: number; y: number; width: number; height: number };
   colorName: 'maskColor' | 'selfMaskColor';
   colorValue: string;
+  ratioPreview?: MaskAccordionPreviewState;
   disabled?: boolean;
+  errorFields?: ReadonlySet<SettingFieldKey>;
   onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
   onNumericCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
   onColorCommit: (name: string, value: string) => void;
@@ -541,6 +594,9 @@ interface MaskAccordionProps {
 /** Shared settings accordion for target and self masking controls with compact 2-column pairing. */
 const MaskAccordion: React.FC<MaskAccordionProps> = ({
   title,
+  description,
+  expanded,
+  onAccordionChange,
   enabledName,
   enabled,
   modeName,
@@ -552,7 +608,9 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   rectValues,
   colorName,
   colorValue,
+  ratioPreview,
   disabled = false,
+  errorFields,
   onSettingChange,
   onNumericCommit,
   onColorCommit,
@@ -560,9 +618,34 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   onPresetChange,
 }) => {
   const { t } = useTranslation();
+  const hasError = (field: SettingFieldKey): boolean => Boolean(errorFields?.has(field));
+  const overlayBox = computeRatioMaskOverlayBox(ratioRect);
+  const normalizedOverlayColor = normalizeHexColor(colorValue) ?? '#000000';
+  const ratioAxes: ReadonlyArray<{
+    axis: 'horizontal' | 'vertical';
+    labelId: string;
+    label: string;
+    range: [number, number];
+    mt: number;
+  }> = [
+    {
+      axis: 'horizontal',
+      labelId: `${ratioKey}-horizontal-label`,
+      label: t('range_horizontal'),
+      range: [Math.min(ratioRect.rx0, ratioRect.rx1), Math.max(ratioRect.rx0, ratioRect.rx1)],
+      mt: 0,
+    },
+    {
+      axis: 'vertical',
+      labelId: `${ratioKey}-vertical-label`,
+      label: t('range_vertical'),
+      range: [Math.min(ratioRect.ry0, ratioRect.ry1), Math.max(ratioRect.ry0, ratioRect.ry1)],
+      mt: 1,
+    },
+  ];
 
   return (
-    <Accordion sx={{ mt: 2 }}>
+    <Accordion expanded={expanded} onChange={onAccordionChange} sx={{ mt: 2 }}>
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
           <Typography variant="h6">{title}</Typography>
@@ -572,6 +655,9 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
         </Box>
       </AccordionSummary>
       <AccordionDetails>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+          {description}
+        </Typography>
         <FormControlLabel
           disabled={disabled}
           control={<Switch checked={enabled} disabled={disabled} onChange={onSettingChange} name={enabledName} />}
@@ -580,7 +666,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
         {enabled && (
           <Grid container spacing={2} sx={{ mt: 1 }}>
             <Grid size={{ xs: 6 }}>
-              <FormControl fullWidth size="small" disabled={disabled}>
+              <FormControl fullWidth size="small" disabled={disabled} error={hasError(modeName)}>
                 <InputLabel id={`${modeName}-label`}>{t('mode')}</InputLabel>
                 <Select labelId={`${modeName}-label`} name={modeName} value={mode} label={t('mode')} onChange={onSettingChange}>
                   <MenuItem value="manual">{t('mode_manual')}</MenuItem>
@@ -590,10 +676,130 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
               </FormControl>
             </Grid>
             <Grid size={{ xs: 6 }}>
-              <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} onCommit={onColorCommit} />
+              <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} error={hasError(colorName)} onCommit={onColorCommit} />
+            </Grid>
+            <Grid size={{ xs: 12 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                {t(`mask_mode_${mode}_help`)}
+              </Typography>
             </Grid>
             {mode === 'ratio' ? (
               <>
+                <Grid size={{ xs: 12 }}>
+                  <Box
+                    sx={{
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                      p: 1,
+                      bgcolor: 'background.default',
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: 'block', mb: 0.75 }}
+                    >
+                      {t('ratio_preview_title')}
+                    </Typography>
+                    {!ratioPreview?.hasImages ? (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                        {t('ratio_preview_empty')}
+                      </Typography>
+                    ) : ratioPreview.status === 'error' ? (
+                      <Typography variant="caption" color="error" sx={{ display: 'block' }}>
+                        {t('ratio_preview_error')}
+                      </Typography>
+                    ) : ratioPreview.status === 'ok' && ratioPreview.url ? (
+                      <>
+                        <Box
+                          aria-busy={ratioPreview.isUpdating || undefined}
+                          sx={{
+                            position: 'relative',
+                            width: 'fit-content',
+                            maxWidth: '100%',
+                            mx: 'auto',
+                            overflow: 'hidden',
+                            borderRadius: 0.5,
+                            border: 1,
+                            borderColor: 'divider',
+                            bgcolor: 'action.hover',
+                            lineHeight: 0,
+                          }}
+                        >
+                          <Box
+                            component="img"
+                            src={ratioPreview.url}
+                            alt={t('ratio_preview_alt')}
+                            sx={{
+                              display: 'block',
+                              maxWidth: '100%',
+                              maxHeight: { xs: 220, sm: 250 },
+                              width: 'auto',
+                              height: 'auto',
+                              userSelect: 'none',
+                              pointerEvents: 'none',
+                            }}
+                          />
+                          {overlayBox && (
+                            <Box
+                              aria-hidden="true"
+                              sx={{
+                                position: 'absolute',
+                                left: `${overlayBox.leftPct}%`,
+                                top: `${overlayBox.topPct}%`,
+                                width: `${overlayBox.widthPct}%`,
+                                height: `${overlayBox.heightPct}%`,
+                                bgcolor: normalizedOverlayColor,
+                                opacity: 0.85,
+                                boxSizing: 'border-box',
+                                border: '1px solid rgba(255, 255, 255, 0.85)',
+                                boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.45)',
+                                pointerEvents: 'none',
+                              }}
+                            />
+                          )}
+                          {ratioPreview.isUpdating && (
+                            <Box
+                              aria-hidden="true"
+                              sx={{
+                                position: 'absolute',
+                                top: 6,
+                                right: 6,
+                                p: 0.5,
+                                borderRadius: '50%',
+                                bgcolor: 'rgba(0, 0, 0, 0.6)',
+                                color: '#fff',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                pointerEvents: 'none',
+                              }}
+                            >
+                              <CircularProgress size={14} color="inherit" />
+                            </Box>
+                          )}
+                        </Box>
+                        {ratioPreview.autoCropFallback && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
+                            {t('ratio_preview_autocrop_fallback')}
+                          </Typography>
+                        )}
+                      </>
+                    ) : (
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          py: 2,
+                        }}
+                      >
+                        <CircularProgress size={18} />
+                      </Box>
+                    )}
+                  </Box>
+                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <FormControl fullWidth size="small" disabled={disabled}>
                     <InputLabel id={`${ratioKey}-preset-label`}>{t('preset')}</InputLabel>
@@ -611,44 +817,46 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
-                  <Typography variant="body2" color={disabled ? 'text.disabled' : 'text.secondary'} gutterBottom>{t('range_horizontal')}</Typography>
-                  <Box sx={{ px: 1 }}>
-                    <Slider
-                      size="small"
-                      disabled={disabled}
-                      value={[Math.min(ratioRect.rx0, ratioRect.rx1), Math.max(ratioRect.rx0, ratioRect.rx1)]}
-                      onChange={onRatioSliderChange('horizontal')}
-                      valueLabelDisplay="auto"
-                      min={0}
-                      max={1}
-                      step={0.001}
-                    />
-                  </Box>
-                  <Typography variant="body2" color={disabled ? 'text.disabled' : 'text.secondary'} sx={{ mt: 1 }} gutterBottom>{t('range_vertical')}</Typography>
-                  <Box sx={{ px: 1 }}>
-                    <Slider
-                      size="small"
-                      disabled={disabled}
-                      value={[Math.min(ratioRect.ry0, ratioRect.ry1), Math.max(ratioRect.ry0, ratioRect.ry1)]}
-                      onChange={onRatioSliderChange('vertical')}
-                      valueLabelDisplay="auto"
-                      min={0}
-                      max={1}
-                      step={0.001}
-                    />
-                  </Box>
+                  {ratioAxes.map(({ axis, labelId, label, range, mt }) => (
+                    <React.Fragment key={axis}>
+                      <Typography
+                        id={labelId}
+                        variant="body2"
+                        color={disabled ? 'text.disabled' : 'text.secondary'}
+                        gutterBottom
+                        sx={{ mt, fontVariantNumeric: 'tabular-nums' }}
+                      >
+                        {label}: {formatRatioPercent(range[0])} – {formatRatioPercent(range[1])}
+                      </Typography>
+                      <Box sx={{ px: 1 }}>
+                        <Slider
+                          size="small"
+                          disabled={disabled}
+                          value={range}
+                          onChange={onRatioSliderChange(axis)}
+                          aria-labelledby={labelId}
+                          valueLabelDisplay="auto"
+                          valueLabelFormat={formatRatioPercent}
+                          getAriaValueText={formatRatioPercent}
+                          min={0}
+                          max={1}
+                          step={0.001}
+                        />
+                      </Box>
+                    </React.Fragment>
+                  ))}
                 </Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} disabled={disabled} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx0`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry0`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx1`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry1`)} onCommit={onNumericCommit} /></Grid>
               </>
             ) : (
               <>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name={`${rectPrefix}X`} value={rectValues.x} min={0} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name={`${rectPrefix}Y`} value={rectValues.y} min={0} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name={`${rectPrefix}Width`} value={rectValues.width} min={1} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name={`${rectPrefix}Height`} value={rectValues.height} min={1} integer disabled={disabled || mode === 'ocr'} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name={`${rectPrefix}X`} value={rectValues.x} min={0} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}X`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name={`${rectPrefix}Y`} value={rectValues.y} min={0} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}Y`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name={`${rectPrefix}Width`} value={rectValues.width} min={1} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}Width`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name={`${rectPrefix}Height`} value={rectValues.height} min={1} integer disabled={disabled || mode === 'ocr'} error={hasError(`${rectPrefix}Height`)} onCommit={onNumericCommit} /></Grid>
               </>
             )}
           </Grid>
@@ -658,8 +866,180 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   );
 };
 
+type ProcessingProgressState =
+  | { phase: 'preparing' }
+  | { phase: 'ocr' }
+  | { phase: 'confirming' }
+  | { phase: 'drawing'; current: number; total: number }
+  | { phase: 'encoding' }
+  | { phase: 'releasing' };
+
+interface ProcessedMontageResult {
+  blob: Blob;
+  url: string;
+  filename: string;
+  width: number;
+  height: number;
+  fileSizeBytes: number;
+  formatLabel: string;
+  settingsSnapshot: ImageSettings;
+  imagesSnapshot: File[];
+}
+
+const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
+  if (signal.aborted || ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timerId);
+      resolve();
+    };
+    const timerId = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+};
+
+interface RenderedPreviewState {
+  file: File;
+  url: string;
+  dimensions: ImageDimensions | null;
+  error: boolean;
+}
+
+const preloadPreviewImage = (url: string): Promise<ImageDimensions> =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.decoding = 'sync';
+    img.onload = async () => {
+      try {
+        if (typeof img.decode === 'function') {
+          await img.decode();
+        }
+      } catch {
+        // Ignore decode() errors when onload already produced valid dimensions
+      }
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      } else {
+        reject(new Error('Invalid preview image dimensions'));
+      }
+    };
+    img.onerror = () => {
+      reject(new Error('Failed to load preview image'));
+    };
+    img.src = url;
+  });
+
+type RatioPreviewBuildResult =
+  | {
+      status: 'ok';
+      url: string;
+      autoCropFallback: boolean;
+    }
+  | { status: 'error' };
+
+const buildCroppedRatioPreview = async (params: {
+  file: File;
+  cropAuto: boolean;
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+  shouldCancel: () => boolean;
+}): Promise<RatioPreviewBuildResult | null> => {
+  let bitmap: ImageBitmap | null = null;
+  let tempCanvas: HTMLCanvasElement | null = null;
+  try {
+    const decoded = await decodeImageWithFallback<File, ImageBitmap>(params.file);
+    bitmap = decoded;
+    if (params.shouldCancel()) {
+      return null;
+    }
+    const sourceSize: ImageDimensions = {
+      width: decoded.width,
+      height: decoded.height,
+    };
+    const { cropRect, autoCropFallback } = resolveRatioPreviewCropRect({
+      sourceSize,
+      cropAuto: params.cropAuto,
+      cropX: params.cropX,
+      cropY: params.cropY,
+      cropWidth: params.cropWidth,
+      cropHeight: params.cropHeight,
+      detectAutoCrop: () => detectAutoCropFromImage(decoded),
+    });
+    if (params.shouldCancel()) {
+      return null;
+    }
+    const previewSize = computeScaledPreviewDimensions(cropRect.width, cropRect.height);
+    tempCanvas = document.createElement('canvas');
+    tempCanvas.width = previewSize.width;
+    tempCanvas.height = previewSize.height;
+    const ctx = tempCanvas.getContext('2d', { alpha: false });
+    if (!ctx) {
+      return { status: 'error' };
+    }
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, previewSize.width, previewSize.height);
+    const clippedSource = intersectPixelRects(cropRect, {
+      x: 0,
+      y: 0,
+      width: sourceSize.width,
+      height: sourceSize.height,
+    });
+    if (clippedSource) {
+      const scaleX = previewSize.width / cropRect.width;
+      const scaleY = previewSize.height / cropRect.height;
+      ctx.drawImage(
+        decoded,
+        clippedSource.x,
+        clippedSource.y,
+        clippedSource.width,
+        clippedSource.height,
+        (clippedSource.x - cropRect.x) * scaleX,
+        (clippedSource.y - cropRect.y) * scaleY,
+        clippedSource.width * scaleX,
+        clippedSource.height * scaleY
+      );
+    }
+    decoded.close();
+    bitmap = null;
+
+    const blob = await canvasToBlob(tempCanvas);
+    if (params.shouldCancel()) {
+      return null;
+    }
+    return {
+      status: 'ok',
+      url: URL.createObjectURL(blob),
+      autoCropFallback,
+    };
+  } catch (error) {
+    if (params.shouldCancel()) {
+      return null;
+    }
+    console.warn('Failed to build ratio preview image:', error);
+    return { status: 'error' };
+  } finally {
+    if (bitmap) {
+      bitmap.close();
+    }
+    if (tempCanvas) {
+      tempCanvas.width = 1;
+      tempCanvas.height = 1;
+    }
+  }
+};
+
 const ImageProcessor: React.FC = () => {
   const { t, i18n } = useTranslation();
+  const theme = useTheme();
+  const isCompactViewport = useMediaQuery(theme.breakpoints.down('md'));
+  const isCompactViewportRef = useRef(isCompactViewport);
 
   const [settings, setSettings] = useState<ImageSettings>(() => loadSettingsFromStorage());
 
@@ -669,52 +1049,328 @@ const ImageProcessor: React.FC = () => {
 
   const [images, setImages] = useState<File[]>([]);
   const [fileListExpanded, setFileListExpanded] = useState(true);
-  const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
-  const [downloadFilename, setDownloadFilename] = useState<string>('tile.webp');
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const [fileSelectionNotice, setFileSelectionNotice] = useState<{
+    severity: 'info' | 'warning' | 'error';
+    message: string;
+  } | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
+  const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
+  const [ratioPreview, setRatioPreview] = useState<RatioPreviewSnapshot<File> | null>(null);
+  const [processedResult, setProcessedResult] = useState<ProcessedMontageResult | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [ocrStatus, setOcrStatus] = useState('');
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState<ProcessingProgressState | null>(null);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [expandedAccordions, setExpandedAccordions] = useState<Record<SettingsAccordionId, boolean>>({
+    settings: false,
+    crop: false,
+    mask: false,
+    selfMask: false,
+  });
+  const [processError, setProcessError] = useState<{
+    message: string;
+    fields: ReadonlySet<SettingFieldKey>;
+  } | null>(null);
+  const [largeCanvasConfirm, setLargeCanvasConfirm] = useState<{ open: boolean; message: string }>({
+    open: false,
+    message: '',
+  });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
+  const processAbortRef = useRef<AbortController | null>(null);
+  const fileDragDepthRef = useRef(0);
+  const previewRequestIdRef = useRef(0);
+  const requestedPreviewFileRef = useRef<File | null>(null);
+  const ratioPreviewKeyRef = useRef<{ file: File; cropKey: string } | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const fileSelectionNoticeRef = useRef<HTMLDivElement>(null);
+  const processAlertRef = useRef<HTMLDivElement>(null);
+  const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const isMountedRef = useRef(true);
 
   const isDefaultSettings = areSettingsDefault(settings);
+  const isReleasingMemory = processingProgress?.phase === 'releasing';
+
+  const canCancelProcessing = isProcessing && !isReleasingMemory;
+
+  const handleCancelProcessing = () => {
+    if (!canCancelProcessing || isCancelling || !processAbortRef.current) return;
+    setIsCancelling(true);
+    processAbortRef.current.abort();
+    ocrAbortRef.current?.abort();
+    resolveLargeCanvasConfirm(false);
+  };
+
+  const hasFieldError = (field: SettingFieldKey): boolean =>
+    Boolean(processError?.fields.has(field));
+
+  const handleAccordionChange =
+    (id: SettingsAccordionId) => (_event: React.SyntheticEvent, isExpanded: boolean) => {
+      setExpandedAccordions((prev) => ({ ...prev, [id]: isExpanded }));
+    };
+
+  const expandAccordions = (ids: readonly SettingsAccordionId[]) => {
+    if (ids.length === 0) return;
+    setExpandedAccordions((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id of ids) {
+        if (!next[id]) {
+          next[id] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  };
+
+  const reportProcessError = (
+    message: string,
+    target: { accordions?: readonly SettingsAccordionId[]; fields?: readonly SettingFieldKey[] } = {}
+  ) => {
+    if (!isMountedRef.current) return;
+    expandAccordions(target.accordions ?? []);
+    setProcessError({
+      message,
+      fields: new Set(target.fields ?? []),
+    });
+  };
+
+  const resolveLargeCanvasConfirm = (confirmed: boolean) => {
+    const resolve = largeCanvasConfirmResolverRef.current;
+    largeCanvasConfirmResolverRef.current = null;
+    if (isMountedRef.current) {
+      setLargeCanvasConfirm({ open: false, message: '' });
+    }
+    resolve?.(confirmed);
+  };
+
+  const requestLargeCanvasConfirm = (message: string): Promise<boolean> => {
+    if (largeCanvasConfirmResolverRef.current) {
+      largeCanvasConfirmResolverRef.current(false);
+      largeCanvasConfirmResolverRef.current = null;
+    }
+    return new Promise<boolean>((resolve) => {
+      largeCanvasConfirmResolverRef.current = resolve;
+      setLargeCanvasConfirm({ open: true, message });
+    });
+  };
 
   const handleResetSettings = () => {
     if (isProcessing) return;
     setSettings(createDefaultSettings());
     setResetDialogOpen(false);
+    setProcessError(null);
   };
 
   useEffect(() => {
-    // Abort and terminate any active or still-initializing OCR worker on unmount
+    isMountedRef.current = true;
+    // Abort active processing and terminate any active or still-initializing OCR worker on unmount
     return () => {
+      isMountedRef.current = false;
+      previewRequestIdRef.current += 1;
+      processAbortRef.current?.abort();
+      if (largeCanvasConfirmResolverRef.current) {
+        const resolve = largeCanvasConfirmResolverRef.current;
+        largeCanvasConfirmResolverRef.current = null;
+        resolve(false);
+      }
       void releaseOcrResources(ocrAbortRef, ocrSessionRef, { abort: true });
     };
   }, []);
 
   useEffect(() => {
-    // This effect manages the lifecycle of the generated object URL.
-    // It runs when the component unmounts or before the effect runs again
-    // (i.e., when processedImageUrl changes).
-    return () => {
-      if (processedImageUrl && processedImageUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(processedImageUrl);
+    isCompactViewportRef.current = isCompactViewport;
+  }, [isCompactViewport]);
+
+  useEffect(() => {
+    const handleWindowDragOver = (event: DragEvent) => {
+      guardWindowFileDragEvent(event, 'dragover');
+    };
+    const handleWindowDrop = (event: DragEvent) => {
+      if (guardWindowFileDragEvent(event, 'drop')) {
+        fileDragDepthRef.current = 0;
+        setIsFileDragOver(false);
       }
     };
-  }, [processedImageUrl]);
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (fileSelectionNotice) {
+      fileSelectionNoticeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [fileSelectionNotice]);
+
+  useEffect(() => {
+    if (processError) {
+      processAlertRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [processError]);
+
+  useEffect(() => {
+    if (!processedResult || !resultRef.current || !isCompactViewportRef.current) {
+      return;
+    }
+    const rect = resultRef.current.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+    if (
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: rect.top,
+        viewportHeight,
+      })
+    ) {
+      resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [processedResult]);
+
+  useEffect(() => {
+    // This effect manages the lifecycle of the generated object URL.
+    // It runs when the component unmounts or before the effect runs again
+    // (i.e., when processedResult changes).
+    const url = processedResult?.url;
+    return () => {
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [processedResult]);
+
+  useEffect(() => {
+    const url = renderedPreview?.url;
+    return () => {
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [renderedPreview]);
 
   const orderedImages = useMemo(
     () => sortImageFiles(images, settings.sortOrder),
     [images, settings.sortOrder]
   );
 
+  const previewSourceImage = orderedImages[0] ?? null;
+  const activePreviewCropKey = settings.cropAuto
+    ? 'auto'
+    : `manual:${settings.cropX},${settings.cropY},${settings.cropWidth},${settings.cropHeight}`;
+  const needsRatioPreview =
+    Boolean(previewSourceImage) &&
+    ((expandedAccordions.mask && settings.maskEnabled && settings.maskMode === 'ratio') ||
+      (expandedAccordions.selfMask && settings.selfMaskEnabled && settings.selfMaskMode === 'ratio'));
+
+  useEffect(() => {
+    const url = ratioPreview?.url;
+    return () => {
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [ratioPreview]);
+
+  useEffect(() => {
+    if (!needsRatioPreview || !previewSourceImage) {
+      return;
+    }
+    if (
+      ratioPreviewKeyRef.current?.file === previewSourceImage &&
+      ratioPreviewKeyRef.current?.cropKey === activePreviewCropKey
+    ) {
+      return;
+    }
+    let cancelled = false;
+
+    void buildCroppedRatioPreview({
+      file: previewSourceImage,
+      cropAuto: settings.cropAuto,
+      cropX: settings.cropX,
+      cropY: settings.cropY,
+      cropWidth: settings.cropWidth,
+      cropHeight: settings.cropHeight,
+      shouldCancel: () => cancelled || !isMountedRef.current,
+    }).then((built) => {
+      if (cancelled || !isMountedRef.current) {
+        if (built?.status === 'ok') {
+          URL.revokeObjectURL(built.url);
+        }
+        return;
+      }
+      if (!built) {
+        return;
+      }
+      ratioPreviewKeyRef.current = {
+        file: previewSourceImage,
+        cropKey: activePreviewCropKey,
+      };
+      if (built.status === 'ok') {
+        setRatioPreview({
+          status: 'ok',
+          url: built.url,
+          autoCropFallback: built.autoCropFallback,
+          sourceFile: previewSourceImage,
+          cropKey: activePreviewCropKey,
+        });
+      } else {
+        setRatioPreview({
+          status: 'error',
+          url: '',
+          autoCropFallback: false,
+          sourceFile: previewSourceImage,
+          cropKey: activePreviewCropKey,
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    needsRatioPreview,
+    previewSourceImage,
+    activePreviewCropKey,
+    settings.cropAuto,
+    settings.cropX,
+    settings.cropY,
+    settings.cropWidth,
+    settings.cropHeight,
+  ]);
+
   const activeLocale = i18n.resolvedLanguage || i18n.language || undefined;
   const formatFileTimestamp = useMemo(
     () => createFileTimestampFormatter(activeLocale),
     [activeLocale]
   );
+
+  const addImageFiles = (incoming: File[]) => {
+    if (isProcessing || incoming.length === 0) return;
+    const merged = mergeInputImageFiles(images, incoming);
+    if (merged.addedCount > 0) {
+      setImages(merged.files);
+    }
+    if (merged.addedCount > 0 || images.length === 0) {
+      setProcessError(null);
+    }
+    const notice = resolveFileSelectionNotice(merged);
+    if (!notice) {
+      setFileSelectionNotice(null);
+      return;
+    }
+    setFileSelectionNotice({
+      severity: notice.severity,
+      message: 'params' in notice ? t(notice.messageKey, notice.params) : t(notice.messageKey),
+    });
+  };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (isProcessing) {
@@ -723,8 +1379,7 @@ const ImageProcessor: React.FC = () => {
     }
     const files = event.target.files;
     if (files && files.length > 0) {
-      setImages(Array.from(files));
-      setProcessedImageUrl(null); // This will also trigger the cleanup effect for the old URL
+      addImageFiles(Array.from(files));
     }
     // Reset input value so picking the exact same file(s) again still triggers onChange
     event.target.value = '';
@@ -732,28 +1387,199 @@ const ImageProcessor: React.FC = () => {
 
   const handleClearImages = () => {
     if (isProcessing) return;
+    previewRequestIdRef.current += 1;
+    requestedPreviewFileRef.current = null;
+    ratioPreviewKeyRef.current = null;
     setImages([]);
-    setProcessedImageUrl(null);
+    setProcessedResult(null);
+    setShareError(null);
+    setFileSelectionNotice(null);
+    setProcessError(null);
     setFileListExpanded(true);
+    setPreviewOpen(false);
+    setRequestedPreviewFile(null);
+    setRenderedPreview(null);
+    setRatioPreview(null);
+  };
+
+  const removeImageFile = (targetFile: File) => {
+    const nextImages = images.filter((file) => file !== targetFile);
+    if (nextImages.length === 0) {
+      ratioPreviewKeyRef.current = null;
+      setFileListExpanded(true);
+      setProcessedResult(null);
+      setShareError(null);
+      setRatioPreview(null);
+    }
+    setImages(nextImages);
+    setFileSelectionNotice(null);
+    setProcessError(null);
   };
 
   const handleRemoveImage = (targetFile: File) => {
     if (isProcessing) return;
-    if (images.length <= 1) {
-      setFileListExpanded(true);
+    if (
+      renderedPreview?.file === targetFile ||
+      requestedPreviewFileRef.current === targetFile
+    ) {
+      previewRequestIdRef.current += 1;
+      setPreviewOpen(false);
     }
-    setImages((prev) => prev.filter((file) => file !== targetFile));
-    setProcessedImageUrl(null);
+    removeImageFile(targetFile);
+  };
+
+  const startPreviewLoad = (file: File) => {
+    const requestId = ++previewRequestIdRef.current;
+    requestedPreviewFileRef.current = file;
+    setRequestedPreviewFile(file);
+    const objectUrl = URL.createObjectURL(file);
+
+    void preloadPreviewImage(objectUrl).then(
+      (dimensions) => {
+        if (!isMountedRef.current || previewRequestIdRef.current !== requestId) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setRenderedPreview({
+          file,
+          url: objectUrl,
+          dimensions,
+          error: false,
+        });
+      },
+      () => {
+        URL.revokeObjectURL(objectUrl);
+        if (!isMountedRef.current || previewRequestIdRef.current !== requestId) {
+          return;
+        }
+        setRenderedPreview({
+          file,
+          url: '',
+          dimensions: null,
+          error: true,
+        });
+      }
+    );
+  };
+
+  const handleOpenPreview = (file: File) => {
+    setPreviewOpen(true);
+    startPreviewLoad(file);
+  };
+
+  const handleStepPreview = (step: -1 | 1) => {
+    const baseFile = requestedPreviewFileRef.current ?? renderedPreview?.file ?? null;
+    if (!baseFile) return;
+    const nextFile = resolveAdjacentPreviewFile(orderedImages, baseFile, step);
+    if (nextFile) {
+      startPreviewLoad(nextFile);
+    }
+  };
+
+  const handlePreviewKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      handleStepPreview(-1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      handleStepPreview(1);
+    }
+  };
+
+  const handleClosePreview = () => {
+    previewRequestIdRef.current += 1;
+    setPreviewOpen(false);
+  };
+
+  const handlePreviewExited = () => {
+    previewRequestIdRef.current += 1;
+    requestedPreviewFileRef.current = null;
+    setRequestedPreviewFile(null);
+    setRenderedPreview(null);
+  };
+
+  const handleRemovePreviewImage = () => {
+    const targetFile = resolveRemovablePreviewTarget({
+      orderedFiles: orderedImages,
+      renderedFile: renderedPreview?.file ?? null,
+      requestedFile: requestedPreviewFileRef.current,
+    });
+    if (isProcessing || !targetFile) return;
+    const nextFile = resolveNextPreviewAfterRemoval(orderedImages, targetFile);
+    removeImageFile(targetFile);
+    if (nextFile) {
+      startPreviewLoad(nextFile);
+    } else {
+      previewRequestIdRef.current += 1;
+      requestedPreviewFileRef.current = null;
+      setRequestedPreviewFile(null);
+      setPreviewOpen(false);
+    }
+  };
+
+  const handleCardDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    if (isProcessing) return;
+    fileDragDepthRef.current += 1;
+    setIsFileDragOver(true);
+  };
+
+  const handleCardDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = isProcessing ? 'none' : 'copy';
+  };
+
+  const handleCardDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
+    if (
+      event.relatedTarget !== null &&
+      !event.currentTarget.contains(event.relatedTarget as Node)
+    ) {
+      fileDragDepthRef.current = 0;
+      setIsFileDragOver(false);
+      return;
+    }
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+    if (fileDragDepthRef.current === 0) {
+      setIsFileDragOver(false);
+    }
+  };
+
+  const handleCardDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasExternalFilesDataTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragDepthRef.current = 0;
+    setIsFileDragOver(false);
+    if (isProcessing) return;
+    addImageFiles(Array.from(event.dataTransfer.files ?? []));
   };
 
   const handleNumericSettingCommit = (name: string, newValue: number, options?: { finalize?: boolean }) => {
     if (isProcessing) return;
     if (name.startsWith('maskRatioRect.') || name.startsWith('selfMaskRatioRect.')) {
       const [parent, key] = name.split('.') as ['maskRatioRect' | 'selfMaskRatioRect', keyof RatioRect];
+      const currentRect = settings[parent];
+      const nextRect = commitRatioRectField(currentRect, key, newValue, options);
+      if (
+        currentRect.rx0 === nextRect.rx0 &&
+        currentRect.ry0 === nextRect.ry0 &&
+        currentRect.rx1 === nextRect.rx1 &&
+        currentRect.ry1 === nextRect.ry1
+      ) {
+        return;
+      }
       setSettings(prev => ({
         ...prev,
         [parent]: commitRatioRectField(prev[parent], key, newValue, options),
       }));
+      setProcessError(null);
+      return;
+    }
+
+    if (settings[name as keyof ImageSettings] === newValue) {
       return;
     }
 
@@ -761,14 +1587,16 @@ const ImageProcessor: React.FC = () => {
       ...prev,
       [name]: newValue,
     }));
+    setProcessError(null);
   };
 
   const handleColorSettingCommit = (name: string, newValue: string) => {
     if (isProcessing) return;
     if (name !== 'bgColor' && name !== 'maskColor' && name !== 'selfMaskColor') return;
     const normalized = normalizeHexColor(newValue);
-    if (!normalized) return;
+    if (!normalized || settings[name] === normalized) return;
     setSettings(prev => (prev[name] === normalized ? prev : { ...prev, [name]: normalized }));
+    setProcessError(null);
   };
 
   const handleSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => {
@@ -785,39 +1613,46 @@ const ImageProcessor: React.FC = () => {
     }
     // Special handling for offsetX to also update offsetY
     if (name === 'offsetX') {
+        if (settings.offsetX === newValue && settings.offsetY === newValue) {
+            return;
+        }
         setSettings(prev => ({
             ...prev,
             offsetX: newValue as number,
             offsetY: newValue as number,
         }));
+        setProcessError(null);
         return;
     }
 
-    if (name === 'outputFormat') {
-        setProcessedImageUrl(null);
+    if (settings[name as keyof ImageSettings] === newValue) {
+        return;
     }
 
     setSettings(prev => ({
       ...prev,
       [name]: newValue,
     }));
+    setProcessError(null);
   };
 
-  const handleSliderChange = (name: string) => (_event: Event, value: number | number[]) => {
-    if (isProcessing) return;
-    const numValue = value as number;
-    setSettings(prev => {
-        if (name === 'offsetX') { // If the offset slider is moved, update both X and Y
-            return { ...prev, offsetX: numValue, offsetY: numValue };
-        }
-        return { ...prev, [name]: numValue };
-    });
+  const handleSliderChange = (name: 'quality') => (_event: Event, value: number | number[]) => {
+    if (isProcessing || typeof value !== 'number' || settings[name] === value) {
+      return;
+    }
+    setSettings((prev) => (prev[name] === value ? prev : { ...prev, [name]: value }));
+    setProcessError(null);
   };
 
   const handleRatioSliderChange = (parent: 'maskRatioRect' | 'selfMaskRatioRect', axis: 'horizontal' | 'vertical') => (_event: Event, value: number | number[]) => {
     if (isProcessing) return;
     if (!Array.isArray(value)) return;
     const [start, end] = value;
+    const current = settings[parent];
+    const changed = axis === 'horizontal'
+      ? current.rx0 !== start || current.rx1 !== end
+      : current.ry0 !== start || current.ry1 !== end;
+    if (!changed) return;
     setSettings(prev => ({
         ...prev,
         [parent]: {
@@ -825,6 +1660,7 @@ const ImageProcessor: React.FC = () => {
             ...(axis === 'horizontal' ? { rx0: start, rx1: end } : { ry0: start, ry1: end })
         }
     }));
+    setProcessError(null);
   };
 
   const handlePresetChange = (parent: 'maskRatioRect' | 'selfMaskRatioRect') => (event: SelectChangeEvent<string>) => {
@@ -832,32 +1668,51 @@ const ImageProcessor: React.FC = () => {
     const presetKey = event.target.value;
     const presets = parent === 'maskRatioRect' ? MASK_PRESETS : SELF_MASK_PRESETS;
     if (presetKey && presets[presetKey]) {
+        if (isRatioRectEqual(settings[parent], presets[presetKey])) return;
         setSettings(prev => ({
             ...prev,
             [parent]: { ...presets[presetKey] }
         }));
+        setProcessError(null);
     }
   };
 
   const processImages = async () => {
     if (isProcessing) return;
     if (images.length === 0) {
-      alert(t('alert_select_images_first'));
+      reportProcessError(t('alert_select_images_first'));
       return;
     }
 
     const validation = validateSettingsBeforeProcess(settings);
     if (!validation.valid) {
-      alert(t(validation.alertKey));
+      reportProcessError(t(validation.alertKey), {
+        accordions: [validation.accordion],
+        fields: validation.fields,
+      });
       return;
     }
 
-    setIsProcessing(true);
-    setProcessedImageUrl(null);
-    setOcrStatus('');
+    const abortController = new AbortController();
+    processAbortRef.current = abortController;
+    const { signal } = abortController;
+    const forwardAbortToOcr = () => {
+      ocrAbortRef.current?.abort();
+    };
+    signal.addEventListener('abort', forwardAbortToOcr, { once: true });
 
-    // Add a short delay to allow the UI to update (e.g., show spinner) before blocking the main thread.
-    await new Promise(resolve => setTimeout(resolve, 200));
+    setIsProcessing(true);
+    setIsCancelling(false);
+    fileDragDepthRef.current = 0;
+    setIsFileDragOver(false);
+    setProcessError(null);
+    setProcessedResult(null);
+    setShareError(null);
+    setFileSelectionNotice(null);
+    setProcessingProgress({ phase: 'preparing' });
+
+    // Add a short delay to allow the UI to update (e.g., show progress) before blocking the main thread.
+    await waitWithAbort(200, signal);
 
     let firstImageBitmap: ImageBitmap | null = null;
     let ocrSessionStarted = false;
@@ -870,8 +1725,14 @@ const ImageProcessor: React.FC = () => {
       }
     };
     try {
+      if (signal.aborted) {
+        return;
+      }
       // Always check first image dimensions (also runs auto-crop / OCR ROI when needed).
       firstImageBitmap = await decodeImageWithFallback<File, ImageBitmap>(orderedImages[0]);
+      if (signal.aborted) {
+        return;
+      }
       const expectedDimensions: ImageDimensions = {
         width: firstImageBitmap.width,
         height: firstImageBitmap.height,
@@ -882,8 +1743,11 @@ const ImageProcessor: React.FC = () => {
         settings,
         imageSize: expectedDimensions,
         detectAutoCrop: () => detectAutoCropFromImage(sourceBitmap),
-        detectOcrMasks: ({ cropRect, needsEnemyOcr, needsSelfOcr }) =>
-          runOcrMaskDetection<Tesseract.Worker, HTMLCanvasElement, ImageBitmap>({
+        detectOcrMasks: ({ cropRect, needsEnemyOcr, needsSelfOcr }) => {
+          if (signal.aborted) {
+            return Promise.resolve({ status: 'aborted' });
+          }
+          return runOcrMaskDetection<Tesseract.Worker, HTMLCanvasElement, ImageBitmap>({
             sourceImage: sourceBitmap,
             cropRect,
             needsEnemyOcr,
@@ -891,63 +1755,72 @@ const ImageProcessor: React.FC = () => {
             abortHolder: ocrAbortRef,
             sessionHolder: ocrSessionRef,
             onSourceConsumed: releaseFirstImageBitmap,
-            startSession: (signal) => {
+            startSession: (ocrSignal) => {
               ocrSessionStarted = true;
               return startOcrSession({
                 createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
                 configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
-                signal,
+                signal: ocrSignal,
               });
             },
             onStatus: (status) => {
-              if (status === 'starting') {
-                setOcrStatus(t('ocr_status_starting'));
+              if (status === 'starting' && !signal.aborted && isMountedRef.current) {
+                setProcessingProgress({ phase: 'ocr' });
               }
             },
-          }),
+          });
+        },
       });
 
+      if (signal.aborted) {
+        return;
+      }
+
+      const nextSettings =
+        Object.keys(plan.settingsPatch).length > 0
+          ? { ...settings, ...plan.settingsPatch }
+          : settings;
       if (Object.keys(plan.settingsPatch).length > 0) {
-        setSettings(prev => ({ ...prev, ...plan.settingsPatch }));
+        setSettings(nextSettings);
       }
 
       if (plan.status === 'abort') {
+        const uiTarget = resolveMontageAbortUiTarget(plan.alert, nextSettings);
         switch (plan.alert.kind) {
           case 'auto_crop_context_error':
-            alert(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'));
+            reportProcessError(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'), uiTarget);
             break;
           case 'auto_crop_not_found':
-            alert(t('alert_failed_to_detect_crop_area'));
+            reportProcessError(t('alert_failed_to_detect_crop_area'), uiTarget);
             break;
           case 'crop_outside_image':
-            alert(
+            reportProcessError(
               t('alert_crop_outside_image', {
                 width: plan.alert.width,
                 height: plan.alert.height,
-              })
+              }),
+              uiTarget
             );
             break;
           case 'invalid_mask_area':
-            alert(t('alert_invalid_mask_area'));
+            reportProcessError(t('alert_invalid_mask_area'), uiTarget);
             break;
           case 'mask_outside_crop':
-            alert(t('alert_mask_outside_crop'));
+            reportProcessError(t('alert_mask_outside_crop'), uiTarget);
             break;
           case 'ocr_aborted':
-            setOcrStatus('');
             break;
           case 'ocr_error':
             console.error(plan.alert.error);
-            setOcrStatus('');
-            alert(t('alert_ocr_error'));
+            reportProcessError(t('alert_ocr_error'), uiTarget);
             break;
           case 'ocr_not_found':
-            setOcrStatus('');
-            alert(
+            reportProcessError(
               [
                 plan.alert.enemyMissing ? t('alert_could_not_find_right_lv') : '',
                 plan.alert.selfMissing ? t('alert_could_not_find_left_lv') : '',
-              ].filter(Boolean).join('\n')
+              ].filter(Boolean).join('\n'),
+              uiTarget
             );
             break;
         }
@@ -955,37 +1828,37 @@ const ImageProcessor: React.FC = () => {
       }
 
       const { cropRect, finalSettings, tileMasks } = plan;
-      if (
-        (finalSettings.maskEnabled && finalSettings.maskMode === 'ocr') ||
-        (finalSettings.selfMaskEnabled && finalSettings.selfMaskMode === 'ocr')
-      ) {
-        setOcrStatus(t('ocr_status_mask_detected'));
-      }
 
       const sizeEval = evaluateMontageCanvasSize(orderedImages.length, cropRect, finalSettings);
       if (sizeEval.status === 'invalid') {
+        const sizeUiTarget = resolveCanvasSizeErrorUiTarget(sizeEval.reason, finalSettings.cropAuto);
         if (sizeEval.reason === 'exceeds_webp_dimension') {
-          alert(
+          reportProcessError(
             t('alert_webp_canvas_size', {
               width: sizeEval.width.toLocaleString(),
               height: sizeEval.height.toLocaleString(),
               maxWebpDimension: MAX_WEBP_DIMENSION.toLocaleString(),
-            })
+            }),
+            sizeUiTarget
           );
         } else {
-          alert(t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }));
+          reportProcessError(
+            t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }),
+            sizeUiTarget
+          );
         }
         return;
       }
       if (sizeEval.status === 'confirm_required') {
         // Release before blocking on user confirmation or allocating an oversized montage.
         releaseFirstImageBitmap();
+        setProcessingProgress({ phase: 'confirming' });
         const confirmMessage = t('confirm_large_canvas_size', {
           width: sizeEval.width.toLocaleString(),
           height: sizeEval.height.toLocaleString(),
           pixels: sizeEval.pixels.toLocaleString(),
         });
-        if (!window.confirm(confirmMessage)) {
+        if (!(await requestLargeCanvasConfirm(confirmMessage)) || signal.aborted) {
           return;
         }
       }
@@ -1013,6 +1886,19 @@ const ImageProcessor: React.FC = () => {
         cropRect,
         masks: tileMasks,
         expectedDimensions,
+        signal,
+        onPhaseChange: (phase) => {
+          if (signal.aborted || !isMountedRef.current) return;
+          if (phase === 'drawing') {
+            setProcessingProgress({ phase: 'drawing', current: 0, total: orderedImages.length });
+          } else {
+            setProcessingProgress({ phase: 'encoding' });
+          }
+        },
+        onProgress: (current, total) => {
+          if (signal.aborted || !isMountedRef.current) return;
+          setProcessingProgress({ phase: 'drawing', current, total });
+        },
         getFileName: (file) => file.name,
         decodeImage: (file, index) => {
           if (index === 0 && firstImageBitmap) {
@@ -1024,6 +1910,9 @@ const ImageProcessor: React.FC = () => {
         },
       });
 
+      if (renderResult.status === 'aborted' || signal.aborted) {
+        return;
+      }
       if (renderResult.status === 'context_failed') {
         throw new Error(t('alert_failed_to_get_context'));
       }
@@ -1031,7 +1920,7 @@ const ImageProcessor: React.FC = () => {
         console.warn(
           `Encoded output dimension mismatch: expected ${sizeEval.width}x${sizeEval.height}, got ${renderResult.actualWidth}x${renderResult.actualHeight}`
         );
-        alert(
+        reportProcessError(
           t('alert_output_dimension_mismatch', {
             expectedWidth: sizeEval.width.toLocaleString(),
             expectedHeight: sizeEval.height.toLocaleString(),
@@ -1042,7 +1931,7 @@ const ImageProcessor: React.FC = () => {
         return;
       }
       if (renderResult.status === 'allocation_failed' || renderResult.status === 'encode_failed') {
-        alert(t('alert_image_generation_failed'));
+        reportProcessError(t('alert_image_generation_failed'));
         return;
       }
 
@@ -1053,20 +1942,32 @@ const ImageProcessor: React.FC = () => {
         return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
       };
       const ext = resolveOutputExtension(montageBlob.type, finalSettings.outputFormat);
-      setDownloadFilename(`tile-${getTimestamp()}.${ext}`);
-      setProcessedImageUrl(URL.createObjectURL(montageBlob));
+      setProcessedResult({
+        blob: montageBlob,
+        url: URL.createObjectURL(montageBlob),
+        filename: `tile-${getTimestamp()}.${ext}`,
+        width: sizeEval.width,
+        height: sizeEval.height,
+        fileSizeBytes: montageBlob.size,
+        formatLabel: formatOutputFormatLabel(ext),
+        settingsSnapshot: cloneSettings(finalSettings),
+        imagesSnapshot: [...images],
+      });
 
     } catch (error) {
+      if (signal.aborted || isAbortError(error)) {
+        return;
+      }
       if (error instanceof ImageDecodeError) {
         console.error(`Failed to decode image "${error.fileName}":`, error);
-        alert(t('alert_image_decode_failed', { fileName: error.fileName }));
+        reportProcessError(t('alert_image_decode_failed', { fileName: error.fileName }));
         return;
       }
       if (error instanceof ImageResolutionMismatchError) {
         console.warn(
           `Image resolution mismatch for "${error.fileName}": expected ${error.expectedWidth}x${error.expectedHeight}, got ${error.actualWidth}x${error.actualHeight}`
         );
-        alert(
+        reportProcessError(
           t('alert_image_resolution_mismatch', {
             fileName: error.fileName,
             actualWidth: error.actualWidth,
@@ -1090,38 +1991,207 @@ const ImageProcessor: React.FC = () => {
       reloadTriggered = true;
       window.location.reload();
     } finally {
-      releaseFirstImageBitmap();
-      await releaseOcrResources(ocrAbortRef, ocrSessionRef);
-      const releaseDelayMs = getMemoryReleaseDelayMs({
-        ocrSessionStarted,
-        montageCanvasUsed,
-        reloadTriggered,
-      });
-      if (releaseDelayMs > 0) {
-        setOcrStatus(t('status_releasing_memory'));
-        // Add a small delay to allow GC to run before re-enabling the button
-        await new Promise(resolve => setTimeout(resolve, releaseDelayMs));
+      signal.removeEventListener('abort', forwardAbortToOcr);
+      if (processAbortRef.current === abortController) {
+        processAbortRef.current = null;
       }
-      setOcrStatus(''); // Clear OCR status message
-      setIsProcessing(false);
+      releaseFirstImageBitmap();
+      const releaseDelayMs = isMountedRef.current
+        ? getMemoryReleaseDelayMs({
+            ocrSessionStarted,
+            montageCanvasUsed,
+            reloadTriggered,
+          })
+        : 0;
+      if (isMountedRef.current && releaseDelayMs > 0) {
+        setProcessingProgress({ phase: 'releasing' });
+      }
+      await releaseOcrResources(ocrAbortRef, ocrSessionRef);
+      if (isMountedRef.current) {
+        if (releaseDelayMs > 0) {
+          // Add a small delay to allow GC to run before re-enabling the button
+          await new Promise(resolve => setTimeout(resolve, releaseDelayMs));
+        }
+        if (isMountedRef.current) {
+          setProcessingProgress(null);
+          setIsCancelling(false);
+          setIsProcessing(false);
+        }
+      }
     }
   };
 
+  const processingStatusText = (() => {
+    if (!processingProgress) return '';
+    if (isReleasingMemory) {
+      return processedResult
+        ? t('status_releasing_memory_ready')
+        : t('status_releasing_memory');
+    }
+    if (isCancelling) {
+      return t('status_cancelling');
+    }
+    switch (processingProgress.phase) {
+      case 'preparing':
+        return t('status_preparing');
+      case 'ocr':
+        return t('ocr_status_starting');
+      case 'confirming':
+        return '';
+      case 'drawing':
+        return t('status_processing_progress', {
+          current: processingProgress.current,
+          total: processingProgress.total,
+        });
+      case 'encoding':
+        return t('status_encoding');
+    }
+  })();
+
+  const drawingProgress =
+    !isCancelling &&
+    processingProgress?.phase === 'drawing' &&
+    processingProgress.total > 0
+      ? processingProgress
+      : null;
+
+  const resultStaleReason = useMemo(() => {
+    if (!processedResult) return 'none';
+    return getResultStaleReason({
+      currentSettings: settings,
+      snapshotSettings: processedResult.settingsSnapshot,
+      currentImages: images,
+      snapshotImages: processedResult.imagesSnapshot,
+    });
+  }, [processedResult, settings, images]);
+
+  const staleAlertMessage =
+    resultStaleReason === 'settings'
+      ? t('result_stale_settings')
+      : resultStaleReason === 'images'
+        ? t('result_stale_images')
+        : resultStaleReason === 'both'
+          ? t('result_stale_both')
+          : null;
+
+  const buttonVariants = resolveActionButtonVariants({
+    hasImages: images.length > 0,
+    hasFreshResult: Boolean(processedResult) && resultStaleReason === 'none',
+  });
+
+  const shareableResultFile = useMemo(() => {
+    if (!processedResult) return null;
+    return new File([processedResult.blob], processedResult.filename, {
+      type: processedResult.blob.type || 'application/octet-stream',
+    });
+  }, [processedResult]);
+
+  const canShareResult = useMemo(
+    () => canShareImageFile(shareableResultFile),
+    [shareableResultFile]
+  );
+
+  const handleShareResult = async () => {
+    if (
+      !shareableResultFile ||
+      isSharing ||
+      typeof navigator === 'undefined' ||
+      typeof navigator.share !== 'function'
+    ) {
+      return;
+    }
+    setIsSharing(true);
+    setShareError(null);
+    try {
+      await navigator.share({
+        files: [shareableResultFile],
+        title: t('title'),
+      });
+    } catch (error) {
+      const isCancelled =
+        isAbortError(error) ||
+        (typeof DOMException !== 'undefined' &&
+          error instanceof DOMException &&
+          error.name === 'AbortError');
+      if (!isCancelled) {
+        console.warn('Failed to share result image:', error);
+        if (isMountedRef.current) {
+          setShareError(t('alert_share_failed'));
+        }
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsSharing(false);
+      }
+    }
+  };
+
+  const activePreviewFile = renderedPreview?.file ?? requestedPreviewFile;
+  const previewDimensions =
+    renderedPreview && renderedPreview.file === activePreviewFile
+      ? renderedPreview.dimensions
+      : null;
+  const previewLoadError =
+    Boolean(renderedPreview && renderedPreview.file === activePreviewFile && renderedPreview.error);
+  const previewMetaSeparator = activeLocale?.startsWith('ja') ? ' ・ ' : ' · ';
+  const previewMetaText = activePreviewFile
+    ? [
+        previewDimensions
+          ? `${previewDimensions.width.toLocaleString()} × ${previewDimensions.height.toLocaleString()} px`
+          : null,
+        formatFileSize(activePreviewFile.size),
+        formatFileTimestamp(activePreviewFile.lastModified) || null,
+      ]
+        .filter(Boolean)
+        .join(previewMetaSeparator)
+    : '';
+  const previewIndex = activePreviewFile ? orderedImages.indexOf(activePreviewFile) : -1;
+  const hasMultiplePreviewFiles = orderedImages.length > 1 && previewIndex !== -1;
+  const canStepPreviewPrev = hasMultiplePreviewFiles && previewIndex > 0;
+  const canStepPreviewNext = hasMultiplePreviewFiles && previewIndex < orderedImages.length - 1;
+  const canRemovePreviewImage =
+    !isProcessing &&
+    resolveRemovablePreviewTarget({
+      orderedFiles: orderedImages,
+      renderedFile: renderedPreview?.file ?? null,
+      requestedFile: requestedPreviewFile,
+    }) !== null;
+
+  const maskAccordionPreview = resolveMaskAccordionPreviewState({
+    hasImages: orderedImages.length > 0,
+    previewSourceImage,
+    activeCropKey: activePreviewCropKey,
+    cachedPreview: ratioPreview,
+  });
+
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, pb: 20, minHeight: '100vh' }}>
+    <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
-          <Typography variant="h4" component="h1">{t('title')}</Typography>
-          <Typography variant="caption" color="text.secondary">v{packageJson.version}</Typography>
+        <Box sx={{ minWidth: 0 }}>
+          <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+            <Typography
+              variant="h4"
+              component="h1"
+              sx={{ fontSize: { xs: '1.375rem', sm: '1.875rem', md: '2.125rem' } }}
+            >
+              {t('title')}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+              v{packageJson.version}
+            </Typography>
+          </Box>
+          <Typography variant="body2" color="text.secondary">
+            {t('subtitle')}
+          </Typography>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
           <LanguageButton />
           <ThemeModeButton />
         </Box>
       </Box>
       <Grid container spacing={3}>
-        <Grid size={{ xs: 12, md: 5, lg: 4 }}>
-          <Accordion>
+        <Grid size={{ xs: 12, md: 5, lg: 4 }} sx={{ order: { xs: 2, md: 1 } }}>
+          <Accordion expanded={expandedAccordions.settings} onChange={handleAccordionChange('settings')}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
                 <Typography variant="h6">{t('settings')}</Typography>
@@ -1133,7 +2203,7 @@ const ImageProcessor: React.FC = () => {
             <AccordionDetails>
               <Grid container spacing={2}>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small" disabled={isProcessing}>
+                  <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('colCount')}>
                     <InputLabel id="col-count-label">{t('columns')}</InputLabel>
                     <Select labelId="col-count-label" name="colCount" value={settings.colCount} label={t('columns')} onChange={handleSettingChange}>
                       {Array.from({ length: MAX_COL_COUNT - MIN_COL_COUNT + 1 }, (_, i) => {
@@ -1141,10 +2211,11 @@ const ImageProcessor: React.FC = () => {
                         return <MenuItem key={val} value={val}>{val}</MenuItem>;
                       })}
                     </Select>
+                    <FormHelperText>{t('columns_help')}</FormHelperText>
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small" disabled={isProcessing}>
+                  <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('offsetX')}>
                     <InputLabel id="offset-label">{t('offset_px')}</InputLabel>
                     <Select labelId="offset-label" name="offsetX" value={settings.offsetX} label={t('offset_px')} onChange={handleSettingChange}>
                       {Array.from({ length: MAX_OFFSET_PX - MIN_OFFSET_PX + 1 }, (_, i) => {
@@ -1152,6 +2223,7 @@ const ImageProcessor: React.FC = () => {
                         return <MenuItem key={val} value={val}>{val}</MenuItem>;
                       })}
                     </Select>
+                    <FormHelperText>{t('offset_help')}</FormHelperText>
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
@@ -1166,9 +2238,9 @@ const ImageProcessor: React.FC = () => {
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} disabled={isProcessing} onCommit={handleColorSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><ColorSettingField label={t('background_color')} name="bgColor" value={settings.bgColor} disabled={isProcessing} error={hasFieldError('bgColor')} onCommit={handleColorSettingCommit} /></Grid>
                 <Grid size={{ xs: 6 }}>
-                  <FormControl fullWidth size="small" disabled={isProcessing}>
+                  <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('outputFormat')}>
                     <InputLabel id="output-format-label">{t('output_format')}</InputLabel>
                     <Select labelId="output-format-label" name="outputFormat" value={settings.outputFormat} label={t('output_format')} onChange={handleSettingChange}>
                       <MenuItem value="webp">WebP</MenuItem>
@@ -1199,12 +2271,17 @@ const ImageProcessor: React.FC = () => {
                       disabled={isProcessing || settings.outputFormat === 'png'}
                     />
                   </Box>
+                  {settings.outputFormat === 'png' && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                      {t('quality_png_help')}
+                    </Typography>
+                  )}
                 </Grid>
               </Grid>
             </AccordionDetails>
           </Accordion>
 
-          <Accordion sx={{ mt: 2 }}>
+          <Accordion expanded={expandedAccordions.crop} onChange={handleAccordionChange('crop')} sx={{ mt: 2 }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
                 <Typography variant="h6">{t('cropping')}</Typography>
@@ -1219,17 +2296,28 @@ const ImageProcessor: React.FC = () => {
                 control={<Switch checked={settings.cropAuto} disabled={isProcessing} onChange={handleSettingChange} name="cropAuto" />}
                 label={t('auto_mode')}
               />
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                {t('crop_auto_help')}
+              </Typography>
+              {settings.cropAuto && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                  {t('crop_auto_coords_help')}
+                </Typography>
+              )}
               <Grid container spacing={2} sx={{ mt: 1 }}>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name="cropWidth" value={settings.cropWidth} min={1} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name="cropHeight" value={settings.cropHeight} min={1} integer disabled={isProcessing || settings.cropAuto} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropX')} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropY')} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('width')} name="cropWidth" value={settings.cropWidth} min={1} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropWidth')} onCommit={handleNumericSettingCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('height')} name="cropHeight" value={settings.cropHeight} min={1} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropHeight')} onCommit={handleNumericSettingCommit} /></Grid>
               </Grid>
             </AccordionDetails>
           </Accordion>
 
           <MaskAccordion
             title={t('masking')}
+            description={t('mask_description')}
+            expanded={expandedAccordions.mask}
+            onAccordionChange={handleAccordionChange('mask')}
             enabledName="maskEnabled"
             enabled={settings.maskEnabled}
             modeName="maskMode"
@@ -1241,7 +2329,9 @@ const ImageProcessor: React.FC = () => {
             rectValues={{ x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight }}
             colorName="maskColor"
             colorValue={settings.maskColor}
+            ratioPreview={maskAccordionPreview}
             disabled={isProcessing}
+            errorFields={processError?.fields}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
             onColorCommit={handleColorSettingCommit}
@@ -1251,6 +2341,9 @@ const ImageProcessor: React.FC = () => {
 
           <MaskAccordion
             title={t('self_mask')}
+            description={t('self_mask_description')}
+            expanded={expandedAccordions.selfMask}
+            onAccordionChange={handleAccordionChange('selfMask')}
             enabledName="selfMaskEnabled"
             enabled={settings.selfMaskEnabled}
             modeName="selfMaskMode"
@@ -1262,7 +2355,9 @@ const ImageProcessor: React.FC = () => {
             rectValues={{ x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight }}
             colorName="selfMaskColor"
             colorValue={settings.selfMaskColor}
+            ratioPreview={maskAccordionPreview}
             disabled={isProcessing}
+            errorFields={processError?.fields}
             onSettingChange={handleSettingChange}
             onNumericCommit={handleNumericSettingCommit}
             onColorCommit={handleColorSettingCommit}
@@ -1283,8 +2378,37 @@ const ImageProcessor: React.FC = () => {
             </Button>
           </Box>
         </Grid>
-        <Grid size={{ xs: 12, md: 7, lg: 8 }}>
-          <Card>
+        <Grid size={{ xs: 12, md: 7, lg: 8 }} sx={{ order: { xs: 1, md: 2 } }}>
+          <Card
+            onDragEnter={handleCardDragEnter}
+            onDragOver={handleCardDragOver}
+            onDragLeave={handleCardDragLeave}
+            onDrop={handleCardDrop}
+            sx={{ position: 'relative' }}
+          >
+            {isFileDragOver && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  p: 3,
+                  borderRadius: 'inherit',
+                  border: 2,
+                  borderStyle: 'dashed',
+                  borderColor: 'primary.main',
+                  bgcolor: (muiTheme) => alpha(muiTheme.palette.background.paper, 0.9),
+                  pointerEvents: 'none',
+                }}
+              >
+                <Typography variant="h6" color="primary" align="center">
+                  {t('drop_images_here')}
+                </Typography>
+              </Box>
+            )}
             <CardContent>
               <Typography variant="h5" component="h2" sx={{ mb: 0.75 }}>{t('upload_and_process')}</Typography>
               <Box
@@ -1292,7 +2416,7 @@ const ImageProcessor: React.FC = () => {
                   display: 'flex',
                   alignItems: 'flex-start',
                   gap: 0.75,
-                  mb: 2,
+                  mb: images.length === 0 ? 1 : 2,
                   color: 'text.secondary',
                 }}
               >
@@ -1301,15 +2425,20 @@ const ImageProcessor: React.FC = () => {
                   {t('local_processing_notice')}
                 </Typography>
               </Box>
+              {images.length === 0 && (
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                  {t('upload_intro')}
+                </Typography>
+              )}
               <Button
-                variant="contained"
+                variant={buttonVariants.upload}
                 component="label"
                 fullWidth
                 size="large"
                 startIcon={<AddPhotoIcon />}
                 disabled={isProcessing}
               >
-                {t('upload_images')}
+                {images.length > 0 ? t('add_images') : t('upload_images')}
                 <input
                   type="file"
                   hidden
@@ -1319,6 +2448,28 @@ const ImageProcessor: React.FC = () => {
                   onChange={handleFileChange}
                 />
               </Button>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: { xs: 'none', sm: 'block' },
+                  mt: 0.75,
+                  textAlign: 'center',
+                }}
+              >
+                {t('drop_zone_hint')}
+              </Typography>
+              {fileSelectionNotice && (
+                <Alert
+                  ref={fileSelectionNoticeRef}
+                  severity={fileSelectionNotice.severity}
+                  onClose={() => setFileSelectionNotice(null)}
+                  closeText={t('close')}
+                  sx={{ mt: 1.5 }}
+                >
+                  {fileSelectionNotice.message}
+                </Alert>
+              )}
               {images.length > 0 && (
                 <Box sx={{ mt: 1.5 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
@@ -1365,7 +2516,7 @@ const ImageProcessor: React.FC = () => {
                         mb: 0,
                         p: 0,
                         listStyle: 'none',
-                        maxHeight: 200,
+                        maxHeight: { xs: 260, sm: 220 },
                         overflowY: 'auto',
                         border: 1,
                         borderColor: 'divider',
@@ -1373,107 +2524,278 @@ const ImageProcessor: React.FC = () => {
                         bgcolor: 'background.default',
                       }}
                     >
-                      {orderedImages.map((file, index) => (
-                        <Box
-                          component="li"
-                          key={`${file.name}-${file.lastModified}-${file.size}-${index}`}
-                          sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 1,
-                            px: 1.25,
-                            py: 0.5,
-                            borderBottom: index < orderedImages.length - 1 ? 1 : 0,
-                            borderColor: 'divider',
-                          }}
-                        >
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
+                      {orderedImages.map((file, index) => {
+                        const { head, tail } = splitFilenameForMiddleEllipsis(file.name);
+                        return (
+                          <Box
+                            component="li"
+                            key={getFileKey(file)}
                             sx={{
-                              minWidth: '2.5ch',
-                              textAlign: 'right',
-                              flexShrink: 0,
-                              fontVariantNumeric: 'tabular-nums',
+                              display: 'flex',
+                              alignItems: 'center',
+                              pr: { xs: 0.5, sm: 1 },
+                              borderBottom: index < orderedImages.length - 1 ? 1 : 0,
+                              borderColor: 'divider',
                             }}
                           >
-                            {index + 1}.
-                          </Typography>
-                          <Typography
-                            variant="body2"
-                            noWrap
-                            title={file.name}
-                            sx={{ flex: 1, minWidth: 0 }}
-                          >
-                            {file.name}
-                          </Typography>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{
-                              flexShrink: 0,
-                              whiteSpace: 'nowrap',
-                              fontVariantNumeric: 'tabular-nums',
-                            }}
-                          >
-                            {formatFileTimestamp(file.lastModified)}
-                          </Typography>
-                          <IconButton
-                            size="small"
-                            aria-label={t('remove_file', { name: file.name })}
-                            onClick={() => handleRemoveImage(file)}
-                            disabled={isProcessing}
-                            sx={{
-                              p: 0.25,
-                              flexShrink: 0,
-                              color: 'text.secondary',
-                              '&:hover': { color: 'error.main' },
-                            }}
-                          >
-                            <CloseIcon sx={{ fontSize: 16 }} />
-                          </IconButton>
-                        </Box>
-                      ))}
+                            <ButtonBase
+                              onClick={() => handleOpenPreview(file)}
+                              aria-label={t('preview_file', { name: file.name })}
+                              sx={{
+                                flex: 1,
+                                minWidth: 0,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'flex-start',
+                                gap: { xs: 0.5, sm: 1 },
+                                pl: { xs: 1, sm: 1.25 },
+                                pr: { xs: 0.5, sm: 1 },
+                                py: { xs: 0.75, sm: 0.5 },
+                                textAlign: 'left',
+                                '&:hover': { bgcolor: 'action.hover' },
+                              }}
+                            >
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{
+                                  minWidth: '2.2ch',
+                                  textAlign: 'right',
+                                  flexShrink: 0,
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}
+                              >
+                                {index + 1}.
+                              </Typography>
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Box
+                                  title={file.name}
+                                  sx={{
+                                    display: 'flex',
+                                    alignItems: 'baseline',
+                                    minWidth: 0,
+                                  }}
+                                >
+                                  {head && (
+                                    <Typography component="span" variant="body2" noWrap sx={{ minWidth: 0 }}>
+                                      {head}
+                                    </Typography>
+                                  )}
+                                  <Typography
+                                    component="span"
+                                    variant="body2"
+                                    sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+                                  >
+                                    {tail}
+                                  </Typography>
+                                </Box>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{
+                                    display: { xs: 'block', sm: 'none' },
+                                    fontVariantNumeric: 'tabular-nums',
+                                    lineHeight: 1.2,
+                                  }}
+                                >
+                                  {formatFileTimestamp(file.lastModified)}
+                                </Typography>
+                              </Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{
+                                  display: { xs: 'none', sm: 'block' },
+                                  flexShrink: 0,
+                                  whiteSpace: 'nowrap',
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}
+                              >
+                                {formatFileTimestamp(file.lastModified)}
+                              </Typography>
+                            </ButtonBase>
+                            <IconButton
+                              size="small"
+                              aria-label={t('remove_file', { name: file.name })}
+                              onClick={() => handleRemoveImage(file)}
+                              disabled={isProcessing}
+                              sx={{
+                                minWidth: { xs: 40, sm: 30 },
+                                minHeight: { xs: 40, sm: 30 },
+                                p: { xs: 1, sm: 0.5 },
+                                ml: { xs: 0.25, sm: 0.5 },
+                                flexShrink: 0,
+                                color: 'text.secondary',
+                                '&:hover': { color: 'error.main' },
+                              }}
+                            >
+                              <CloseIcon sx={{ fontSize: { xs: 20, sm: 16 } }} />
+                            </IconButton>
+                          </Box>
+                        );
+                      })}
                     </Box>
                   </Collapse>
                 </Box>
               )}
-              <Box sx={{ mt: 2 }}>
+              <Box sx={{ mt: 2, display: 'flex', gap: 1.5, alignItems: 'stretch' }}>
                 <Button
-                  variant="contained"
+                  variant={buttonVariants.process}
                   color="primary"
                   onClick={processImages}
                   disabled={isProcessing || images.length === 0}
-                  fullWidth
+                  fullWidth={!canCancelProcessing}
                   size="large"
-                  startIcon={!isProcessing && <PlayArrow />}
+                  startIcon={
+                    isProcessing && !isReleasingMemory ? (
+                      <CircularProgress size={20} color="inherit" />
+                    ) : (
+                      <PlayArrow />
+                    )
+                  }
+                  sx={{ flex: 1 }}
                 >
-                  {isProcessing ? <CircularProgress size={24} color="inherit" /> : t('process_images')}
+                  {!isProcessing
+                    ? t('process_images')
+                    : isReleasingMemory
+                      ? t('releasing_memory')
+                      : t('processing')}
                 </Button>
+                {canCancelProcessing && (
+                  <Button
+                    variant="outlined"
+                    color="inherit"
+                    size="large"
+                    startIcon={<CloseIcon />}
+                    onClick={handleCancelProcessing}
+                    disabled={isCancelling}
+                    sx={{
+                      flexShrink: 0,
+                      whiteSpace: 'nowrap',
+                      color: 'text.secondary',
+                      borderColor: 'divider',
+                    }}
+                  >
+                    {isCancelling ? t('cancelling') : t('cancel')}
+                  </Button>
+                )}
               </Box>
-              {ocrStatus && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }} translate="no">
-                  {ocrStatus}
-                </Typography>
+              {processError && (
+                <Alert
+                  ref={processAlertRef}
+                  severity="error"
+                  onClose={() => setProcessError(null)}
+                  closeText={t('close')}
+                  sx={{ mt: 2, whiteSpace: 'pre-line' }}
+                >
+                  {processError.message}
+                </Alert>
               )}
-              {processedImageUrl && (
+              <Box sx={{ mt: processingStatusText ? 1.5 : 0 }} translate="no">
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  {processingStatusText}
+                </Typography>
+                {isProcessing && !isReleasingMemory && processingStatusText && (
+                  <LinearProgress
+                    variant={drawingProgress ? 'determinate' : 'indeterminate'}
+                    value={
+                      drawingProgress
+                        ? (drawingProgress.current / drawingProgress.total) * 100
+                        : undefined
+                    }
+                    aria-label={processingStatusText}
+                    sx={{ mt: 0.75, borderRadius: 1 }}
+                  />
+                )}
+              </Box>
+              {processedResult && (
                 <Box sx={{ mt: 3, overflowAnchor: 'none' }} ref={resultRef}>
-                  <Typography variant="h6" gutterBottom>{t('result')}</Typography>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'baseline',
+                      justifyContent: 'space-between',
+                      gap: 1,
+                      mb: 1,
+                    }}
+                  >
+                    <Typography variant="h6">{t('result')}</Typography>
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ fontVariantNumeric: 'tabular-nums' }}
+                    >
+                      {t('result_summary', {
+                        width: processedResult.width.toLocaleString(),
+                        height: processedResult.height.toLocaleString(),
+                        size: formatFileSize(processedResult.fileSizeBytes),
+                        format: processedResult.formatLabel,
+                      })}
+                    </Typography>
+                  </Box>
+                  {staleAlertMessage && (
+                    <Alert severity="warning" sx={{ mb: 1.5 }}>
+                      {staleAlertMessage}
+                    </Alert>
+                  )}
                   <Box
                     component="img"
-                    src={processedImageUrl}
-                    alt="Processed Montage"
+                    src={processedResult.url}
+                    alt={t('result_image_alt')}
+                    width={processedResult.width}
+                    height={processedResult.height}
                     sx={{
                       display: 'block',
                       maxWidth: '100%',
+                      height: 'auto',
                       border: 1,
                       borderColor: 'divider',
                       borderRadius: 1,
                     }}
                   />
-                  <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth size="large" sx={{ mt: 2 }} startIcon={<DownloadIcon />}>
-                    {t('download_image')}
-                  </Button>
+                  {shareError && (
+                    <Alert
+                      severity="warning"
+                      onClose={() => setShareError(null)}
+                      closeText={t('close')}
+                      sx={{ mt: 1.5 }}
+                    >
+                      {shareError}
+                    </Alert>
+                  )}
+                  <Box sx={{ mt: 2, display: 'flex', gap: 1.5, alignItems: 'stretch' }}>
+                    <Button
+                      variant={buttonVariants.download}
+                      href={processedResult.url}
+                      download={processedResult.filename}
+                      fullWidth={!canShareResult}
+                      size="large"
+                      sx={{ flex: 1 }}
+                      startIcon={<DownloadIcon />}
+                    >
+                      {t('download_image')}
+                    </Button>
+                    {canShareResult && (
+                      <Button
+                        variant="outlined"
+                        color="primary"
+                        size="large"
+                        startIcon={<ShareIcon />}
+                        onClick={handleShareResult}
+                        disabled={isSharing}
+                        sx={{ flexShrink: 0, whiteSpace: 'nowrap', minWidth: { xs: 112, sm: 128 } }}
+                      >
+                        {t('share_image')}
+                      </Button>
+                    )}
+                  </Box>
                 </Box>
               )}
             </CardContent>
@@ -1496,6 +2818,196 @@ const ImageProcessor: React.FC = () => {
           <Button onClick={() => setResetDialogOpen(false)}>{t('cancel')}</Button>
           <Button onClick={handleResetSettings} color="error" variant="contained" disabled={isProcessing}>
             {t('reset')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={largeCanvasConfirm.open}
+        onClose={() => resolveLargeCanvasConfirm(false)}
+        aria-labelledby="large-canvas-confirm-dialog-title"
+        aria-describedby="large-canvas-confirm-dialog-description"
+      >
+        <DialogTitle id="large-canvas-confirm-dialog-title">
+          {t('confirm_large_canvas_title')}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText
+            id="large-canvas-confirm-dialog-description"
+            sx={{ whiteSpace: 'pre-line' }}
+          >
+            {largeCanvasConfirm.message}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => resolveLargeCanvasConfirm(false)}>{t('cancel')}</Button>
+          <Button
+            onClick={() => resolveLargeCanvasConfirm(true)}
+            color="warning"
+            variant="contained"
+          >
+            {t('continue')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={previewOpen && Boolean(activePreviewFile)}
+        onClose={handleClosePreview}
+        onKeyDown={handlePreviewKeyDown}
+        maxWidth="md"
+        fullWidth
+        aria-labelledby="file-preview-dialog-title"
+        slotProps={{
+          paper: { sx: { m: { xs: 1.5, sm: 3 } } },
+          transition: { onExited: handlePreviewExited },
+        }}
+      >
+        <DialogTitle
+          id="file-preview-dialog-title"
+          component="div"
+          sx={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 1,
+            pb: 1.25,
+          }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              variant="subtitle1"
+              component="h2"
+              sx={{ fontWeight: 600, overflowWrap: 'anywhere', lineHeight: 1.35 }}
+            >
+              {activePreviewFile?.name}
+            </Typography>
+            {previewMetaText && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: 'block', mt: 0.25, fontVariantNumeric: 'tabular-nums' }}
+              >
+                {previewMetaText}
+              </Typography>
+            )}
+          </Box>
+          <IconButton
+            size="small"
+            aria-label={t('close')}
+            onClick={handleClosePreview}
+            sx={{
+              minWidth: { xs: 36, sm: 32 },
+              minHeight: { xs: 36, sm: 32 },
+              mt: -0.5,
+              mr: -1,
+              color: 'text.secondary',
+            }}
+          >
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            px: { xs: 1.5, sm: 2.5 },
+            py: { xs: 1.5, sm: 2 },
+            height: { xs: 'auto', sm: '62vh' },
+            minHeight: { xs: renderedPreview ? 0 : 160, sm: 320 },
+            maxHeight: { xs: 'none', sm: 620 },
+            overflow: { xs: 'auto', sm: 'hidden' },
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          {previewLoadError ? (
+            <Alert severity="error" sx={{ width: '100%' }}>
+              {t('preview_image_load_failed')}
+            </Alert>
+          ) : (
+            renderedPreview &&
+            renderedPreview.url !== '' && (
+              <Box
+                component="img"
+                src={renderedPreview.url}
+                alt={renderedPreview.file.name}
+                sx={{
+                  display: 'block',
+                  maxWidth: '100%',
+                  maxHeight: { xs: '60vh', sm: '100%' },
+                  width: 'auto',
+                  height: 'auto',
+                  objectFit: 'contain',
+                  borderRadius: 1,
+                  border: 1,
+                  borderColor: 'divider',
+                  bgcolor: 'background.default',
+                }}
+              />
+            )
+          )}
+        </DialogContent>
+        {hasMultiplePreviewFiles && (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 1,
+              px: { xs: 1.5, sm: 2.5 },
+              py: 1,
+              borderBottom: 1,
+              borderColor: 'divider',
+            }}
+          >
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              startIcon={<ChevronLeftIcon />}
+              onClick={() => handleStepPreview(-1)}
+              disabled={!canStepPreviewPrev}
+              sx={{ minHeight: { xs: 40, sm: 34 }, minWidth: { xs: 96, sm: 100 } }}
+            >
+              {t('previous_file')}
+            </Button>
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}
+            >
+              {previewIndex + 1} / {orderedImages.length}
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              endIcon={<ChevronRightIcon />}
+              onClick={() => handleStepPreview(1)}
+              disabled={!canStepPreviewNext}
+              sx={{ minHeight: { xs: 40, sm: 34 }, minWidth: { xs: 96, sm: 100 } }}
+            >
+              {t('next_file')}
+            </Button>
+          </Box>
+        )}
+        <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1.5, justifyContent: 'space-between' }}>
+          <Button
+            color="error"
+            variant="outlined"
+            startIcon={<DeleteOutlineIcon />}
+            onClick={handleRemovePreviewImage}
+            disabled={!canRemovePreviewImage}
+            sx={{ minHeight: { xs: 40, sm: 36 } }}
+          >
+            {t('remove_from_list')}
+          </Button>
+          <Button
+            onClick={handleClosePreview}
+            variant="contained"
+            autoFocus
+            sx={{ minHeight: { xs: 40, sm: 36 } }}
+          >
+            {t('close')}
           </Button>
         </DialogActions>
       </Dialog>

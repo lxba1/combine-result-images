@@ -1,11 +1,23 @@
-import type { OcrMaskDetectionResult, PixelRect } from './ocrHelpers.ts';
+import type { AutoCropResult } from './cropHelpers.ts';
 import {
+  createAbortError,
+  isAbortError,
+  type OcrMaskDetectionResult,
+  type PixelRect,
+} from './ocrHelpers.ts';
+import {
+  CROP_FIELD_KEYS,
   computeRatioMaskRect,
   cropRectToSettings,
+  getMaskCoordFieldKeys,
+  getMaskRatioFieldKeys,
   hasCropOverlapWithImage,
   intersectPixelRects,
+  type ErrorUiTarget,
   type ImageSettings,
+  type MaskTarget,
   type OutputFormat,
+  type SettingsAccordionId,
 } from './settingsHelpers.ts';
 
 export interface ImageDimensions {
@@ -67,6 +79,8 @@ export interface RenderMontageTilesOptions<F, B extends BitmapLike> {
   expectedDimensions?: ImageDimensions;
   getFileName?: (file: F) => string;
   yieldFrame?: () => Promise<void>;
+  signal?: AbortSignal;
+  onProgress?: (completed: number, total: number) => void;
 }
 
 /** Converts enabled mask rectangles from full-image space into crop-clipped tile-relative coordinates. */
@@ -135,9 +149,16 @@ export class ImageResolutionMismatchError extends Error {
   }
 }
 
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+};
+
 /**
  * Draws cropped image tiles and clipped mask rectangles directly onto the montage context,
- * guaranteeing each decoded ImageBitmap is closed in a `finally` block without allocating a temp canvas.
+ * guaranteeing each decoded ImageBitmap is closed in a `finally` block without allocating a temp canvas,
+ * reporting tile progress and supporting cooperative AbortSignal cancellation between frames.
  */
 export const renderMontageTiles = async <F, B extends BitmapLike>(
   options: RenderMontageTilesOptions<F, B>
@@ -154,11 +175,16 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
     expectedDimensions,
     getFileName = defaultGetFileName,
     yieldFrame = defaultYieldFrame,
+    signal,
+    onProgress,
   } = options;
 
   if (files.length === 0) {
     return;
   }
+
+  throwIfAborted(signal);
+  onProgress?.(0, files.length);
 
   // Clamp masks to tile bounds so direct callers cannot paint into offsets or neighbor tiles.
   const tileBounds: PixelRect = { x: 0, y: 0, width: cropRect.width, height: cropRect.height };
@@ -171,6 +197,7 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
   }
 
   for (let i = 0; i < files.length; i++) {
+    throwIfAborted(signal);
     const row = Math.floor(i / colCount);
     const col = i % colCount;
     const drawX = offsetX + col * (cropRect.width + offsetX);
@@ -178,6 +205,7 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
 
     const bitmap = await decodeImage(files[i], i);
     try {
+      throwIfAborted(signal);
       if (
         expectedDimensions &&
         (bitmap.width !== expectedDimensions.width ||
@@ -212,7 +240,9 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
       montageCtx.fillRect(drawX + mask.x, drawY + mask.y, mask.width, mask.height);
     }
 
+    onProgress?.(i + 1, files.length);
     await yieldFrame();
+    throwIfAborted(signal);
   }
 };
 
@@ -389,10 +419,12 @@ export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
   canvas?: MontageCanvasLike<B> | null;
   createCanvas?: () => MontageCanvasLike<B>;
   inspectBlobDimensions?: (blob: Blob) => Promise<ImageDimensions | null>;
+  onPhaseChange?: (phase: 'drawing' | 'encoding') => void;
 }
 
 export type RenderMontageToBlobResult =
   | { status: 'ok'; blob: Blob }
+  | { status: 'aborted' }
   | { status: 'allocation_failed' }
   | { status: 'context_failed' }
   | { status: 'encode_failed' }
@@ -447,8 +479,12 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
   canvas,
   createCanvas = () => document.createElement('canvas') as unknown as MontageCanvasLike<B>,
   inspectBlobDimensions = readEncodedImageDimensions,
+  onPhaseChange,
   ...tileOptions
 }: RenderMontageToBlobOptions<F, B>): Promise<RenderMontageToBlobResult> => {
+  if (tileOptions.signal?.aborted) {
+    return { status: 'aborted' };
+  }
   const montageCanvas = canvas ?? createCanvas();
   const shrinkCanvas = () => {
     if (montageCanvas.width !== 1 || montageCanvas.height !== 1) {
@@ -475,19 +511,24 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
     montageCtx.fillStyle = bgColor;
     montageCtx.fillRect(0, 0, montageCanvas.width, montageCanvas.height);
 
+    onPhaseChange?.('drawing');
     await renderMontageTiles({
       ...tileOptions,
       montageCtx,
     });
+    throwIfAborted(tileOptions.signal);
 
+    onPhaseChange?.('encoding');
     const montageBlob = await new Promise<Blob | null>((resolve) =>
       montageCanvas.toBlob(resolve, mimeType, quality)
     );
     shrinkCanvas();
+    throwIfAborted(tileOptions.signal);
     if (!montageBlob || montageBlob.size === 0) {
       return { status: 'encode_failed' };
     }
     const actualDimensions = await inspectBlobDimensions(montageBlob);
+    throwIfAborted(tileOptions.signal);
     if (
       actualDimensions &&
       (actualDimensions.width !== dimensions.width ||
@@ -500,6 +541,11 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
       };
     }
     return { status: 'ok', blob: montageBlob };
+  } catch (error) {
+    if (tileOptions.signal?.aborted || isAbortError(error)) {
+      return { status: 'aborted' };
+    }
+    throw error;
   } finally {
     shrinkCanvas();
   }
@@ -666,8 +712,8 @@ export type PrepareMontagePlanAlert =
   | { kind: 'auto_crop_context_error' }
   | { kind: 'auto_crop_not_found' }
   | { kind: 'crop_outside_image'; width: number; height: number }
-  | { kind: 'invalid_mask_area' }
-  | { kind: 'mask_outside_crop' }
+  | { kind: 'invalid_mask_area'; target: MaskTarget; mode: 'manual' | 'ratio' }
+  | { kind: 'mask_outside_crop'; target: MaskTarget }
   | { kind: 'ocr_not_found'; enemyMissing: boolean; selfMissing: boolean }
   | { kind: 'ocr_error'; error: unknown }
   | { kind: 'ocr_aborted' };
@@ -708,6 +754,64 @@ const buildMaskCoordPatch = (
     ? { maskX: rect.x, maskY: rect.y, maskWidth: rect.width, maskHeight: rect.height }
     : { selfMaskX: rect.x, selfMaskY: rect.y, selfMaskWidth: rect.width, selfMaskHeight: rect.height };
 
+const toStaticMaskAlert = (
+  target: MaskTarget,
+  reason: 'invalid_mask_area' | 'mask_outside_crop',
+  mode: 'manual' | 'ratio'
+): PrepareMontagePlanAlert =>
+  reason === 'invalid_mask_area'
+    ? { kind: 'invalid_mask_area', target, mode }
+    : { kind: 'mask_outside_crop', target };
+
+/**
+ * Maps a `PrepareMontagePlanAlert` to the settings accordions that should expand
+ * and the fields that should be marked as errors in the UI.
+ */
+export const resolveMontageAbortUiTarget = (
+  alert: PrepareMontagePlanAlert,
+  settings: Pick<
+    ImageSettings,
+    'maskEnabled' | 'maskMode' | 'selfMaskEnabled' | 'selfMaskMode'
+  >
+): ErrorUiTarget => {
+  switch (alert.kind) {
+    case 'auto_crop_not_found':
+      return { accordions: ['crop'], fields: [] };
+    case 'crop_outside_image':
+      return { accordions: ['crop'], fields: [...CROP_FIELD_KEYS] };
+    case 'invalid_mask_area':
+      return {
+        accordions: [alert.target],
+        fields:
+          alert.mode === 'ratio'
+            ? [...getMaskRatioFieldKeys(alert.target)]
+            : [...getMaskCoordFieldKeys(alert.target)],
+      };
+    case 'mask_outside_crop':
+      return {
+        accordions: [alert.target],
+        fields: [...getMaskCoordFieldKeys(alert.target)],
+      };
+    case 'ocr_not_found': {
+      const accordions: SettingsAccordionId[] = [];
+      if (alert.enemyMissing) accordions.push('mask');
+      if (alert.selfMissing) accordions.push('selfMask');
+      return { accordions, fields: [] };
+    }
+    case 'ocr_error': {
+      const accordions: SettingsAccordionId[] = [];
+      if (settings.maskEnabled && settings.maskMode === 'ocr') accordions.push('mask');
+      if (settings.selfMaskEnabled && settings.selfMaskMode === 'ocr') {
+        accordions.push('selfMask');
+      }
+      return { accordions, fields: [] };
+    }
+    case 'auto_crop_context_error':
+    case 'ocr_aborted':
+      return { accordions: [], fields: [] };
+  }
+};
+
 const resolveStaticMaskRect = (
   enabled: boolean,
   mode: ImageSettings['maskMode'],
@@ -716,7 +820,7 @@ const resolveStaticMaskRect = (
   cropRect: PixelRect
 ):
   | { ok: true; rect: PixelRect | null; needsRatioPatch: boolean }
-  | { ok: false; reason: 'invalid_mask_area' | 'mask_outside_crop' } => {
+  | { ok: false; reason: 'invalid_mask_area' | 'mask_outside_crop'; mode: 'manual' | 'ratio' } => {
   if (!enabled) {
     return { ok: true, rect: null, needsRatioPatch: false };
   }
@@ -729,18 +833,18 @@ const resolveStaticMaskRect = (
       manualRect.width <= 0 ||
       manualRect.height <= 0
     ) {
-      return { ok: false, reason: 'invalid_mask_area' };
+      return { ok: false, reason: 'invalid_mask_area', mode: 'manual' };
     }
     const clipped = intersectPixelRects(manualRect, cropRect);
     if (!clipped) {
-      return { ok: false, reason: 'mask_outside_crop' };
+      return { ok: false, reason: 'mask_outside_crop', mode: 'manual' };
     }
     return { ok: true, rect: clipped, needsRatioPatch: false };
   }
   if (mode === 'ratio') {
     const computed = computeRatioMaskRect(ratioRect, cropRect);
     if (!computed) {
-      return { ok: false, reason: 'invalid_mask_area' };
+      return { ok: false, reason: 'invalid_mask_area', mode: 'ratio' };
     }
     return { ok: true, rect: computed, needsRatioPatch: true };
   }
@@ -810,7 +914,7 @@ export const prepareMontagePlan = async ({
     return {
       status: 'abort',
       settingsPatch,
-      alert: { kind: enemyStatic.reason },
+      alert: toStaticMaskAlert('mask', enemyStatic.reason, enemyStatic.mode),
     };
   }
 
@@ -830,7 +934,7 @@ export const prepareMontagePlan = async ({
     return {
       status: 'abort',
       settingsPatch,
-      alert: { kind: selfStatic.reason },
+      alert: toStaticMaskAlert('selfMask', selfStatic.reason, selfStatic.mode),
     };
   }
 
@@ -944,4 +1048,493 @@ export const getMemoryReleaseDelayMs = ({
     return 0;
   }
   return ocrSessionStarted ? OCR_MEMORY_RELEASE_DELAY_MS : MONTAGE_MEMORY_RELEASE_DELAY_MS;
+};
+
+/** Formats a byte count into a human-readable B / KB / MB string. */
+export const formatFileSize = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} B`;
+  }
+  const kb = bytes / 1024;
+  if (kb < 1024) {
+    return `${kb.toFixed(1)} KB`;
+  }
+  return `${(kb / 1024).toFixed(2)} MB`;
+};
+
+const EXTENSION_TO_FORMAT_LABEL: Record<string, string> = {
+  webp: 'WebP',
+  png: 'PNG',
+  jpg: 'JPEG',
+  jpeg: 'JPEG',
+};
+
+/** Maps an output file extension to a display format label. */
+export const formatOutputFormatLabel = (extension: string): string => {
+  const normalized = extension.trim().toLowerCase();
+  return EXTENSION_TO_FORMAT_LABEL[normalized] ?? normalized.toUpperCase();
+};
+
+export interface ResultScrollDecisionParams {
+  isCompactViewport: boolean;
+  resultTop: number;
+  viewportHeight: number;
+}
+
+/**
+ * Determines whether the page should scroll to the result section after processing completes.
+ * Avoids scrolling on desktop layouts or when the result section starts comfortably inside the
+ * upper viewport on mobile/compact screens.
+ */
+export const shouldScrollToResult = ({
+  isCompactViewport,
+  resultTop,
+  viewportHeight,
+}: ResultScrollDecisionParams): boolean => {
+  if (!isCompactViewport || !Number.isFinite(resultTop) || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+    return false;
+  }
+  return resultTop < 0 || resultTop > viewportHeight * 0.65;
+};
+
+export type ActionButtonVariant = 'contained' | 'outlined';
+
+export interface ActionButtonVariants {
+  upload: ActionButtonVariant;
+  process: ActionButtonVariant;
+  download: ActionButtonVariant;
+}
+
+/**
+ * Resolves MUI button variants across the upload, process, and download steps so only the
+ * current primary next action uses `'contained'` while other available actions stay `'outlined'`.
+ */
+export const resolveActionButtonVariants = (params: {
+  hasImages: boolean;
+  hasFreshResult: boolean;
+}): ActionButtonVariants => ({
+  upload: params.hasImages ? 'outlined' : 'contained',
+  process: params.hasImages && !params.hasFreshResult ? 'contained' : 'outlined',
+  download: params.hasFreshResult ? 'contained' : 'outlined',
+});
+
+export interface FileTypeLike {
+  name: string;
+  type?: string;
+}
+
+const SUPPORTED_INPUT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg']);
+const SUPPORTED_INPUT_EXT_RE = /\.(png|jpe?g)$/i;
+
+/** Returns whether a picked or dropped file is a supported PNG/JPEG input image. */
+export const isSupportedInputImageFile = (file: FileTypeLike): boolean => {
+  const mime = (file.type ?? '').trim().toLowerCase();
+  if (mime !== '') {
+    return SUPPORTED_INPUT_MIME_TYPES.has(mime);
+  }
+  return SUPPORTED_INPUT_EXT_RE.test(file.name);
+};
+
+export interface FileIdentityLike {
+  name: string;
+  size: number;
+  lastModified: number;
+}
+
+export interface MergeImageFilesResult<F> {
+  files: F[];
+  addedCount: number;
+  skippedDuplicateCount: number;
+}
+
+/** Appends incoming files to `existing` while deduplicating by name, size, and lastModified. */
+export const mergeImageFiles = <F extends FileIdentityLike>(
+  existing: readonly F[],
+  incoming: readonly F[]
+): MergeImageFilesResult<F> => {
+  const toKey = (file: FileIdentityLike) => `${file.name}\0${file.size}\0${file.lastModified}`;
+  const seen = new Set(existing.map(toKey));
+  const appended: F[] = [];
+  let skippedDuplicateCount = 0;
+
+  for (const file of incoming) {
+    const key = toKey(file);
+    if (seen.has(key)) {
+      skippedDuplicateCount += 1;
+      continue;
+    }
+    seen.add(key);
+    appended.push(file);
+  }
+
+  return {
+    files: appended.length > 0 ? [...existing, ...appended] : [...existing],
+    addedCount: appended.length,
+    skippedDuplicateCount,
+  };
+};
+
+export interface MergeInputImagesResult<F> {
+  files: F[];
+  addedCount: number;
+  unsupportedCount: number;
+  duplicateCount: number;
+}
+
+/**
+ * Filters `incoming` to supported PNG/JPEG images and appends non-duplicate files to
+ * `existing`, returning added, unsupported, and duplicate counts.
+ */
+export const mergeInputImageFiles = <F extends FileTypeLike & FileIdentityLike>(
+  existing: readonly F[],
+  incoming: readonly F[]
+): MergeInputImagesResult<F> => {
+  const supported = incoming.filter(isSupportedInputImageFile);
+  const unsupportedCount = incoming.length - supported.length;
+  const merged = mergeImageFiles(existing, supported);
+  return {
+    files: merged.files,
+    addedCount: merged.addedCount,
+    unsupportedCount,
+    duplicateCount: merged.skippedDuplicateCount,
+  };
+};
+
+export type FileSelectionNoticeSpec =
+  | { severity: 'error'; messageKey: 'alert_no_supported_images' }
+  | {
+      severity: 'warning';
+      messageKey: 'notice_skipped_both';
+      params: { unsupportedCount: number; duplicateCount: number };
+    }
+  | {
+      severity: 'warning';
+      messageKey: 'notice_skipped_unsupported';
+      params: { count: number };
+    }
+  | {
+      severity: 'info';
+      messageKey: 'notice_skipped_duplicate';
+      params: { count: number };
+    };
+
+/**
+ * Classifies the outcome of an image-selection/drop batch into a single notice payload
+ * (error when every incoming file is unsupported, or skip summary warning/info).
+ */
+export const resolveFileSelectionNotice = (
+  merged: Pick<MergeInputImagesResult<unknown>, 'addedCount' | 'unsupportedCount' | 'duplicateCount'>
+): FileSelectionNoticeSpec | null => {
+  if (merged.addedCount === 0 && merged.duplicateCount === 0 && merged.unsupportedCount > 0) {
+    return {
+      severity: 'error',
+      messageKey: 'alert_no_supported_images',
+    };
+  }
+  if (merged.unsupportedCount > 0 && merged.duplicateCount > 0) {
+    return {
+      severity: 'warning',
+      messageKey: 'notice_skipped_both',
+      params: {
+        unsupportedCount: merged.unsupportedCount,
+        duplicateCount: merged.duplicateCount,
+      },
+    };
+  }
+  if (merged.unsupportedCount > 0) {
+    return {
+      severity: 'warning',
+      messageKey: 'notice_skipped_unsupported',
+      params: { count: merged.unsupportedCount },
+    };
+  }
+  if (merged.duplicateCount > 0) {
+    return {
+      severity: 'info',
+      messageKey: 'notice_skipped_duplicate',
+      params: { count: merged.duplicateCount },
+    };
+  }
+  return null;
+};
+
+/**
+ * Splits long filenames into an ellipsized `head` and a fixed `tail` (preserving extension
+ * and trailing identifiers) so narrow mobile rows keep the distinguishing suffix visible.
+ */
+export const splitFilenameForMiddleEllipsis = (
+  filename: string
+): { head: string; tail: string } => {
+  const chars = Array.from(filename);
+  if (chars.length <= 14) {
+    return { head: '', tail: filename };
+  }
+  const tailCount = Math.min(12, Math.floor(chars.length / 2));
+  const splitAt = chars.length - tailCount;
+  return {
+    head: chars.slice(0, splitAt).join(''),
+    tail: chars.slice(splitAt).join(''),
+  };
+};
+
+/** Returns the adjacent item (`step`: -1 or +1) without wrapping around ends. */
+export const resolveAdjacentPreviewFile = <F>(
+  orderedFiles: readonly F[],
+  currentFile: F,
+  step: -1 | 1
+): F | null => {
+  const index = orderedFiles.indexOf(currentFile);
+  if (index === -1) {
+    return null;
+  }
+  const nextIndex = index + step;
+  if (nextIndex < 0 || nextIndex >= orderedFiles.length) {
+    return null;
+  }
+  return orderedFiles[nextIndex];
+};
+
+/**
+ * Selects the replacement file to display in the preview dialog after removing `removedFile`:
+ * prefers the next item at the same index, falling back to the previous item when deleting
+ * the last item, or `null` when no files remain.
+ */
+export const resolveNextPreviewAfterRemoval = <F>(
+  orderedFiles: readonly F[],
+  removedFile: F
+): F | null => {
+  const index = orderedFiles.indexOf(removedFile);
+  if (index === -1) {
+    return null;
+  }
+  const remaining = orderedFiles.filter((file) => file !== removedFile);
+  if (remaining.length === 0) {
+    return null;
+  }
+  return remaining[Math.min(index, remaining.length - 1)];
+};
+
+/**
+ * Resolves the target file eligible for removal from the preview dialog, or `null` while
+ * a preview transition is in flight or the displayed file is no longer in `orderedFiles`.
+ */
+export const resolveRemovablePreviewTarget = <F>({
+  orderedFiles,
+  renderedFile,
+  requestedFile,
+}: {
+  orderedFiles: readonly F[];
+  renderedFile: F | null;
+  requestedFile: F | null;
+}): F | null => {
+  if (requestedFile !== null && renderedFile !== requestedFile) {
+    return null;
+  }
+  const targetFile = renderedFile ?? requestedFile;
+  if (!targetFile || !orderedFiles.includes(targetFile)) {
+    return null;
+  }
+  return targetFile;
+};
+
+export interface NavigatorShareLike {
+  share?: (data: ShareData) => Promise<void>;
+  canShare?: (data?: ShareData) => boolean;
+}
+
+/** Returns whether the browser supports sharing `file` via the Web Share API. */
+export const canShareImageFile = (
+  file: File | null | undefined,
+  nav: NavigatorShareLike | undefined = typeof navigator !== 'undefined' ? navigator : undefined
+): boolean => {
+  if (!file || !nav || typeof nav.share !== 'function' || typeof nav.canShare !== 'function') {
+    return false;
+  }
+  try {
+    return nav.canShare({ files: [file] });
+  } catch {
+    return false;
+  }
+};
+
+export interface DragDataTransferLike {
+  types?: readonly string[] | DOMStringList | null;
+  dropEffect: DataTransfer['dropEffect'];
+}
+
+export interface GuardableDragEventLike {
+  defaultPrevented: boolean;
+  preventDefault: () => void;
+  dataTransfer?: DragDataTransferLike | null;
+}
+
+/** Returns whether a drag DataTransfer carries external files (`'Files'` in `types`). */
+export const hasExternalFilesDataTransfer = (
+  dataTransfer: Pick<DragDataTransferLike, 'types'> | null | undefined
+): boolean => Array.from(dataTransfer?.types ?? []).includes('Files');
+
+/**
+ * Prevents default browser file-open navigation when an external file drag/drop reaches `window`
+ * unhandled (`defaultPrevented === false`), and sets `dropEffect = 'none'` on `dragover`.
+ */
+export const guardWindowFileDragEvent = (
+  event: GuardableDragEventLike,
+  type: 'dragover' | 'drop'
+): boolean => {
+  if (event.defaultPrevented || !hasExternalFilesDataTransfer(event.dataTransfer)) {
+    return false;
+  }
+  event.preventDefault();
+  if (type === 'dragover' && event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'none';
+  }
+  return true;
+};
+
+export const MAX_RATIO_PREVIEW_SIDE = 720;
+
+export interface PreviewCropPlanParams {
+  sourceSize: ImageDimensions;
+  cropAuto: boolean;
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+  detectAutoCrop: () => AutoCropResult;
+}
+
+export interface PreviewCropPlanResult {
+  cropRect: PixelRect;
+  autoCropFallback: boolean;
+}
+
+/**
+ * Resolves the crop rectangle used for ratio-mask previewing on the first image, falling
+ * back cleanly to the full image bounds if auto-crop detection fails or manual bounds do
+ * not overlap the source image.
+ */
+export const resolveRatioPreviewCropRect = ({
+  sourceSize,
+  cropAuto,
+  cropX,
+  cropY,
+  cropWidth,
+  cropHeight,
+  detectAutoCrop,
+}: PreviewCropPlanParams): PreviewCropPlanResult => {
+  const fullRect: PixelRect = {
+    x: 0,
+    y: 0,
+    width: Math.max(1, Math.round(sourceSize.width)),
+    height: Math.max(1, Math.round(sourceSize.height)),
+  };
+  if (cropAuto) {
+    const autoResult = detectAutoCrop();
+    if (autoResult.status === 'ok') {
+      return { cropRect: autoResult.rect, autoCropFallback: false };
+    }
+    return { cropRect: fullRect, autoCropFallback: true };
+  }
+  const manualRect: PixelRect = { x: cropX, y: cropY, width: cropWidth, height: cropHeight };
+  if (
+    Number.isSafeInteger(cropX) &&
+    Number.isSafeInteger(cropY) &&
+    Number.isSafeInteger(cropWidth) &&
+    Number.isSafeInteger(cropHeight) &&
+    cropX >= 0 &&
+    cropY >= 0 &&
+    cropWidth > 0 &&
+    cropHeight > 0 &&
+    hasCropOverlapWithImage(manualRect, fullRect)
+  ) {
+    return { cropRect: manualRect, autoCropFallback: false };
+  }
+  return { cropRect: fullRect, autoCropFallback: false };
+};
+
+/** Computes scaled preview canvas dimensions capped to `maxSide` while preserving aspect ratio. */
+export const computeScaledPreviewDimensions = (
+  cropWidth: number,
+  cropHeight: number,
+  maxSide = MAX_RATIO_PREVIEW_SIDE
+): ImageDimensions => {
+  const safeW = Math.max(1, cropWidth);
+  const safeH = Math.max(1, cropHeight);
+  const scale = Math.min(1, maxSide / Math.max(safeW, safeH));
+  return {
+    width: Math.max(1, Math.round(safeW * scale)),
+    height: Math.max(1, Math.round(safeH * scale)),
+  };
+};
+
+export interface RatioPreviewSnapshot<TFile = unknown> {
+  status: 'ok' | 'error';
+  url: string;
+  autoCropFallback: boolean;
+  sourceFile: TFile;
+  cropKey: string;
+}
+
+export interface MaskAccordionPreviewState {
+  hasImages: boolean;
+  status: 'loading' | 'ok' | 'error';
+  url?: string;
+  autoCropFallback?: boolean;
+  isUpdating?: boolean;
+}
+
+/**
+ * Derives the mask-accordion ratio preview state, retaining the previous valid preview
+ * image while a replacement builds so the accordion height does not jump mid-edit.
+ */
+export const resolveMaskAccordionPreviewState = <TFile>({
+  hasImages,
+  previewSourceImage,
+  activeCropKey,
+  cachedPreview,
+}: {
+  hasImages: boolean;
+  previewSourceImage: TFile | null;
+  activeCropKey: string;
+  cachedPreview: RatioPreviewSnapshot<TFile> | null;
+}): MaskAccordionPreviewState => {
+  if (!hasImages || !previewSourceImage) {
+    return { hasImages: false, status: 'loading' };
+  }
+
+  const isExactMatch =
+    cachedPreview !== null &&
+    cachedPreview.sourceFile === previewSourceImage &&
+    cachedPreview.cropKey === activeCropKey;
+
+  if (isExactMatch) {
+    if (cachedPreview.status === 'error') {
+      return { hasImages: true, status: 'error' };
+    }
+    if (cachedPreview.url) {
+      return {
+        hasImages: true,
+        status: 'ok',
+        url: cachedPreview.url,
+        autoCropFallback: cachedPreview.autoCropFallback,
+        isUpdating: false,
+      };
+    }
+    return { hasImages: true, status: 'loading' };
+  }
+
+  if (cachedPreview?.status === 'ok' && cachedPreview.url) {
+    return {
+      hasImages: true,
+      status: 'ok',
+      url: cachedPreview.url,
+      autoCropFallback: cachedPreview.autoCropFallback,
+      isUpdating: true,
+    };
+  }
+
+  return { hasImages: true, status: 'loading' };
 };

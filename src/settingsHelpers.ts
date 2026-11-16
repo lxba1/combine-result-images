@@ -112,11 +112,13 @@ export const DEFAULT_SETTINGS: ImageSettings = {
   selfMaskRatioRect: SELF_MASK_PRESETS.name,
 };
 
-export const createDefaultSettings = (): ImageSettings => ({
-  ...DEFAULT_SETTINGS,
-  maskRatioRect: { ...DEFAULT_SETTINGS.maskRatioRect },
-  selfMaskRatioRect: { ...DEFAULT_SETTINGS.selfMaskRatioRect },
+export const cloneSettings = (settings: ImageSettings): ImageSettings => ({
+  ...settings,
+  maskRatioRect: { ...settings.maskRatioRect },
+  selfMaskRatioRect: { ...settings.selfMaskRatioRect },
 });
+
+export const createDefaultSettings = (): ImageSettings => cloneSettings(DEFAULT_SETTINGS);
 
 const CROP_COORD_KEYS = new Set<keyof ImageSettings>([
   'cropX',
@@ -157,28 +159,56 @@ const isAutoManagedPixelCoordKey = (
 };
 
 /**
- * Returns whether user-facing settings match `DEFAULT_SETTINGS`, ignoring pixel coordinates
- * that are auto-computed at runtime (`crop*` when auto-crop is enabled, and `mask*`/`selfMask*`
- * when disabled or in `'ratio'`/`'ocr'` mode).
+ * Compares two `ImageSettings` objects while ignoring pixel coordinates that are auto-computed
+ * at runtime (`crop*` when auto-crop is enabled, and `mask*`/`selfMask*` when disabled or
+ * in `'ratio'`/`'ocr'` mode).
  */
-export const areSettingsDefault = (current: ImageSettings): boolean =>
+export const areSettingsEqual = (a: ImageSettings, b: ImageSettings): boolean =>
   (Object.keys(DEFAULT_SETTINGS) as (keyof ImageSettings)[]).every((key) => {
-    if (isAutoManagedPixelCoordKey(key, current)) {
+    if (isAutoManagedPixelCoordKey(key, a) && isAutoManagedPixelCoordKey(key, b)) {
       return true;
     }
     if (key === 'maskRatioRect' || key === 'selfMaskRatioRect') {
-      return isRatioRectEqual(current[key], DEFAULT_SETTINGS[key]);
+      return isRatioRectEqual(a[key], b[key]);
     }
     if (key === 'bgColor' || key === 'maskColor' || key === 'selfMaskColor') {
-      const normalizedCurrent = normalizeHexColor(current[key]);
-      const normalizedDefault = normalizeHexColor(DEFAULT_SETTINGS[key]);
-      if (normalizedCurrent && normalizedDefault) {
-        return normalizedCurrent === normalizedDefault;
+      const normalizedA = normalizeHexColor(a[key]);
+      const normalizedB = normalizeHexColor(b[key]);
+      if (normalizedA && normalizedB) {
+        return normalizedA === normalizedB;
       }
-      return current[key].trim().toLowerCase() === DEFAULT_SETTINGS[key].toLowerCase();
+      return a[key].trim().toLowerCase() === b[key].trim().toLowerCase();
     }
-    return current[key] === DEFAULT_SETTINGS[key];
+    return a[key] === b[key];
   });
+
+/**
+ * Returns whether user-facing settings match `DEFAULT_SETTINGS`, ignoring runtime auto coordinates.
+ */
+export const areSettingsDefault = (current: ImageSettings): boolean =>
+  areSettingsEqual(current, DEFAULT_SETTINGS);
+
+export type ResultStaleReason = 'none' | 'settings' | 'images' | 'both';
+
+/**
+ * Determines whether an existing processed result is stale relative to the current
+ * settings and selected image list.
+ */
+export const getResultStaleReason = <T>(params: {
+  currentSettings: ImageSettings;
+  snapshotSettings: ImageSettings;
+  currentImages: readonly T[];
+  snapshotImages: readonly T[];
+}): ResultStaleReason => {
+  const settingsChanged = !areSettingsEqual(params.currentSettings, params.snapshotSettings);
+  const imagesChanged =
+    params.currentImages.length !== params.snapshotImages.length ||
+    params.currentImages.some((item, index) => item !== params.snapshotImages[index]);
+  if (settingsChanged && imagesChanged) return 'both';
+  if (settingsChanged) return 'settings';
+  if (imagesChanged) return 'images';
+  return 'none';
+};
 
 /** Maps a detected crop rectangle `{ x, y, width, height }` onto `ImageSettings` crop fields. */
 export const cropRectToSettings = (
@@ -435,6 +465,68 @@ export const saveSettingsToStorage = (
   }
 };
 
+export type MaskTarget = 'mask' | 'selfMask';
+export type SettingsAccordionId = 'settings' | 'crop' | MaskTarget;
+
+export interface ErrorUiTarget {
+  accordions: SettingsAccordionId[];
+  fields: SettingFieldKey[];
+}
+
+export type SettingFieldKey =
+  | 'colCount'
+  | 'offsetX'
+  | 'bgColor'
+  | 'outputFormat'
+  | 'cropX'
+  | 'cropY'
+  | 'cropWidth'
+  | 'cropHeight'
+  | 'maskMode'
+  | 'maskColor'
+  | 'maskX'
+  | 'maskY'
+  | 'maskWidth'
+  | 'maskHeight'
+  | 'maskRatioRect.rx0'
+  | 'maskRatioRect.ry0'
+  | 'maskRatioRect.rx1'
+  | 'maskRatioRect.ry1'
+  | 'selfMaskMode'
+  | 'selfMaskColor'
+  | 'selfMaskX'
+  | 'selfMaskY'
+  | 'selfMaskWidth'
+  | 'selfMaskHeight'
+  | 'selfMaskRatioRect.rx0'
+  | 'selfMaskRatioRect.ry0'
+  | 'selfMaskRatioRect.rx1'
+  | 'selfMaskRatioRect.ry1';
+
+export type FieldTuple4 = readonly [
+  SettingFieldKey,
+  SettingFieldKey,
+  SettingFieldKey,
+  SettingFieldKey,
+];
+
+export const CROP_FIELD_KEYS: FieldTuple4 = ['cropX', 'cropY', 'cropWidth', 'cropHeight'];
+
+export const getMaskCoordFieldKeys = (target: MaskTarget): FieldTuple4 =>
+  target === 'mask'
+    ? ['maskX', 'maskY', 'maskWidth', 'maskHeight']
+    : ['selfMaskX', 'selfMaskY', 'selfMaskWidth', 'selfMaskHeight'];
+
+export const getMaskRatioFieldKeys = (target: MaskTarget): FieldTuple4 =>
+  target === 'mask'
+    ? ['maskRatioRect.rx0', 'maskRatioRect.ry0', 'maskRatioRect.rx1', 'maskRatioRect.ry1']
+    : [
+        'selfMaskRatioRect.rx0',
+        'selfMaskRatioRect.ry0',
+        'selfMaskRatioRect.rx1',
+        'selfMaskRatioRect.ry1',
+      ];
+
 export type SettingsValidationResult =
   | { valid: true }
   | {
@@ -445,6 +537,8 @@ export type SettingsValidationResult =
         | 'alert_invalid_crop_setting'
         | 'alert_invalid_mask_area'
         | 'alert_invalid_color_setting';
+      accordion: SettingsAccordionId;
+      fields: SettingFieldKey[];
     };
 
 const getOrderedClampedRatio = (rect: RatioRect): RatioRect | null => {
@@ -479,92 +573,205 @@ export const commitRatioRectField = (
   return getOrderedClampedRatio(nextRect) ?? nextRect;
 };
 
-const isPositiveRatioRect = (rect: RatioRect): boolean => {
-  const ordered = getOrderedClampedRatio(rect);
-  return ordered !== null && ordered.rx1 > ordered.rx0 && ordered.ry1 > ordered.ry0;
-};
-
 const isSafeIntInRange = (value: number, min: number, max: number): boolean =>
   Number.isSafeInteger(value) && value >= min && value <= max;
 
-const isValidManualMask = (x: number, y: number, width: number, height: number): boolean =>
-  Number.isSafeInteger(x) &&
-  Number.isSafeInteger(y) &&
-  Number.isSafeInteger(width) &&
-  Number.isSafeInteger(height) &&
-  x >= 0 &&
-  y >= 0 &&
-  width > 0 &&
-  height > 0;
+const getInvalidPixelRectFields = (
+  rect: { x: number; y: number; width: number; height: number },
+  fieldKeys: FieldTuple4
+): SettingFieldKey[] => {
+  const invalid: SettingFieldKey[] = [];
+  if (!Number.isSafeInteger(rect.x) || rect.x < 0) invalid.push(fieldKeys[0]);
+  if (!Number.isSafeInteger(rect.y) || rect.y < 0) invalid.push(fieldKeys[1]);
+  if (!Number.isSafeInteger(rect.width) || rect.width <= 0) invalid.push(fieldKeys[2]);
+  if (!Number.isSafeInteger(rect.height) || rect.height <= 0) invalid.push(fieldKeys[3]);
+  return invalid;
+};
+
+const getInvalidRatioRectFields = (
+  rect: RatioRect,
+  fieldKeys: FieldTuple4
+): SettingFieldKey[] => {
+  const [rx0Key, ry0Key, rx1Key, ry1Key] = fieldKeys;
+  const invalid: SettingFieldKey[] = [];
+  const x0Finite = Number.isFinite(rect.rx0);
+  const x1Finite = Number.isFinite(rect.rx1);
+  if (!x0Finite) invalid.push(rx0Key);
+  if (!x1Finite) invalid.push(rx1Key);
+  if (x0Finite && x1Finite && clamp01(rect.rx0) === clamp01(rect.rx1)) {
+    invalid.push(rx0Key, rx1Key);
+  }
+
+  const y0Finite = Number.isFinite(rect.ry0);
+  const y1Finite = Number.isFinite(rect.ry1);
+  if (!y0Finite) invalid.push(ry0Key);
+  if (!y1Finite) invalid.push(ry1Key);
+  if (y0Finite && y1Finite && clamp01(rect.ry0) === clamp01(rect.ry1)) {
+    invalid.push(ry0Key, ry1Key);
+  }
+  return invalid;
+};
+
+const validateMaskGroup = (params: {
+  target: MaskTarget;
+  enabled: boolean;
+  mode: MaskMode;
+  color: string;
+  manualRect: PixelRect;
+  ratioRect: RatioRect;
+}): SettingsValidationResult | null => {
+  if (!params.enabled) {
+    return null;
+  }
+  if (!normalizeHexColor(params.color)) {
+    return {
+      valid: false,
+      alertKey: 'alert_invalid_color_setting',
+      accordion: params.target,
+      fields: [params.target === 'mask' ? 'maskColor' : 'selfMaskColor'],
+    };
+  }
+  if (params.mode === 'manual') {
+    const invalidFields = getInvalidPixelRectFields(
+      params.manualRect,
+      getMaskCoordFieldKeys(params.target)
+    );
+    if (invalidFields.length > 0) {
+      return {
+        valid: false,
+        alertKey: 'alert_invalid_mask_area',
+        accordion: params.target,
+        fields: invalidFields,
+      };
+    }
+  }
+  if (params.mode === 'ratio') {
+    const invalidFields = getInvalidRatioRectFields(
+      params.ratioRect,
+      getMaskRatioFieldKeys(params.target)
+    );
+    if (invalidFields.length > 0) {
+      return {
+        valid: false,
+        alertKey: 'alert_invalid_mask_area',
+        accordion: params.target,
+        fields: invalidFields,
+      };
+    }
+  }
+  return null;
+};
 
 /**
  * Validates minimum preconditions on `ImageSettings` right before image processing starts:
  * column/offset bounds, opaque hex colors, positive manual crop dimensions, and positive
- * area for enabled manual or ratio masks.
+ * area for enabled manual or ratio masks, returning the target accordion and fields on failure.
  */
 export const validateSettingsBeforeProcess = (
   settings: ImageSettings
 ): SettingsValidationResult => {
   if (!isSafeIntInRange(settings.colCount, MIN_COL_COUNT, MAX_COL_COUNT)) {
-    return { valid: false, alertKey: 'alert_columns_must_be_positive' };
+    return {
+      valid: false,
+      alertKey: 'alert_columns_must_be_positive',
+      accordion: 'settings',
+      fields: ['colCount'],
+    };
   }
   if (
     !isSafeIntInRange(settings.offsetX, MIN_OFFSET_PX, MAX_OFFSET_PX) ||
     !isSafeIntInRange(settings.offsetY, MIN_OFFSET_PX, MAX_OFFSET_PX)
   ) {
-    return { valid: false, alertKey: 'alert_offset_cannot_be_empty_or_negative' };
+    return {
+      valid: false,
+      alertKey: 'alert_offset_cannot_be_empty_or_negative',
+      accordion: 'settings',
+      fields: ['offsetX'],
+    };
   }
   if (!normalizeHexColor(settings.bgColor)) {
-    return { valid: false, alertKey: 'alert_invalid_color_setting' };
+    return {
+      valid: false,
+      alertKey: 'alert_invalid_color_setting',
+      accordion: 'settings',
+      fields: ['bgColor'],
+    };
   }
   if (!settings.cropAuto) {
-    if (
-      !Number.isSafeInteger(settings.cropX) ||
-      !Number.isSafeInteger(settings.cropY) ||
-      !Number.isSafeInteger(settings.cropWidth) ||
-      !Number.isSafeInteger(settings.cropHeight) ||
-      settings.cropX < 0 ||
-      settings.cropY < 0 ||
-      settings.cropWidth <= 0 ||
-      settings.cropHeight <= 0
-    ) {
-      return { valid: false, alertKey: 'alert_invalid_crop_setting' };
+    const invalidCropFields = getInvalidPixelRectFields(
+      {
+        x: settings.cropX,
+        y: settings.cropY,
+        width: settings.cropWidth,
+        height: settings.cropHeight,
+      },
+      CROP_FIELD_KEYS
+    );
+    if (invalidCropFields.length > 0) {
+      return {
+        valid: false,
+        alertKey: 'alert_invalid_crop_setting',
+        accordion: 'crop',
+        fields: invalidCropFields,
+      };
     }
   }
-  if (settings.maskEnabled) {
-    if (!normalizeHexColor(settings.maskColor)) {
-      return { valid: false, alertKey: 'alert_invalid_color_setting' };
-    }
-    if (
-      settings.maskMode === 'manual' &&
-      !isValidManualMask(settings.maskX, settings.maskY, settings.maskWidth, settings.maskHeight)
-    ) {
-      return { valid: false, alertKey: 'alert_invalid_mask_area' };
-    }
-    if (settings.maskMode === 'ratio' && !isPositiveRatioRect(settings.maskRatioRect)) {
-      return { valid: false, alertKey: 'alert_invalid_mask_area' };
-    }
+
+  const enemyError = validateMaskGroup({
+    target: 'mask',
+    enabled: settings.maskEnabled,
+    mode: settings.maskMode,
+    color: settings.maskColor,
+    manualRect: {
+      x: settings.maskX,
+      y: settings.maskY,
+      width: settings.maskWidth,
+      height: settings.maskHeight,
+    },
+    ratioRect: settings.maskRatioRect,
+  });
+  if (enemyError) {
+    return enemyError;
   }
-  if (settings.selfMaskEnabled) {
-    if (!normalizeHexColor(settings.selfMaskColor)) {
-      return { valid: false, alertKey: 'alert_invalid_color_setting' };
-    }
-    if (
-      settings.selfMaskMode === 'manual' &&
-      !isValidManualMask(
-        settings.selfMaskX,
-        settings.selfMaskY,
-        settings.selfMaskWidth,
-        settings.selfMaskHeight
-      )
-    ) {
-      return { valid: false, alertKey: 'alert_invalid_mask_area' };
-    }
-    if (settings.selfMaskMode === 'ratio' && !isPositiveRatioRect(settings.selfMaskRatioRect)) {
-      return { valid: false, alertKey: 'alert_invalid_mask_area' };
-    }
+
+  const selfError = validateMaskGroup({
+    target: 'selfMask',
+    enabled: settings.selfMaskEnabled,
+    mode: settings.selfMaskMode,
+    color: settings.selfMaskColor,
+    manualRect: {
+      x: settings.selfMaskX,
+      y: settings.selfMaskY,
+      width: settings.selfMaskWidth,
+      height: settings.selfMaskHeight,
+    },
+    ratioRect: settings.selfMaskRatioRect,
+  });
+  if (selfError) {
+    return selfError;
   }
+
   return { valid: true };
+};
+
+/**
+ * Maps an invalid `MontageSizeEvaluation` reason to the settings accordion and fields
+ * responsible for the output dimensions.
+ */
+export const resolveCanvasSizeErrorUiTarget = (
+  reason: MontageSizeEvaluation['reason'],
+  cropAuto = true
+): ErrorUiTarget => {
+  if (reason === 'exceeds_webp_dimension') {
+    return { accordions: ['settings'], fields: ['outputFormat', 'colCount'] };
+  }
+  if (!cropAuto) {
+    return {
+      accordions: ['settings', 'crop'],
+      fields: ['colCount', 'offsetX', 'cropWidth', 'cropHeight'],
+    };
+  }
+  return { accordions: ['settings'], fields: ['colCount', 'offsetX'] };
 };
 
 /**
@@ -635,3 +842,40 @@ export const hasCropOverlapWithImage = (
     width: imageBounds.width,
     height: imageBounds.height,
   }) !== null;
+
+/** Formats a normalized 0..1 ratio value as a compact percentage string (e.g., `0.785` -> `78.5%`). */
+export const formatRatioPercent = (value: number): string => {
+  if (!Number.isFinite(value)) {
+    return '0%';
+  }
+  const clamped = clamp01(value);
+  const percent = Number((clamped * 100).toFixed(1));
+  return `${percent}%`;
+};
+
+export interface RatioMaskOverlayBox {
+  leftPct: number;
+  topPct: number;
+  widthPct: number;
+  heightPct: number;
+}
+
+/**
+ * Converts a normalized `RatioRect` into percentage CSS positioning (`0..100`)
+ * over a cropped preview image, returning `null` when invalid or zero-area.
+ */
+export const computeRatioMaskOverlayBox = (
+  ratio: RatioRect
+): RatioMaskOverlayBox | null => {
+  const ordered = getOrderedClampedRatio(ratio);
+  if (!ordered || ordered.rx1 <= ordered.rx0 || ordered.ry1 <= ordered.ry0) {
+    return null;
+  }
+  const toPercent = (v: number): number => Math.round(v * 1_000_000) / 10_000;
+  return {
+    leftPct: toPercent(ordered.rx0),
+    topPct: toPercent(ordered.ry0),
+    widthPct: toPercent(ordered.rx1 - ordered.rx0),
+    heightPct: toPercent(ordered.ry1 - ordered.ry0),
+  };
+};
