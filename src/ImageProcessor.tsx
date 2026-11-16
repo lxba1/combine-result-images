@@ -62,6 +62,7 @@ import {
   renderMontageToBlob,
   resolveActionButtonVariants,
   resolveAdjacentPreviewFile,
+  resolveFileSelectionNotice,
   resolveMaskAccordionPreviewState,
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
@@ -1049,7 +1050,7 @@ const ImageProcessor: React.FC = () => {
   const [fileListExpanded, setFileListExpanded] = useState(true);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const [fileSelectionNotice, setFileSelectionNotice] = useState<{
-    severity: 'info' | 'warning';
+    severity: 'info' | 'warning' | 'error';
     message: string;
   } | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -1346,36 +1347,29 @@ const ImageProcessor: React.FC = () => {
   const addImageFiles = (incoming: File[]) => {
     if (isProcessing || incoming.length === 0) return;
     const merged = mergeInputImageFiles(images, incoming);
-    if (merged.addedCount === 0 && merged.duplicateCount === 0) {
-      setFileSelectionNotice(null);
-      reportProcessError(t('alert_no_supported_images'));
-      return;
-    }
     if (merged.addedCount > 0) {
       setImages(merged.files);
+    }
+    if (merged.addedCount > 0 || images.length === 0) {
       setProcessError(null);
     }
-    if (merged.unsupportedCount > 0 && merged.duplicateCount > 0) {
-      setFileSelectionNotice({
-        severity: 'warning',
-        message: t('notice_skipped_both', {
-          unsupportedCount: merged.unsupportedCount,
-          duplicateCount: merged.duplicateCount,
-        }),
-      });
-    } else if (merged.unsupportedCount > 0) {
-      setFileSelectionNotice({
-        severity: 'warning',
-        message: t('notice_skipped_unsupported', { count: merged.unsupportedCount }),
-      });
-    } else if (merged.duplicateCount > 0) {
-      setFileSelectionNotice({
-        severity: 'info',
-        message: t('notice_skipped_duplicate', { count: merged.duplicateCount }),
-      });
-    } else {
+    const notice = resolveFileSelectionNotice(merged);
+    if (!notice) {
       setFileSelectionNotice(null);
+      return;
     }
+    const message =
+      notice.messageKey === 'alert_no_supported_images'
+        ? t('alert_no_supported_images')
+        : notice.messageKey === 'notice_skipped_both'
+          ? t('notice_skipped_both', notice.params)
+          : notice.messageKey === 'notice_skipped_unsupported'
+            ? t('notice_skipped_unsupported', notice.params)
+            : t('notice_skipped_duplicate', notice.params);
+    setFileSelectionNotice({
+      severity: notice.severity,
+      message,
+    });
   };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2458,6 +2452,7 @@ const ImageProcessor: React.FC = () => {
                 <Alert
                   severity={fileSelectionNotice.severity}
                   onClose={() => setFileSelectionNotice(null)}
+                  closeText={t('close')}
                   sx={{ mt: 1.5 }}
                 >
                   {fileSelectionNotice.message}
@@ -2678,6 +2673,7 @@ const ImageProcessor: React.FC = () => {
                   ref={processAlertRef}
                   severity="error"
                   onClose={() => setProcessError(null)}
+                  closeText={t('close')}
                   sx={{ mt: 2, whiteSpace: 'pre-line' }}
                 >
                   {processError.message}
@@ -2756,6 +2752,7 @@ const ImageProcessor: React.FC = () => {
                     <Alert
                       severity="warning"
                       onClose={() => setShareError(null)}
+                      closeText={t('close')}
                       sx={{ mt: 1.5 }}
                     >
                       {shareError}

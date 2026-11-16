@@ -24,6 +24,7 @@ import {
   renderMontageToBlob,
   resolveActionButtonVariants,
   resolveAdjacentPreviewFile,
+  resolveFileSelectionNotice,
   resolveMaskAccordionPreviewState,
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
@@ -1926,6 +1927,36 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
     assert.equal(allUnsupported.addedCount, 0);
     assert.equal(allUnsupported.unsupportedCount, 1);
     assert.equal(allUnsupported.duplicateCount, 0);
+
+    assert.deepEqual(resolveFileSelectionNotice(allUnsupported), {
+      severity: 'error',
+      messageKey: 'alert_no_supported_images',
+    });
+    assert.deepEqual(resolveFileSelectionNotice(mixed), {
+      severity: 'warning',
+      messageKey: 'notice_skipped_both',
+      params: { unsupportedCount: 1, duplicateCount: 1 },
+    });
+    assert.deepEqual(
+      resolveFileSelectionNotice(mergeInputImageFiles([], [f1, bad])),
+      {
+        severity: 'warning',
+        messageKey: 'notice_skipped_unsupported',
+        params: { count: 1 },
+      }
+    );
+    assert.deepEqual(
+      resolveFileSelectionNotice(mergeInputImageFiles([f1], [f1Duplicate])),
+      {
+        severity: 'info',
+        messageKey: 'notice_skipped_duplicate',
+        params: { count: 1 },
+      }
+    );
+    assert.equal(
+      resolveFileSelectionNotice(mergeInputImageFiles([f1], [f2])),
+      null
+    );
   });
 
   it('splits long filenames for middle ellipsis while keeping short names and surrogate pairs intact', () => {

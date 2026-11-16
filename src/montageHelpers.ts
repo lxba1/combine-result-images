@@ -1203,6 +1203,64 @@ export const mergeInputImageFiles = <F extends FileTypeLike & FileIdentityLike>(
   };
 };
 
+export type FileSelectionNoticeSpec =
+  | { severity: 'error'; messageKey: 'alert_no_supported_images' }
+  | {
+      severity: 'warning';
+      messageKey: 'notice_skipped_both';
+      params: { unsupportedCount: number; duplicateCount: number };
+    }
+  | {
+      severity: 'warning';
+      messageKey: 'notice_skipped_unsupported';
+      params: { count: number };
+    }
+  | {
+      severity: 'info';
+      messageKey: 'notice_skipped_duplicate';
+      params: { count: number };
+    };
+
+/**
+ * Classifies the outcome of an image-selection/drop batch into a single notice payload
+ * (error when every incoming file is unsupported, or skip summary warning/info).
+ */
+export const resolveFileSelectionNotice = (
+  merged: Pick<MergeInputImagesResult<unknown>, 'addedCount' | 'unsupportedCount' | 'duplicateCount'>
+): FileSelectionNoticeSpec | null => {
+  if (merged.addedCount === 0 && merged.duplicateCount === 0 && merged.unsupportedCount > 0) {
+    return {
+      severity: 'error',
+      messageKey: 'alert_no_supported_images',
+    };
+  }
+  if (merged.unsupportedCount > 0 && merged.duplicateCount > 0) {
+    return {
+      severity: 'warning',
+      messageKey: 'notice_skipped_both',
+      params: {
+        unsupportedCount: merged.unsupportedCount,
+        duplicateCount: merged.duplicateCount,
+      },
+    };
+  }
+  if (merged.unsupportedCount > 0) {
+    return {
+      severity: 'warning',
+      messageKey: 'notice_skipped_unsupported',
+      params: { count: merged.unsupportedCount },
+    };
+  }
+  if (merged.duplicateCount > 0) {
+    return {
+      severity: 'info',
+      messageKey: 'notice_skipped_duplicate',
+      params: { count: merged.duplicateCount },
+    };
+  }
+  return null;
+};
+
 /**
  * Splits long filenames into an ellipsized `head` and a fixed `tail` (preserving extension
  * and trailing identifiers) so narrow mobile rows keep the distinguishing suffix visible.
