@@ -11,11 +11,14 @@ import {
   MIN_OFFSET_PX,
   SETTINGS_STORAGE_KEY,
   areSettingsDefault,
+  areSettingsEqual,
+  cloneSettings,
   commitRatioRectField,
   computeRatioMaskRect,
   createDefaultSettings,
   cropRectToSettings,
   evaluateMontageCanvasSize,
+  getResultStaleReason,
   hasCropOverlapWithImage,
   intersectPixelRects,
   loadSettingsFromStorage,
@@ -231,6 +234,69 @@ describe('hex color normalization and default comparison', () => {
     assert.equal(
       areSettingsDefault({ ...createDefaultSettings(), maskColor: '#000000' }),
       false
+    );
+  });
+
+  it('compares settings snapshots and reports stale reason across settings and image list changes', () => {
+    const base = cloneSettings(createDefaultSettings());
+    base.maskRatioRect.rx0 = 0.25;
+    assert.notEqual(base.maskRatioRect.rx0, DEFAULT_SETTINGS.maskRatioRect.rx0);
+
+    const snapshot = cloneSettings(createDefaultSettings());
+    const fileA = { name: 'a.png' };
+    const fileB = { name: 'b.png' };
+    const snapshotImages = [fileA, fileB];
+
+    assert.equal(areSettingsEqual(snapshot, cloneSettings(snapshot)), true);
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: cloneSettings(snapshot),
+        snapshotSettings: snapshot,
+        currentImages: [fileA, fileB],
+        snapshotImages,
+      }),
+      'none'
+    );
+
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: { ...snapshot, outputFormat: 'png' },
+        snapshotSettings: snapshot,
+        currentImages: [fileA, fileB],
+        snapshotImages,
+      }),
+      'settings'
+    );
+
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: cloneSettings(snapshot),
+        snapshotSettings: snapshot,
+        currentImages: [fileA],
+        snapshotImages,
+      }),
+      'images'
+    );
+
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: { ...snapshot, colCount: 4 },
+        snapshotSettings: snapshot,
+        currentImages: [fileA],
+        snapshotImages,
+      }),
+      'both'
+    );
+
+    // Ignoring runtime auto-managed coordinates keeps snapshot fresh when cropAuto stays true
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: { ...snapshot, cropAuto: true, cropX: 99 },
+        snapshotSettings: { ...snapshot, cropAuto: true, cropX: 31 },
+        currentImages: [fileA, fileB],
+        snapshotImages,
+      }),
+      'none'
     );
   });
 });

@@ -112,11 +112,13 @@ export const DEFAULT_SETTINGS: ImageSettings = {
   selfMaskRatioRect: SELF_MASK_PRESETS.name,
 };
 
-export const createDefaultSettings = (): ImageSettings => ({
-  ...DEFAULT_SETTINGS,
-  maskRatioRect: { ...DEFAULT_SETTINGS.maskRatioRect },
-  selfMaskRatioRect: { ...DEFAULT_SETTINGS.selfMaskRatioRect },
+export const cloneSettings = (settings: ImageSettings): ImageSettings => ({
+  ...settings,
+  maskRatioRect: { ...settings.maskRatioRect },
+  selfMaskRatioRect: { ...settings.selfMaskRatioRect },
 });
+
+export const createDefaultSettings = (): ImageSettings => cloneSettings(DEFAULT_SETTINGS);
 
 const CROP_COORD_KEYS = new Set<keyof ImageSettings>([
   'cropX',
@@ -157,28 +159,56 @@ const isAutoManagedPixelCoordKey = (
 };
 
 /**
- * Returns whether user-facing settings match `DEFAULT_SETTINGS`, ignoring pixel coordinates
- * that are auto-computed at runtime (`crop*` when auto-crop is enabled, and `mask*`/`selfMask*`
- * when disabled or in `'ratio'`/`'ocr'` mode).
+ * Compares two `ImageSettings` objects while ignoring pixel coordinates that are auto-computed
+ * at runtime (`crop*` when auto-crop is enabled, and `mask*`/`selfMask*` when disabled or
+ * in `'ratio'`/`'ocr'` mode).
  */
-export const areSettingsDefault = (current: ImageSettings): boolean =>
+export const areSettingsEqual = (a: ImageSettings, b: ImageSettings): boolean =>
   (Object.keys(DEFAULT_SETTINGS) as (keyof ImageSettings)[]).every((key) => {
-    if (isAutoManagedPixelCoordKey(key, current)) {
+    if (isAutoManagedPixelCoordKey(key, a) && isAutoManagedPixelCoordKey(key, b)) {
       return true;
     }
     if (key === 'maskRatioRect' || key === 'selfMaskRatioRect') {
-      return isRatioRectEqual(current[key], DEFAULT_SETTINGS[key]);
+      return isRatioRectEqual(a[key], b[key]);
     }
     if (key === 'bgColor' || key === 'maskColor' || key === 'selfMaskColor') {
-      const normalizedCurrent = normalizeHexColor(current[key]);
-      const normalizedDefault = normalizeHexColor(DEFAULT_SETTINGS[key]);
-      if (normalizedCurrent && normalizedDefault) {
-        return normalizedCurrent === normalizedDefault;
+      const normalizedA = normalizeHexColor(a[key]);
+      const normalizedB = normalizeHexColor(b[key]);
+      if (normalizedA && normalizedB) {
+        return normalizedA === normalizedB;
       }
-      return current[key].trim().toLowerCase() === DEFAULT_SETTINGS[key].toLowerCase();
+      return a[key].trim().toLowerCase() === b[key].trim().toLowerCase();
     }
-    return current[key] === DEFAULT_SETTINGS[key];
+    return a[key] === b[key];
   });
+
+/**
+ * Returns whether user-facing settings match `DEFAULT_SETTINGS`, ignoring runtime auto coordinates.
+ */
+export const areSettingsDefault = (current: ImageSettings): boolean =>
+  areSettingsEqual(current, DEFAULT_SETTINGS);
+
+export type ResultStaleReason = 'none' | 'settings' | 'images' | 'both';
+
+/**
+ * Determines whether an existing processed result is stale relative to the current
+ * settings and selected image list.
+ */
+export const getResultStaleReason = <T>(params: {
+  currentSettings: ImageSettings;
+  snapshotSettings: ImageSettings;
+  currentImages: readonly T[];
+  snapshotImages: readonly T[];
+}): ResultStaleReason => {
+  const settingsChanged = !areSettingsEqual(params.currentSettings, params.snapshotSettings);
+  const imagesChanged =
+    params.currentImages.length !== params.snapshotImages.length ||
+    params.currentImages.some((item, index) => item !== params.snapshotImages[index]);
+  if (settingsChanged && imagesChanged) return 'both';
+  if (settingsChanged) return 'settings';
+  if (imagesChanged) return 'images';
+  return 'none';
+};
 
 /** Maps a detected crop rectangle `{ x, y, width, height }` onto `ImageSettings` crop fields. */
 export const cropRectToSettings = (

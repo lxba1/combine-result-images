@@ -29,9 +29,11 @@ import {
   MIN_OFFSET_PX,
   SELF_MASK_PRESETS,
   areSettingsDefault,
+  cloneSettings,
   commitRatioRectField,
   createDefaultSettings,
   evaluateMontageCanvasSize,
+  getResultStaleReason,
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
@@ -694,6 +696,8 @@ interface ProcessedMontageResult {
   height: number;
   fileSizeBytes: number;
   formatLabel: string;
+  settingsSnapshot: ImageSettings;
+  imagesSnapshot: File[];
 }
 
 const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
@@ -920,11 +924,12 @@ const ImageProcessor: React.FC = () => {
 
   const handleRemoveImage = (targetFile: File) => {
     if (isProcessing) return;
-    if (images.length <= 1) {
+    const nextImages = images.filter((file) => file !== targetFile);
+    if (nextImages.length === 0) {
       setFileListExpanded(true);
+      setProcessedResult(null);
     }
-    setImages((prev) => prev.filter((file) => file !== targetFile));
-    setProcessedResult(null);
+    setImages(nextImages);
     setProcessError(null);
   };
 
@@ -998,10 +1003,6 @@ const ImageProcessor: React.FC = () => {
 
     if (settings[name as keyof ImageSettings] === newValue) {
         return;
-    }
-
-    if (name === 'outputFormat') {
-        setProcessedResult(null);
     }
 
     setSettings(prev => ({
@@ -1329,6 +1330,8 @@ const ImageProcessor: React.FC = () => {
         height: sizeEval.height,
         fileSizeBytes: montageBlob.size,
         formatLabel: formatOutputFormatLabel(ext),
+        settingsSnapshot: cloneSettings(finalSettings),
+        imagesSnapshot: [...images],
       });
 
     } catch (error) {
@@ -1429,6 +1432,25 @@ const ImageProcessor: React.FC = () => {
     processingProgress.total > 0
       ? processingProgress
       : null;
+
+  const resultStaleReason = useMemo(() => {
+    if (!processedResult) return 'none';
+    return getResultStaleReason({
+      currentSettings: settings,
+      snapshotSettings: processedResult.settingsSnapshot,
+      currentImages: images,
+      snapshotImages: processedResult.imagesSnapshot,
+    });
+  }, [processedResult, settings, images]);
+
+  const staleAlertMessage =
+    resultStaleReason === 'settings'
+      ? t('result_stale_settings')
+      : resultStaleReason === 'images'
+        ? t('result_stale_images')
+        : resultStaleReason === 'both'
+          ? t('result_stale_both')
+          : null;
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, pb: 20, minHeight: '100vh' }}>
@@ -1868,6 +1890,11 @@ const ImageProcessor: React.FC = () => {
                       })}
                     </Typography>
                   </Box>
+                  {staleAlertMessage && (
+                    <Alert severity="warning" sx={{ mb: 1.5 }}>
+                      {staleAlertMessage}
+                    </Alert>
+                  )}
                   <Box
                     component="img"
                     src={processedResult.url}
