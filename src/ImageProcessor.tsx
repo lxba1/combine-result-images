@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
+import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, FormHelperText, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
 import { useColorScheme, useTheme, styled } from '@mui/material/styles';
 import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
@@ -536,6 +536,7 @@ const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>)
 
 interface MaskAccordionProps {
   title: string;
+  description: string;
   expanded: boolean;
   onAccordionChange: (event: React.SyntheticEvent, isExpanded: boolean) => void;
   enabledName: 'maskEnabled' | 'selfMaskEnabled';
@@ -561,6 +562,7 @@ interface MaskAccordionProps {
 /** Shared settings accordion for target and self masking controls with compact 2-column pairing. */
 const MaskAccordion: React.FC<MaskAccordionProps> = ({
   title,
+  description,
   expanded,
   onAccordionChange,
   enabledName,
@@ -596,6 +598,9 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
         </Box>
       </AccordionSummary>
       <AccordionDetails>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+          {description}
+        </Typography>
         <FormControlLabel
           disabled={disabled}
           control={<Switch checked={enabled} disabled={disabled} onChange={onSettingChange} name={enabledName} />}
@@ -615,6 +620,11 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
             </Grid>
             <Grid size={{ xs: 6 }}>
               <ColorSettingField label={t('color')} name={colorName} value={colorValue} disabled={disabled} error={hasError(colorName)} onCommit={onColorCommit} />
+            </Grid>
+            <Grid size={{ xs: 12 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                {t(`mask_mode_${mode}_help`)}
+              </Typography>
             </Grid>
             {mode === 'ratio' ? (
               <>
@@ -1461,16 +1471,21 @@ const ImageProcessor: React.FC = () => {
   return (
     <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}>
-          <Typography
-            variant="h4"
-            component="h1"
-            sx={{ fontSize: { xs: '1.375rem', sm: '1.875rem', md: '2.125rem' } }}
-          >
-            {t('title')}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-            v{packageJson.version}
+        <Box sx={{ minWidth: 0 }}>
+          <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+            <Typography
+              variant="h4"
+              component="h1"
+              sx={{ fontSize: { xs: '1.375rem', sm: '1.875rem', md: '2.125rem' } }}
+            >
+              {t('title')}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+              v{packageJson.version}
+            </Typography>
+          </Box>
+          <Typography variant="body2" color="text.secondary">
+            {t('subtitle')}
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
@@ -1500,6 +1515,7 @@ const ImageProcessor: React.FC = () => {
                         return <MenuItem key={val} value={val}>{val}</MenuItem>;
                       })}
                     </Select>
+                    <FormHelperText>{t('columns_help')}</FormHelperText>
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 6 }}>
@@ -1511,6 +1527,7 @@ const ImageProcessor: React.FC = () => {
                         return <MenuItem key={val} value={val}>{val}</MenuItem>;
                       })}
                     </Select>
+                    <FormHelperText>{t('offset_help')}</FormHelperText>
                   </FormControl>
                 </Grid>
                 <Grid size={{ xs: 12 }}>
@@ -1558,6 +1575,11 @@ const ImageProcessor: React.FC = () => {
                       disabled={isProcessing || settings.outputFormat === 'png'}
                     />
                   </Box>
+                  {settings.outputFormat === 'png' && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                      {t('quality_png_help')}
+                    </Typography>
+                  )}
                 </Grid>
               </Grid>
             </AccordionDetails>
@@ -1578,6 +1600,14 @@ const ImageProcessor: React.FC = () => {
                 control={<Switch checked={settings.cropAuto} disabled={isProcessing} onChange={handleSettingChange} name="cropAuto" />}
                 label={t('auto_mode')}
               />
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                {t('crop_auto_help')}
+              </Typography>
+              {settings.cropAuto && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                  {t('crop_auto_coords_help')}
+                </Typography>
+              )}
               <Grid container spacing={2} sx={{ mt: 1 }}>
                 <Grid size={{ xs: 6 }}><NumericTextField label={t('x')} name="cropX" value={settings.cropX} min={0} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropX')} onCommit={handleNumericSettingCommit} /></Grid>
                 <Grid size={{ xs: 6 }}><NumericTextField label={t('y')} name="cropY" value={settings.cropY} min={0} integer disabled={isProcessing || settings.cropAuto} error={hasFieldError('cropY')} onCommit={handleNumericSettingCommit} /></Grid>
@@ -1589,6 +1619,7 @@ const ImageProcessor: React.FC = () => {
 
           <MaskAccordion
             title={t('masking')}
+            description={t('mask_description')}
             expanded={expandedAccordions.mask}
             onAccordionChange={handleAccordionChange('mask')}
             enabledName="maskEnabled"
@@ -1613,6 +1644,7 @@ const ImageProcessor: React.FC = () => {
 
           <MaskAccordion
             title={t('self_mask')}
+            description={t('self_mask_description')}
             expanded={expandedAccordions.selfMask}
             onAccordionChange={handleAccordionChange('selfMask')}
             enabledName="selfMaskEnabled"
@@ -1657,7 +1689,7 @@ const ImageProcessor: React.FC = () => {
                   display: 'flex',
                   alignItems: 'flex-start',
                   gap: 0.75,
-                  mb: 2,
+                  mb: images.length === 0 ? 1 : 2,
                   color: 'text.secondary',
                 }}
               >
@@ -1666,6 +1698,11 @@ const ImageProcessor: React.FC = () => {
                   {t('local_processing_notice')}
                 </Typography>
               </Box>
+              {images.length === 0 && (
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                  {t('upload_intro')}
+                </Typography>
+              )}
               <Button
                 variant={buttonVariants.upload}
                 component="label"
