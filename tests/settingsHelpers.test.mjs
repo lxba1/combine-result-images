@@ -14,6 +14,7 @@ import {
   areSettingsEqual,
   cloneSettings,
   commitRatioRectField,
+  computeRatioMaskOverlayBox,
   computeRatioMaskRect,
   createDefaultSettings,
   cropRectToSettings,
@@ -759,5 +760,27 @@ describe('formatRatioPercent', () => {
     assert.equal(formatRatioPercent(-0.2), '0%');
     assert.equal(formatRatioPercent(1.5), '100%');
     assert.equal(formatRatioPercent(Number.NaN), '0%');
+  });
+});
+
+describe('computeRatioMaskOverlayBox', () => {
+  it('computes clamped CSS percentages and rejects collapsed or invalid rectangles', () => {
+    const normal = computeRatioMaskOverlayBox({ rx0: 0.785, ry0: 0.14, rx1: 1, ry1: 0.2 });
+    assert.ok(normal !== null);
+    assert.ok(Math.abs(normal.leftPct - 78.5) < 1e-9);
+    assert.ok(Math.abs(normal.topPct - 14) < 1e-9);
+    assert.ok(Math.abs(normal.widthPct - 21.5) < 1e-9);
+    assert.ok(Math.abs(normal.heightPct - 6) < 1e-9);
+
+    assert.deepEqual(computeRatioMaskOverlayBox({ rx0: 0.5, ry0: 0.4, rx1: 0.2, ry1: 0.1 }), {
+      leftPct: 20,
+      topPct: 10,
+      widthPct: 30,
+      heightPct: 30,
+    });
+
+    assert.equal(computeRatioMaskOverlayBox({ rx0: 0.5, ry0: 0.1, rx1: 0.5, ry1: 0.4 }), null);
+    assert.equal(computeRatioMaskOverlayBox({ rx0: 0.1, ry0: 0.2, rx1: 0.5, ry1: 0.2 }), null);
+    assert.equal(computeRatioMaskOverlayBox({ rx0: Number.NaN, ry0: 0.1, rx1: 0.5, ry1: 0.4 }), null);
   });
 });

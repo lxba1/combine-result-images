@@ -7,6 +7,7 @@ import {
   OCR_MEMORY_RELEASE_DELAY_MS,
   buildTileMaskRects,
   canShareImageFile,
+  computeScaledPreviewDimensions,
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
@@ -26,6 +27,7 @@ import {
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveRatioPreviewCropRect,
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
 } from '../src/montageHelpers.ts';
@@ -2048,5 +2050,81 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
     assert.equal(guardWindowFileDragEvent(textDragOver, 'dragover'), false);
     assert.equal(textDragOver.wasPrevented(), false);
     assert.equal(textDragOver.dataTransfer.dropEffect, 'move');
+  });
+
+  it('resolves crop regions and scaled preview dimensions safely with fallbacks', () => {
+    const sourceSize = { width: 2400, height: 1080 };
+
+    // Auto-crop succeeds
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: true,
+        cropX: 0,
+        cropY: 0,
+        cropWidth: 100,
+        cropHeight: 100,
+        detectAutoCrop: () => ({ status: 'ok', rect: { x: 100, y: 20, width: 2000, height: 1000 } }),
+      }),
+      {
+        cropRect: { x: 100, y: 20, width: 2000, height: 1000 },
+        autoCropFallback: false,
+      }
+    );
+
+    // Auto-crop fails -> full image with fallback flag
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: true,
+        cropX: 0,
+        cropY: 0,
+        cropWidth: 100,
+        cropHeight: 100,
+        detectAutoCrop: () => ({ status: 'not_found' }),
+      }),
+      {
+        cropRect: { x: 0, y: 0, width: 2400, height: 1080 },
+        autoCropFallback: true,
+      }
+    );
+
+    // Valid manual crop
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: false,
+        cropX: 50,
+        cropY: 10,
+        cropWidth: 1600,
+        cropHeight: 900,
+        detectAutoCrop: () => ({ status: 'not_found' }),
+      }),
+      {
+        cropRect: { x: 50, y: 10, width: 1600, height: 900 },
+        autoCropFallback: false,
+      }
+    );
+
+    // Out-of-bounds manual crop -> full image safely without fallback flag
+    assert.deepEqual(
+      resolveRatioPreviewCropRect({
+        sourceSize,
+        cropAuto: false,
+        cropX: 5000,
+        cropY: 10,
+        cropWidth: 400,
+        cropHeight: 300,
+        detectAutoCrop: () => ({ status: 'not_found' }),
+      }),
+      {
+        cropRect: { x: 0, y: 0, width: 2400, height: 1080 },
+        autoCropFallback: false,
+      }
+    );
+
+    assert.deepEqual(computeScaledPreviewDimensions(2000, 1000, 720), { width: 720, height: 360 });
+    assert.deepEqual(computeScaledPreviewDimensions(400, 300, 720), { width: 400, height: 300 });
+    assert.deepEqual(computeScaledPreviewDimensions(500, 1000, 720), { width: 360, height: 720 });
   });
 });

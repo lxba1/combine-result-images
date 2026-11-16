@@ -9,6 +9,7 @@ import packageJson from '../package.json';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
 import {
   type OcrSessionController,
+  canvasToBlob,
   isAbortError,
   releaseOcrResources,
   runOcrMaskDetection,
@@ -31,10 +32,12 @@ import {
   areSettingsDefault,
   cloneSettings,
   commitRatioRectField,
+  computeRatioMaskOverlayBox,
   createDefaultSettings,
   evaluateMontageCanvasSize,
   formatRatioPercent,
   getResultStaleReason,
+  intersectPixelRects,
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
@@ -47,6 +50,7 @@ import {
   ImageDecodeError,
   ImageResolutionMismatchError,
   canShareImageFile,
+  computeScaledPreviewDimensions,
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
@@ -61,6 +65,7 @@ import {
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveRatioPreviewCropRect,
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
   type ImageDimensions,
@@ -571,6 +576,14 @@ interface MaskAccordionProps {
   rectValues: { x: number; y: number; width: number; height: number };
   colorName: 'maskColor' | 'selfMaskColor';
   colorValue: string;
+  ratioPreview?: {
+    hasImages: boolean;
+    status: 'loading' | 'ok' | 'error';
+    url?: string;
+    width?: number;
+    height?: number;
+    autoCropFallback?: boolean;
+  };
   disabled?: boolean;
   errorFields?: ReadonlySet<SettingFieldKey>;
   onSettingChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<number | string>) => void;
@@ -597,6 +610,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   rectValues,
   colorName,
   colorValue,
+  ratioPreview,
   disabled = false,
   errorFields,
   onSettingChange,
@@ -607,6 +621,8 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
 }) => {
   const { t } = useTranslation();
   const hasError = (field: SettingFieldKey): boolean => Boolean(errorFields?.has(field));
+  const overlayBox = computeRatioMaskOverlayBox(ratioRect);
+  const normalizedOverlayColor = normalizeHexColor(colorValue) ?? '#000000';
   const ratioAxes: ReadonlyArray<{
     axis: 'horizontal' | 'vertical';
     labelId: string;
@@ -671,6 +687,102 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
             </Grid>
             {mode === 'ratio' ? (
               <>
+                <Grid size={{ xs: 12 }}>
+                  <Box
+                    sx={{
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                      p: 1,
+                      bgcolor: 'background.default',
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: 'block', mb: 0.75 }}
+                    >
+                      {t('ratio_preview_title')}
+                    </Typography>
+                    {!ratioPreview?.hasImages ? (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                        {t('ratio_preview_empty')}
+                      </Typography>
+                    ) : ratioPreview.status === 'error' ? (
+                      <Typography variant="caption" color="error" sx={{ display: 'block' }}>
+                        {t('ratio_preview_error')}
+                      </Typography>
+                    ) : ratioPreview.status === 'ok' && ratioPreview.url ? (
+                      <>
+                        <Box
+                          sx={{
+                            position: 'relative',
+                            width: 'fit-content',
+                            maxWidth: '100%',
+                            mx: 'auto',
+                            overflow: 'hidden',
+                            borderRadius: 0.5,
+                            border: 1,
+                            borderColor: 'divider',
+                            bgcolor: 'action.hover',
+                            lineHeight: 0,
+                          }}
+                        >
+                          <Box
+                            component="img"
+                            src={ratioPreview.url}
+                            alt={t('ratio_preview_alt')}
+                            width={ratioPreview.width}
+                            height={ratioPreview.height}
+                            sx={{
+                              display: 'block',
+                              maxWidth: '100%',
+                              maxHeight: { xs: 220, sm: 250 },
+                              width: 'auto',
+                              height: 'auto',
+                              userSelect: 'none',
+                              pointerEvents: 'none',
+                            }}
+                          />
+                          {overlayBox && (
+                            <Box
+                              aria-hidden="true"
+                              sx={{
+                                position: 'absolute',
+                                left: `${overlayBox.leftPct}%`,
+                                top: `${overlayBox.topPct}%`,
+                                width: `${overlayBox.widthPct}%`,
+                                height: `${overlayBox.heightPct}%`,
+                                bgcolor: normalizedOverlayColor,
+                                opacity: 0.85,
+                                boxSizing: 'border-box',
+                                border: '1px solid rgba(255, 255, 255, 0.85)',
+                                boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.45)',
+                                pointerEvents: 'none',
+                              }}
+                            />
+                          )}
+                        </Box>
+                        {ratioPreview.autoCropFallback && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
+                            {t('ratio_preview_autocrop_fallback')}
+                          </Typography>
+                        )}
+                      </>
+                    ) : (
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          py: 2,
+                        }}
+                      >
+                        <CircularProgress size={18} />
+                      </Box>
+                    )}
+                  </Box>
+                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <FormControl fullWidth size="small" disabled={disabled}>
                     <InputLabel id={`${ratioKey}-preset-label`}>{t('preset')}</InputLabel>
@@ -805,6 +917,121 @@ const preloadPreviewImage = (url: string): Promise<ImageDimensions> =>
     img.src = url;
   });
 
+type RatioPreviewBuildResult =
+  | {
+      status: 'ok';
+      url: string;
+      width: number;
+      height: number;
+      autoCropFallback: boolean;
+    }
+  | { status: 'error' };
+
+interface RatioPreviewState {
+  status: 'ok' | 'error';
+  url: string;
+  width: number;
+  height: number;
+  autoCropFallback: boolean;
+  sourceFile: File;
+  cropKey: string;
+}
+
+const buildCroppedRatioPreview = async (params: {
+  file: File;
+  cropAuto: boolean;
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+  shouldCancel: () => boolean;
+}): Promise<RatioPreviewBuildResult | null> => {
+  let bitmap: ImageBitmap | null = null;
+  let tempCanvas: HTMLCanvasElement | null = null;
+  try {
+    const decoded = await decodeImageWithFallback<File, ImageBitmap>(params.file);
+    bitmap = decoded;
+    if (params.shouldCancel()) {
+      return null;
+    }
+    const sourceSize: ImageDimensions = {
+      width: decoded.width,
+      height: decoded.height,
+    };
+    const { cropRect, autoCropFallback } = resolveRatioPreviewCropRect({
+      sourceSize,
+      cropAuto: params.cropAuto,
+      cropX: params.cropX,
+      cropY: params.cropY,
+      cropWidth: params.cropWidth,
+      cropHeight: params.cropHeight,
+      detectAutoCrop: () => detectAutoCropFromImage(decoded),
+    });
+    if (params.shouldCancel()) {
+      return null;
+    }
+    const previewSize = computeScaledPreviewDimensions(cropRect.width, cropRect.height);
+    tempCanvas = document.createElement('canvas');
+    tempCanvas.width = previewSize.width;
+    tempCanvas.height = previewSize.height;
+    const ctx = tempCanvas.getContext('2d', { alpha: false });
+    if (!ctx) {
+      return { status: 'error' };
+    }
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, previewSize.width, previewSize.height);
+    const clippedSource = intersectPixelRects(cropRect, {
+      x: 0,
+      y: 0,
+      width: sourceSize.width,
+      height: sourceSize.height,
+    });
+    if (clippedSource) {
+      const scaleX = previewSize.width / cropRect.width;
+      const scaleY = previewSize.height / cropRect.height;
+      ctx.drawImage(
+        decoded,
+        clippedSource.x,
+        clippedSource.y,
+        clippedSource.width,
+        clippedSource.height,
+        (clippedSource.x - cropRect.x) * scaleX,
+        (clippedSource.y - cropRect.y) * scaleY,
+        clippedSource.width * scaleX,
+        clippedSource.height * scaleY
+      );
+    }
+    decoded.close();
+    bitmap = null;
+
+    const blob = await canvasToBlob(tempCanvas);
+    if (params.shouldCancel()) {
+      return null;
+    }
+    return {
+      status: 'ok',
+      url: URL.createObjectURL(blob),
+      width: previewSize.width,
+      height: previewSize.height,
+      autoCropFallback,
+    };
+  } catch (error) {
+    if (params.shouldCancel()) {
+      return null;
+    }
+    console.warn('Failed to build ratio preview image:', error);
+    return { status: 'error' };
+  } finally {
+    if (bitmap) {
+      bitmap.close();
+    }
+    if (tempCanvas) {
+      tempCanvas.width = 1;
+      tempCanvas.height = 1;
+    }
+  }
+};
+
 const ImageProcessor: React.FC = () => {
   const { t, i18n } = useTranslation();
   const theme = useTheme();
@@ -827,6 +1054,7 @@ const ImageProcessor: React.FC = () => {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
   const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
+  const [ratioPreview, setRatioPreview] = useState<RatioPreviewState | null>(null);
   const [processedResult, setProcessedResult] = useState<ProcessedMontageResult | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
@@ -855,6 +1083,7 @@ const ImageProcessor: React.FC = () => {
   const fileDragDepthRef = useRef(0);
   const previewRequestIdRef = useRef(0);
   const requestedPreviewFileRef = useRef<File | null>(null);
+  const ratioPreviewKeyRef = useRef<{ file: File; cropKey: string } | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const processAlertRef = useRef<HTMLDivElement>(null);
   const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
@@ -1022,6 +1251,95 @@ const ImageProcessor: React.FC = () => {
     [images, settings.sortOrder]
   );
 
+  const previewSourceImage = orderedImages[0] ?? null;
+  const activePreviewCropKey = settings.cropAuto
+    ? 'auto'
+    : `manual:${settings.cropX},${settings.cropY},${settings.cropWidth},${settings.cropHeight}`;
+  const needsRatioPreview =
+    Boolean(previewSourceImage) &&
+    ((expandedAccordions.mask && settings.maskEnabled && settings.maskMode === 'ratio') ||
+      (expandedAccordions.selfMask && settings.selfMaskEnabled && settings.selfMaskMode === 'ratio'));
+
+  useEffect(() => {
+    const url = ratioPreview?.url;
+    return () => {
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [ratioPreview]);
+
+  useEffect(() => {
+    if (!needsRatioPreview || !previewSourceImage) {
+      return;
+    }
+    if (
+      ratioPreviewKeyRef.current?.file === previewSourceImage &&
+      ratioPreviewKeyRef.current?.cropKey === activePreviewCropKey
+    ) {
+      return;
+    }
+    let cancelled = false;
+
+    void buildCroppedRatioPreview({
+      file: previewSourceImage,
+      cropAuto: settings.cropAuto,
+      cropX: settings.cropX,
+      cropY: settings.cropY,
+      cropWidth: settings.cropWidth,
+      cropHeight: settings.cropHeight,
+      shouldCancel: () => cancelled || !isMountedRef.current,
+    }).then((built) => {
+      if (cancelled || !isMountedRef.current) {
+        if (built?.status === 'ok') {
+          URL.revokeObjectURL(built.url);
+        }
+        return;
+      }
+      if (!built) {
+        return;
+      }
+      ratioPreviewKeyRef.current = {
+        file: previewSourceImage,
+        cropKey: activePreviewCropKey,
+      };
+      if (built.status === 'ok') {
+        setRatioPreview({
+          status: 'ok',
+          url: built.url,
+          width: built.width,
+          height: built.height,
+          autoCropFallback: built.autoCropFallback,
+          sourceFile: previewSourceImage,
+          cropKey: activePreviewCropKey,
+        });
+      } else {
+        setRatioPreview({
+          status: 'error',
+          url: '',
+          width: 0,
+          height: 0,
+          autoCropFallback: false,
+          sourceFile: previewSourceImage,
+          cropKey: activePreviewCropKey,
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    needsRatioPreview,
+    previewSourceImage,
+    activePreviewCropKey,
+    settings.cropAuto,
+    settings.cropX,
+    settings.cropY,
+    settings.cropWidth,
+    settings.cropHeight,
+  ]);
+
   const activeLocale = i18n.resolvedLanguage || i18n.language || undefined;
   const formatFileTimestamp = useMemo(
     () => createFileTimestampFormatter(activeLocale),
@@ -1080,6 +1398,7 @@ const ImageProcessor: React.FC = () => {
     if (isProcessing) return;
     previewRequestIdRef.current += 1;
     requestedPreviewFileRef.current = null;
+    ratioPreviewKeyRef.current = null;
     setImages([]);
     setProcessedResult(null);
     setShareError(null);
@@ -1089,14 +1408,17 @@ const ImageProcessor: React.FC = () => {
     setPreviewOpen(false);
     setRequestedPreviewFile(null);
     setRenderedPreview(null);
+    setRatioPreview(null);
   };
 
   const removeImageFile = (targetFile: File) => {
     const nextImages = images.filter((file) => file !== targetFile);
     if (nextImages.length === 0) {
+      ratioPreviewKeyRef.current = null;
       setFileListExpanded(true);
       setProcessedResult(null);
       setShareError(null);
+      setRatioPreview(null);
     }
     setImages(nextImages);
     setFileSelectionNotice(null);
@@ -1833,6 +2155,27 @@ const ImageProcessor: React.FC = () => {
   const canStepPreviewPrev = hasMultiplePreviewFiles && previewIndex > 0;
   const canStepPreviewNext = hasMultiplePreviewFiles && previewIndex < orderedImages.length - 1;
 
+  const matchedRatioPreview =
+    previewSourceImage &&
+    ratioPreview &&
+    ratioPreview.sourceFile === previewSourceImage &&
+    ratioPreview.cropKey === activePreviewCropKey
+      ? ratioPreview
+      : null;
+
+  const maskAccordionPreview = {
+    hasImages: orderedImages.length > 0,
+    status: !matchedRatioPreview
+      ? ('loading' as const)
+      : matchedRatioPreview.status === 'error'
+        ? ('error' as const)
+        : ('ok' as const),
+    url: matchedRatioPreview?.status === 'ok' ? matchedRatioPreview.url : undefined,
+    width: matchedRatioPreview?.status === 'ok' ? matchedRatioPreview.width : undefined,
+    height: matchedRatioPreview?.status === 'ok' ? matchedRatioPreview.height : undefined,
+    autoCropFallback: matchedRatioPreview?.autoCropFallback,
+  };
+
   return (
     <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
@@ -1998,6 +2341,7 @@ const ImageProcessor: React.FC = () => {
             rectValues={{ x: settings.maskX, y: settings.maskY, width: settings.maskWidth, height: settings.maskHeight }}
             colorName="maskColor"
             colorValue={settings.maskColor}
+            ratioPreview={maskAccordionPreview}
             disabled={isProcessing}
             errorFields={processError?.fields}
             onSettingChange={handleSettingChange}
@@ -2023,6 +2367,7 @@ const ImageProcessor: React.FC = () => {
             rectValues={{ x: settings.selfMaskX, y: settings.selfMaskY, width: settings.selfMaskWidth, height: settings.selfMaskHeight }}
             colorName="selfMaskColor"
             colorValue={settings.selfMaskColor}
+            ratioPreview={maskAccordionPreview}
             disabled={isProcessing}
             errorFields={processError?.fields}
             onSettingChange={handleSettingChange}

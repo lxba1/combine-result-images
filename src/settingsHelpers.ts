@@ -852,3 +852,30 @@ export const formatRatioPercent = (value: number): string => {
   const percent = Number((clamped * 100).toFixed(1));
   return `${percent}%`;
 };
+
+export interface RatioMaskOverlayBox {
+  leftPct: number;
+  topPct: number;
+  widthPct: number;
+  heightPct: number;
+}
+
+/**
+ * Converts a normalized `RatioRect` into percentage CSS positioning (`0..100`)
+ * over a cropped preview image, returning `null` when invalid or zero-area.
+ */
+export const computeRatioMaskOverlayBox = (
+  ratio: RatioRect
+): RatioMaskOverlayBox | null => {
+  const ordered = getOrderedClampedRatio(ratio);
+  if (!ordered || ordered.rx1 <= ordered.rx0 || ordered.ry1 <= ordered.ry0) {
+    return null;
+  }
+  const toPercent = (v: number): number => Math.round(v * 1_000_000) / 10_000;
+  return {
+    leftPct: toPercent(ordered.rx0),
+    topPct: toPercent(ordered.ry0),
+    widthPct: toPercent(ordered.rx1 - ordered.rx0),
+    heightPct: toPercent(ordered.ry1 - ordered.ry0),
+  };
+};

@@ -1,3 +1,4 @@
+import type { AutoCropResult } from './cropHelpers.ts';
 import {
   createAbortError,
   isAbortError,
@@ -1310,4 +1311,80 @@ export const guardWindowFileDragEvent = (
     event.dataTransfer.dropEffect = 'none';
   }
   return true;
+};
+
+export const MAX_RATIO_PREVIEW_SIDE = 720;
+
+export interface PreviewCropPlanParams {
+  sourceSize: ImageDimensions;
+  cropAuto: boolean;
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+  detectAutoCrop: () => AutoCropResult;
+}
+
+export interface PreviewCropPlanResult {
+  cropRect: PixelRect;
+  autoCropFallback: boolean;
+}
+
+/**
+ * Resolves the crop rectangle used for ratio-mask previewing on the first image, falling
+ * back cleanly to the full image bounds if auto-crop detection fails or manual bounds do
+ * not overlap the source image.
+ */
+export const resolveRatioPreviewCropRect = ({
+  sourceSize,
+  cropAuto,
+  cropX,
+  cropY,
+  cropWidth,
+  cropHeight,
+  detectAutoCrop,
+}: PreviewCropPlanParams): PreviewCropPlanResult => {
+  const fullRect: PixelRect = {
+    x: 0,
+    y: 0,
+    width: Math.max(1, Math.round(sourceSize.width)),
+    height: Math.max(1, Math.round(sourceSize.height)),
+  };
+  if (cropAuto) {
+    const autoResult = detectAutoCrop();
+    if (autoResult.status === 'ok') {
+      return { cropRect: autoResult.rect, autoCropFallback: false };
+    }
+    return { cropRect: fullRect, autoCropFallback: true };
+  }
+  const manualRect: PixelRect = { x: cropX, y: cropY, width: cropWidth, height: cropHeight };
+  if (
+    Number.isSafeInteger(cropX) &&
+    Number.isSafeInteger(cropY) &&
+    Number.isSafeInteger(cropWidth) &&
+    Number.isSafeInteger(cropHeight) &&
+    cropX >= 0 &&
+    cropY >= 0 &&
+    cropWidth > 0 &&
+    cropHeight > 0 &&
+    hasCropOverlapWithImage(manualRect, fullRect)
+  ) {
+    return { cropRect: manualRect, autoCropFallback: false };
+  }
+  return { cropRect: fullRect, autoCropFallback: false };
+};
+
+/** Computes scaled preview canvas dimensions capped to `maxSide` while preserving aspect ratio. */
+export const computeScaledPreviewDimensions = (
+  cropWidth: number,
+  cropHeight: number,
+  maxSide = MAX_RATIO_PREVIEW_SIDE
+): ImageDimensions => {
+  const safeW = Math.max(1, cropWidth);
+  const safeH = Math.max(1, cropHeight);
+  const scale = Math.min(1, maxSide / Math.max(safeW, safeH));
+  return {
+    width: Math.max(1, Math.round(safeW * scale)),
+    height: Math.max(1, Math.round(safeH * scale)),
+  };
 };
