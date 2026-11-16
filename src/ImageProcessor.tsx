@@ -1319,20 +1319,11 @@ const ImageProcessor: React.FC = () => {
     setProcessError(null);
   };
 
-  const handleSliderChange = (name: string) => (_event: Event, value: number | number[]) => {
-    if (isProcessing) return;
-    const numValue = value as number;
-    if (name === 'offsetX') {
-        if (settings.offsetX === numValue && settings.offsetY === numValue) return;
-    } else if (settings[name as keyof ImageSettings] === numValue) {
-        return;
+  const handleSliderChange = (name: 'quality') => (_event: Event, value: number | number[]) => {
+    if (isProcessing || typeof value !== 'number' || settings[name] === value) {
+      return;
     }
-    setSettings(prev => {
-        if (name === 'offsetX') { // If the offset slider is moved, update both X and Y
-            return { ...prev, offsetX: numValue, offsetY: numValue };
-        }
-        return { ...prev, [name]: numValue };
-    });
+    setSettings((prev) => (prev[name] === value ? prev : { ...prev, [name]: value }));
     setProcessError(null);
   };
 
