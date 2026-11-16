@@ -1048,3 +1048,53 @@ export const getMemoryReleaseDelayMs = ({
   }
   return ocrSessionStarted ? OCR_MEMORY_RELEASE_DELAY_MS : MONTAGE_MEMORY_RELEASE_DELAY_MS;
 };
+
+/** Formats a byte count into a human-readable B / KB / MB string. */
+export const formatFileSize = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} B`;
+  }
+  const kb = bytes / 1024;
+  if (kb < 1024) {
+    return `${kb.toFixed(1)} KB`;
+  }
+  return `${(kb / 1024).toFixed(2)} MB`;
+};
+
+const EXTENSION_TO_FORMAT_LABEL: Record<string, string> = {
+  webp: 'WebP',
+  png: 'PNG',
+  jpg: 'JPEG',
+  jpeg: 'JPEG',
+};
+
+/** Maps an output file extension to a display format label. */
+export const formatOutputFormatLabel = (extension: string): string => {
+  const normalized = extension.trim().toLowerCase();
+  return EXTENSION_TO_FORMAT_LABEL[normalized] ?? normalized.toUpperCase();
+};
+
+export interface ResultScrollDecisionParams {
+  isCompactViewport: boolean;
+  resultTop: number;
+  viewportHeight: number;
+}
+
+/**
+ * Determines whether the page should scroll to the result section after processing completes.
+ * Avoids scrolling on desktop layouts or when the result section starts comfortably inside the
+ * upper viewport on mobile/compact screens.
+ */
+export const shouldScrollToResult = ({
+  isCompactViewport,
+  resultTop,
+  viewportHeight,
+}: ResultScrollDecisionParams): boolean => {
+  if (!isCompactViewport || !Number.isFinite(resultTop) || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+    return false;
+  }
+  return resultTop < 0 || resultTop > viewportHeight * 0.65;
+};

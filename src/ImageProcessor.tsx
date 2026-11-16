@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse } from '@mui/material';
-import { useColorScheme, styled } from '@mui/material/styles';
+import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
+import { useColorScheme, useTheme, styled } from '@mui/material/styles';
 import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
@@ -44,11 +44,14 @@ import {
   ImageDecodeError,
   ImageResolutionMismatchError,
   decodeImageWithFallback,
+  formatFileSize,
+  formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
   prepareMontagePlan,
   renderMontageToBlob,
   resolveMontageAbortUiTarget,
   resolveOutputExtension,
+  shouldScrollToResult,
   type ImageDimensions,
 } from './montageHelpers.ts';
 
@@ -684,6 +687,15 @@ type ProcessingProgressState =
   | { phase: 'encoding' }
   | { phase: 'releasing' };
 
+interface ProcessedMontageResult {
+  url: string;
+  filename: string;
+  width: number;
+  height: number;
+  fileSizeBytes: number;
+  formatLabel: string;
+}
+
 const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
   if (signal.aborted || ms <= 0) {
     return Promise.resolve();
@@ -703,6 +715,9 @@ const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
 
 const ImageProcessor: React.FC = () => {
   const { t, i18n } = useTranslation();
+  const theme = useTheme();
+  const isCompactViewport = useMediaQuery(theme.breakpoints.down('md'));
+  const isCompactViewportRef = useRef(isCompactViewport);
 
   const [settings, setSettings] = useState<ImageSettings>(() => loadSettingsFromStorage());
 
@@ -712,8 +727,7 @@ const ImageProcessor: React.FC = () => {
 
   const [images, setImages] = useState<File[]>([]);
   const [fileListExpanded, setFileListExpanded] = useState(true);
-  const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
-  const [downloadFilename, setDownloadFilename] = useState<string>('tile.webp');
+  const [processedResult, setProcessedResult] = useState<ProcessedMontageResult | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgressState | null>(null);
@@ -832,21 +846,43 @@ const ImageProcessor: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    isCompactViewportRef.current = isCompactViewport;
+  }, [isCompactViewport]);
+
+  useEffect(() => {
     if (processError) {
       processAlertRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [processError]);
 
   useEffect(() => {
+    if (!processedResult || !resultRef.current || !isCompactViewportRef.current) {
+      return;
+    }
+    const rect = resultRef.current.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+    if (
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: rect.top,
+        viewportHeight,
+      })
+    ) {
+      resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [processedResult]);
+
+  useEffect(() => {
     // This effect manages the lifecycle of the generated object URL.
     // It runs when the component unmounts or before the effect runs again
-    // (i.e., when processedImageUrl changes).
+    // (i.e., when processedResult changes).
+    const url = processedResult?.url;
     return () => {
-      if (processedImageUrl && processedImageUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(processedImageUrl);
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
       }
     };
-  }, [processedImageUrl]);
+  }, [processedResult]);
 
   const orderedImages = useMemo(
     () => sortImageFiles(images, settings.sortOrder),
@@ -867,7 +903,7 @@ const ImageProcessor: React.FC = () => {
     const files = event.target.files;
     if (files && files.length > 0) {
       setImages(Array.from(files));
-      setProcessedImageUrl(null); // This will also trigger the cleanup effect for the old URL
+      setProcessedResult(null); // This will also trigger the cleanup effect for the old URL
       setProcessError(null);
     }
     // Reset input value so picking the exact same file(s) again still triggers onChange
@@ -877,7 +913,7 @@ const ImageProcessor: React.FC = () => {
   const handleClearImages = () => {
     if (isProcessing) return;
     setImages([]);
-    setProcessedImageUrl(null);
+    setProcessedResult(null);
     setProcessError(null);
     setFileListExpanded(true);
   };
@@ -888,7 +924,7 @@ const ImageProcessor: React.FC = () => {
       setFileListExpanded(true);
     }
     setImages((prev) => prev.filter((file) => file !== targetFile));
-    setProcessedImageUrl(null);
+    setProcessedResult(null);
     setProcessError(null);
   };
 
@@ -965,7 +1001,7 @@ const ImageProcessor: React.FC = () => {
     }
 
     if (name === 'outputFormat') {
-        setProcessedImageUrl(null);
+        setProcessedResult(null);
     }
 
     setSettings(prev => ({
@@ -1052,7 +1088,7 @@ const ImageProcessor: React.FC = () => {
     setIsProcessing(true);
     setIsCancelling(false);
     setProcessError(null);
-    setProcessedImageUrl(null);
+    setProcessedResult(null);
     setProcessingProgress({ phase: 'preparing' });
 
     // Add a short delay to allow the UI to update (e.g., show progress) before blocking the main thread.
@@ -1286,8 +1322,14 @@ const ImageProcessor: React.FC = () => {
         return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
       };
       const ext = resolveOutputExtension(montageBlob.type, finalSettings.outputFormat);
-      setDownloadFilename(`tile-${getTimestamp()}.${ext}`);
-      setProcessedImageUrl(URL.createObjectURL(montageBlob));
+      setProcessedResult({
+        url: URL.createObjectURL(montageBlob),
+        filename: `tile-${getTimestamp()}.${ext}`,
+        width: sizeEval.width,
+        height: sizeEval.height,
+        fileSizeBytes: montageBlob.size,
+        formatLabel: formatOutputFormatLabel(ext),
+      });
 
     } catch (error) {
       if (signal.aborted || isAbortError(error)) {
@@ -1800,22 +1842,56 @@ const ImageProcessor: React.FC = () => {
                   />
                 )}
               </Box>
-              {processedImageUrl && (
+              {processedResult && (
                 <Box sx={{ mt: 3, overflowAnchor: 'none' }} ref={resultRef}>
-                  <Typography variant="h6" gutterBottom>{t('result')}</Typography>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'baseline',
+                      justifyContent: 'space-between',
+                      gap: 1,
+                      mb: 1,
+                    }}
+                  >
+                    <Typography variant="h6">{t('result')}</Typography>
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ fontVariantNumeric: 'tabular-nums' }}
+                    >
+                      {t('result_summary', {
+                        width: processedResult.width.toLocaleString(),
+                        height: processedResult.height.toLocaleString(),
+                        size: formatFileSize(processedResult.fileSizeBytes),
+                        format: processedResult.formatLabel,
+                      })}
+                    </Typography>
+                  </Box>
                   <Box
                     component="img"
-                    src={processedImageUrl}
+                    src={processedResult.url}
                     alt="Processed Montage"
+                    width={processedResult.width}
+                    height={processedResult.height}
                     sx={{
                       display: 'block',
                       maxWidth: '100%',
+                      height: 'auto',
                       border: 1,
                       borderColor: 'divider',
                       borderRadius: 1,
                     }}
                   />
-                  <Button variant="contained" href={processedImageUrl} download={downloadFilename} fullWidth size="large" sx={{ mt: 2 }} startIcon={<DownloadIcon />}>
+                  <Button
+                    variant="contained"
+                    href={processedResult.url}
+                    download={processedResult.filename}
+                    fullWidth
+                    size="large"
+                    sx={{ mt: 2 }}
+                    startIcon={<DownloadIcon />}
+                  >
                     {t('download_image')}
                   </Button>
                 </Box>

@@ -55,6 +55,7 @@
   "remove_file": "Remove {{name}}",
   "process_images": "Process Images",
   "result": "Result",
+  "result_summary": "{{width}} x {{height}} px · {{size}} · {{format}}",
   "download_image": "Save Image",
   "alert_select_images_first": "Please select images first.",
   "alert_columns_must_be_positive": "Columns must be a positive number.",

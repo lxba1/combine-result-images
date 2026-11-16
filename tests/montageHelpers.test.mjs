@@ -7,6 +7,8 @@ import {
   OCR_MEMORY_RELEASE_DELAY_MS,
   buildTileMaskRects,
   decodeImageWithFallback,
+  formatFileSize,
+  formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
   parseImageDimensionsFromBytes,
   prepareMontagePlan,
@@ -15,6 +17,7 @@ import {
   renderMontageToBlob,
   resolveMontageAbortUiTarget,
   resolveOutputExtension,
+  shouldScrollToResult,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
 
@@ -1748,6 +1751,96 @@ describe('getMemoryReleaseDelayMs', () => {
         reloadTriggered: true,
       }),
       0
+    );
+  });
+});
+
+describe('result summary formatting and scroll decision', () => {
+  it('formats byte sizes into B, KB, and MB', () => {
+    assert.equal(formatFileSize(0), '0 B');
+    assert.equal(formatFileSize(-10), '0 B');
+    assert.equal(formatFileSize(Number.NaN), '0 B');
+    assert.equal(formatFileSize(512), '512 B');
+    assert.equal(formatFileSize(1023), '1023 B');
+    assert.equal(formatFileSize(1024), '1.0 KB');
+    assert.equal(formatFileSize(1536), '1.5 KB');
+    assert.equal(formatFileSize(1024 * 1024), '1.00 MB');
+    assert.equal(formatFileSize(2.5 * 1024 * 1024), '2.50 MB');
+  });
+
+  it('normalizes output format display labels', () => {
+    assert.equal(formatOutputFormatLabel('webp'), 'WebP');
+    assert.equal(formatOutputFormatLabel('png'), 'PNG');
+    assert.equal(formatOutputFormatLabel('jpg'), 'JPEG');
+    assert.equal(formatOutputFormatLabel('jpeg'), 'JPEG');
+    assert.equal(formatOutputFormatLabel(' PNG '), 'PNG');
+    assert.equal(formatOutputFormatLabel('avif'), 'AVIF');
+  });
+
+  it('only scrolls on compact viewports when the result section is away from view', () => {
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: false,
+        resultTop: 1850,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: false,
+        resultTop: -200,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 200,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 520,
+        viewportHeight: 800,
+      }),
+      false
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 521,
+        viewportHeight: 800,
+      }),
+      true
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 1850,
+        viewportHeight: 667,
+      }),
+      true
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: -10,
+        viewportHeight: 667,
+      }),
+      true
+    );
+    assert.equal(
+      shouldScrollToResult({
+        isCompactViewport: true,
+        resultTop: 100,
+        viewportHeight: 0,
+      }),
+      false
     );
   });
 });
