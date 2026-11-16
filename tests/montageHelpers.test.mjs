@@ -10,15 +10,20 @@ import {
   formatFileSize,
   formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
+  isSupportedInputImageFile,
+  mergeImageFiles,
   parseImageDimensionsFromBytes,
   prepareMontagePlan,
   readEncodedImageDimensions,
   renderMontageTiles,
   renderMontageToBlob,
   resolveActionButtonVariants,
+  resolveAdjacentPreviewFile,
   resolveMontageAbortUiTarget,
+  resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
   shouldScrollToResult,
+  splitFilenameForMiddleEllipsis,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
 
@@ -1866,5 +1871,80 @@ describe('result summary formatting and scroll decision', () => {
       resolveActionButtonVariants({ hasImages: false, hasFreshResult: true }),
       { upload: 'contained', process: 'outlined', download: 'contained' }
     );
+  });
+});
+
+describe('file list selection, deduplication, and middle ellipsis helpers', () => {
+  it('accepts PNG and JPEG files by MIME type or extension fallback', () => {
+    assert.equal(isSupportedInputImageFile({ name: 'a.png', type: 'image/png' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'b.jpg', type: 'image/jpeg' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'c.JPEG', type: '' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'd.PNG', type: '' }), true);
+    assert.equal(isSupportedInputImageFile({ name: 'e.webp', type: 'image/webp' }), false);
+    assert.equal(isSupportedInputImageFile({ name: 'notes.txt', type: '' }), false);
+  });
+
+  it('appends new files while deduplicating against existing and incoming duplicates', () => {
+    const f1 = { name: 'a.png', size: 100, lastModified: 1 };
+    const f2 = { name: 'b.png', size: 200, lastModified: 2 };
+    const f1Duplicate = { name: 'a.png', size: 100, lastModified: 1 };
+    const f3 = { name: 'c.png', size: 300, lastModified: 3 };
+    const f3Duplicate = { name: 'c.png', size: 300, lastModified: 3 };
+
+    const merged = mergeImageFiles([f1, f2], [f1Duplicate, f3, f3Duplicate]);
+    assert.deepEqual(merged.files, [f1, f2, f3]);
+    assert.equal(merged.addedCount, 1);
+    assert.equal(merged.skippedDuplicateCount, 2);
+
+    const onlyDuplicates = mergeImageFiles([f1], [f1Duplicate]);
+    assert.deepEqual(onlyDuplicates.files, [f1]);
+    assert.equal(onlyDuplicates.addedCount, 0);
+    assert.equal(onlyDuplicates.skippedDuplicateCount, 1);
+  });
+
+  it('splits long filenames for middle ellipsis while keeping short names and surrogate pairs intact', () => {
+    assert.deepEqual(splitFilenameForMiddleEllipsis('short.png'), {
+      head: '',
+      tail: 'short.png',
+    });
+
+    const longName = 'Screenshot_2026-11-16-180001.png';
+    const split = splitFilenameForMiddleEllipsis(longName);
+    assert.equal(split.head + split.tail, longName);
+    assert.equal(split.tail, '6-180001.png');
+
+    const emojiName = 'スクリーンショット_😀😀😀😀_123456.png';
+    const emojiSplit = splitFilenameForMiddleEllipsis(emojiName);
+    assert.equal(emojiSplit.head + emojiSplit.tail, emojiName);
+    assert.equal(Array.from(emojiSplit.tail).length, 12);
+  });
+
+  it('steps preview files cleanly without wrapping around ends', () => {
+    const f1 = { name: '1.png' };
+    const f2 = { name: '2.png' };
+    const f3 = { name: '3.png' };
+    const files = [f1, f2, f3];
+
+    assert.equal(resolveAdjacentPreviewFile([f1], f1, -1), null);
+    assert.equal(resolveAdjacentPreviewFile([f1], f1, 1), null);
+    assert.equal(resolveAdjacentPreviewFile(files, f1, -1), null);
+    assert.equal(resolveAdjacentPreviewFile(files, f1, 1), f2);
+    assert.equal(resolveAdjacentPreviewFile(files, f2, -1), f1);
+    assert.equal(resolveAdjacentPreviewFile(files, f2, 1), f3);
+    assert.equal(resolveAdjacentPreviewFile(files, f3, -1), f2);
+    assert.equal(resolveAdjacentPreviewFile(files, f3, 1), null);
+    assert.equal(resolveAdjacentPreviewFile(files, { name: 'missing.png' }, 1), null);
+  });
+
+  it('advances to next file (or previous if last) after removing previewed file', () => {
+    const f1 = { name: '1.png' };
+    const f2 = { name: '2.png' };
+    const f3 = { name: '3.png' };
+
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f1), f2);
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f2), f3);
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2, f3], f3), f2);
+    assert.equal(resolveNextPreviewAfterRemoval([f1], f1), null);
+    assert.equal(resolveNextPreviewAfterRemoval([f1, f2], { name: 'missing.png' }), null);
   });
 });

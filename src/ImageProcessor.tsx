@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, FormHelperText, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
-import { useColorScheme, useTheme, styled } from '@mui/material/styles';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon } from '@mui/icons-material';
+import { Alert, Button, ButtonBase, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, FormHelperText, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
+import { useColorScheme, useTheme, styled, alpha } from '@mui/material/styles';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon, ChevronLeft as ChevronLeftIcon, ChevronRight as ChevronRightIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
@@ -49,14 +49,30 @@ import {
   formatFileSize,
   formatOutputFormatLabel,
   getMemoryReleaseDelayMs,
+  isSupportedInputImageFile,
+  mergeImageFiles,
   prepareMontagePlan,
   renderMontageToBlob,
   resolveActionButtonVariants,
+  resolveAdjacentPreviewFile,
   resolveMontageAbortUiTarget,
+  resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
   shouldScrollToResult,
+  splitFilenameForMiddleEllipsis,
   type ImageDimensions,
 } from './montageHelpers.ts';
+
+const fileKeyMap = new WeakMap<File, number>();
+let nextFileKeyId = 1;
+const getFileKey = (file: File): number => {
+  let id = fileKeyMap.get(file);
+  if (id === undefined) {
+    id = nextFileKeyId++;
+    fileKeyMap.set(file, id);
+  }
+  return id;
+};
 
 const compareFileNames = (a: File, b: File) =>
   a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -728,6 +744,37 @@ const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
   });
 };
 
+interface RenderedPreviewState {
+  file: File;
+  url: string;
+  dimensions: ImageDimensions | null;
+  error: boolean;
+}
+
+const preloadPreviewImage = (url: string): Promise<ImageDimensions> =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.decoding = 'sync';
+    img.onload = async () => {
+      try {
+        if (typeof img.decode === 'function') {
+          await img.decode();
+        }
+      } catch {
+        // Ignore decode() errors when onload already produced valid dimensions
+      }
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      } else {
+        reject(new Error('Invalid preview image dimensions'));
+      }
+    };
+    img.onerror = () => {
+      reject(new Error('Failed to load preview image'));
+    };
+    img.src = url;
+  });
+
 const ImageProcessor: React.FC = () => {
   const { t, i18n } = useTranslation();
   const theme = useTheme();
@@ -742,6 +789,10 @@ const ImageProcessor: React.FC = () => {
 
   const [images, setImages] = useState<File[]>([]);
   const [fileListExpanded, setFileListExpanded] = useState(true);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
+  const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
   const [processedResult, setProcessedResult] = useState<ProcessedMontageResult | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -765,6 +816,9 @@ const ImageProcessor: React.FC = () => {
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
   const processAbortRef = useRef<AbortController | null>(null);
+  const fileDragDepthRef = useRef(0);
+  const previewRequestIdRef = useRef(0);
+  const requestedPreviewFileRef = useRef<File | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const processAlertRef = useRef<HTMLDivElement>(null);
   const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
@@ -850,6 +904,7 @@ const ImageProcessor: React.FC = () => {
     // Abort active processing and terminate any active or still-initializing OCR worker on unmount
     return () => {
       isMountedRef.current = false;
+      previewRequestIdRef.current += 1;
       processAbortRef.current?.abort();
       if (largeCanvasConfirmResolverRef.current) {
         const resolve = largeCanvasConfirmResolverRef.current;
@@ -899,6 +954,15 @@ const ImageProcessor: React.FC = () => {
     };
   }, [processedResult]);
 
+  useEffect(() => {
+    const url = renderedPreview?.url;
+    return () => {
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [renderedPreview]);
+
   const orderedImages = useMemo(
     () => sortImageFiles(images, settings.sortOrder),
     [images, settings.sortOrder]
@@ -910,6 +974,20 @@ const ImageProcessor: React.FC = () => {
     [activeLocale]
   );
 
+  const addImageFiles = (incoming: File[]) => {
+    if (isProcessing || incoming.length === 0) return;
+    const supported = incoming.filter(isSupportedInputImageFile);
+    if (supported.length === 0) {
+      reportProcessError(t('alert_no_supported_images'));
+      return;
+    }
+    const merged = mergeImageFiles(images, supported);
+    if (merged.addedCount > 0) {
+      setImages(merged.files);
+      setProcessError(null);
+    }
+  };
+
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (isProcessing) {
       event.target.value = '';
@@ -917,9 +995,7 @@ const ImageProcessor: React.FC = () => {
     }
     const files = event.target.files;
     if (files && files.length > 0) {
-      setImages(Array.from(files));
-      setProcessedResult(null); // This will also trigger the cleanup effect for the old URL
-      setProcessError(null);
+      addImageFiles(Array.from(files));
     }
     // Reset input value so picking the exact same file(s) again still triggers onChange
     event.target.value = '';
@@ -927,14 +1003,18 @@ const ImageProcessor: React.FC = () => {
 
   const handleClearImages = () => {
     if (isProcessing) return;
+    previewRequestIdRef.current += 1;
+    requestedPreviewFileRef.current = null;
     setImages([]);
     setProcessedResult(null);
     setProcessError(null);
     setFileListExpanded(true);
+    setPreviewOpen(false);
+    setRequestedPreviewFile(null);
+    setRenderedPreview(null);
   };
 
-  const handleRemoveImage = (targetFile: File) => {
-    if (isProcessing) return;
+  const removeImageFile = (targetFile: File) => {
     const nextImages = images.filter((file) => file !== targetFile);
     if (nextImages.length === 0) {
       setFileListExpanded(true);
@@ -942,6 +1022,145 @@ const ImageProcessor: React.FC = () => {
     }
     setImages(nextImages);
     setProcessError(null);
+  };
+
+  const handleRemoveImage = (targetFile: File) => {
+    if (isProcessing) return;
+    if (
+      renderedPreview?.file === targetFile ||
+      requestedPreviewFileRef.current === targetFile
+    ) {
+      previewRequestIdRef.current += 1;
+      setPreviewOpen(false);
+    }
+    removeImageFile(targetFile);
+  };
+
+  const startPreviewLoad = (file: File) => {
+    const requestId = ++previewRequestIdRef.current;
+    requestedPreviewFileRef.current = file;
+    setRequestedPreviewFile(file);
+    const objectUrl = URL.createObjectURL(file);
+
+    void preloadPreviewImage(objectUrl).then(
+      (dimensions) => {
+        if (!isMountedRef.current || previewRequestIdRef.current !== requestId) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setRenderedPreview({
+          file,
+          url: objectUrl,
+          dimensions,
+          error: false,
+        });
+      },
+      () => {
+        URL.revokeObjectURL(objectUrl);
+        if (!isMountedRef.current || previewRequestIdRef.current !== requestId) {
+          return;
+        }
+        setRenderedPreview({
+          file,
+          url: '',
+          dimensions: null,
+          error: true,
+        });
+      }
+    );
+  };
+
+  const handleOpenPreview = (file: File) => {
+    setPreviewOpen(true);
+    startPreviewLoad(file);
+  };
+
+  const handleStepPreview = (step: -1 | 1) => {
+    const baseFile = requestedPreviewFileRef.current ?? renderedPreview?.file ?? null;
+    if (!baseFile) return;
+    const nextFile = resolveAdjacentPreviewFile(orderedImages, baseFile, step);
+    if (nextFile) {
+      startPreviewLoad(nextFile);
+    }
+  };
+
+  const handlePreviewKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      handleStepPreview(-1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      handleStepPreview(1);
+    }
+  };
+
+  const handleClosePreview = () => {
+    previewRequestIdRef.current += 1;
+    setPreviewOpen(false);
+  };
+
+  const handlePreviewExited = () => {
+    previewRequestIdRef.current += 1;
+    requestedPreviewFileRef.current = null;
+    setRequestedPreviewFile(null);
+    setRenderedPreview(null);
+  };
+
+  const handleRemovePreviewImage = () => {
+    const targetFile = renderedPreview?.file ?? requestedPreviewFileRef.current;
+    if (isProcessing || !targetFile) return;
+    const nextFile = resolveNextPreviewAfterRemoval(orderedImages, targetFile);
+    removeImageFile(targetFile);
+    if (nextFile) {
+      startPreviewLoad(nextFile);
+    } else {
+      previewRequestIdRef.current += 1;
+      requestedPreviewFileRef.current = null;
+      setRequestedPreviewFile(null);
+      setPreviewOpen(false);
+    }
+  };
+
+  const isExternalFileDrag = (event: React.DragEvent): boolean =>
+    Array.from(event.dataTransfer?.types ?? []).includes('Files');
+
+  const handleCardDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (isProcessing || !isExternalFileDrag(event)) return;
+    event.preventDefault();
+    fileDragDepthRef.current += 1;
+    setIsFileDragOver(true);
+  };
+
+  const handleCardDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (isProcessing || !isExternalFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handleCardDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event)) return;
+    if (
+      event.relatedTarget !== null &&
+      !event.currentTarget.contains(event.relatedTarget as Node)
+    ) {
+      fileDragDepthRef.current = 0;
+      setIsFileDragOver(false);
+      return;
+    }
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+    if (fileDragDepthRef.current === 0) {
+      setIsFileDragOver(false);
+    }
+  };
+
+  const handleCardDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event)) return;
+    event.preventDefault();
+    fileDragDepthRef.current = 0;
+    setIsFileDragOver(false);
+    if (isProcessing) return;
+    addImageFiles(Array.from(event.dataTransfer.files ?? []));
   };
 
   const handleNumericSettingCommit = (name: string, newValue: number, options?: { finalize?: boolean }) => {
@@ -1099,6 +1318,8 @@ const ImageProcessor: React.FC = () => {
 
     setIsProcessing(true);
     setIsCancelling(false);
+    fileDragDepthRef.current = 0;
+    setIsFileDragOver(false);
     setProcessError(null);
     setProcessedResult(null);
     setProcessingProgress({ phase: 'preparing' });
@@ -1468,6 +1689,30 @@ const ImageProcessor: React.FC = () => {
     hasFreshResult: Boolean(processedResult) && resultStaleReason === 'none',
   });
 
+  const activePreviewFile = renderedPreview?.file ?? requestedPreviewFile;
+  const previewDimensions =
+    renderedPreview && renderedPreview.file === activePreviewFile
+      ? renderedPreview.dimensions
+      : null;
+  const previewLoadError =
+    Boolean(renderedPreview && renderedPreview.file === activePreviewFile && renderedPreview.error);
+  const previewMetaSeparator = activeLocale?.startsWith('ja') ? ' ・ ' : ' · ';
+  const previewMetaText = activePreviewFile
+    ? [
+        previewDimensions
+          ? `${previewDimensions.width.toLocaleString()} × ${previewDimensions.height.toLocaleString()} px`
+          : null,
+        formatFileSize(activePreviewFile.size),
+        formatFileTimestamp(activePreviewFile.lastModified) || null,
+      ]
+        .filter(Boolean)
+        .join(previewMetaSeparator)
+    : '';
+  const previewIndex = activePreviewFile ? orderedImages.indexOf(activePreviewFile) : -1;
+  const hasMultiplePreviewFiles = orderedImages.length > 1 && previewIndex !== -1;
+  const canStepPreviewPrev = hasMultiplePreviewFiles && previewIndex > 0;
+  const canStepPreviewNext = hasMultiplePreviewFiles && previewIndex < orderedImages.length - 1;
+
   return (
     <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
@@ -1681,7 +1926,36 @@ const ImageProcessor: React.FC = () => {
           </Box>
         </Grid>
         <Grid size={{ xs: 12, md: 7, lg: 8 }} sx={{ order: { xs: 1, md: 2 } }}>
-          <Card>
+          <Card
+            onDragEnter={handleCardDragEnter}
+            onDragOver={handleCardDragOver}
+            onDragLeave={handleCardDragLeave}
+            onDrop={handleCardDrop}
+            sx={{ position: 'relative' }}
+          >
+            {isFileDragOver && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  p: 3,
+                  borderRadius: 'inherit',
+                  border: 2,
+                  borderStyle: 'dashed',
+                  borderColor: 'primary.main',
+                  bgcolor: (muiTheme) => alpha(muiTheme.palette.background.paper, 0.9),
+                  pointerEvents: 'none',
+                }}
+              >
+                <Typography variant="h6" color="primary" align="center">
+                  {t('drop_images_here')}
+                </Typography>
+              </Box>
+            )}
             <CardContent>
               <Typography variant="h5" component="h2" sx={{ mb: 0.75 }}>{t('upload_and_process')}</Typography>
               <Box
@@ -1711,7 +1985,7 @@ const ImageProcessor: React.FC = () => {
                 startIcon={<AddPhotoIcon />}
                 disabled={isProcessing}
               >
-                {t('upload_images')}
+                {images.length > 0 ? t('add_images') : t('upload_images')}
                 <input
                   type="file"
                   hidden
@@ -1721,6 +1995,17 @@ const ImageProcessor: React.FC = () => {
                   onChange={handleFileChange}
                 />
               </Button>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: { xs: 'none', sm: 'block' },
+                  mt: 0.75,
+                  textAlign: 'center',
+                }}
+              >
+                {t('drop_zone_hint')}
+              </Typography>
               {images.length > 0 && (
                 <Box sx={{ mt: 1.5 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
@@ -1767,7 +2052,7 @@ const ImageProcessor: React.FC = () => {
                         mb: 0,
                         p: 0,
                         listStyle: 'none',
-                        maxHeight: 200,
+                        maxHeight: { xs: 260, sm: 220 },
                         overflowY: 'auto',
                         border: 1,
                         borderColor: 'divider',
@@ -1775,67 +2060,116 @@ const ImageProcessor: React.FC = () => {
                         bgcolor: 'background.default',
                       }}
                     >
-                      {orderedImages.map((file, index) => (
-                        <Box
-                          component="li"
-                          key={`${file.name}-${file.lastModified}-${file.size}-${index}`}
-                          sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 1,
-                            px: 1.25,
-                            py: 0.5,
-                            borderBottom: index < orderedImages.length - 1 ? 1 : 0,
-                            borderColor: 'divider',
-                          }}
-                        >
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
+                      {orderedImages.map((file, index) => {
+                        const { head, tail } = splitFilenameForMiddleEllipsis(file.name);
+                        return (
+                          <Box
+                            component="li"
+                            key={getFileKey(file)}
                             sx={{
-                              minWidth: '2.5ch',
-                              textAlign: 'right',
-                              flexShrink: 0,
-                              fontVariantNumeric: 'tabular-nums',
+                              display: 'flex',
+                              alignItems: 'center',
+                              pr: { xs: 0.5, sm: 1 },
+                              borderBottom: index < orderedImages.length - 1 ? 1 : 0,
+                              borderColor: 'divider',
                             }}
                           >
-                            {index + 1}.
-                          </Typography>
-                          <Typography
-                            variant="body2"
-                            noWrap
-                            title={file.name}
-                            sx={{ flex: 1, minWidth: 0 }}
-                          >
-                            {file.name}
-                          </Typography>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{
-                              flexShrink: 0,
-                              whiteSpace: 'nowrap',
-                              fontVariantNumeric: 'tabular-nums',
-                            }}
-                          >
-                            {formatFileTimestamp(file.lastModified)}
-                          </Typography>
-                          <IconButton
-                            size="small"
-                            aria-label={t('remove_file', { name: file.name })}
-                            onClick={() => handleRemoveImage(file)}
-                            disabled={isProcessing}
-                            sx={{
-                              p: 0.25,
-                              flexShrink: 0,
-                              color: 'text.secondary',
-                              '&:hover': { color: 'error.main' },
-                            }}
-                          >
-                            <CloseIcon sx={{ fontSize: 16 }} />
-                          </IconButton>
-                        </Box>
-                      ))}
+                            <ButtonBase
+                              onClick={() => handleOpenPreview(file)}
+                              aria-label={t('preview_file', { name: file.name })}
+                              sx={{
+                                flex: 1,
+                                minWidth: 0,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'flex-start',
+                                gap: { xs: 0.5, sm: 1 },
+                                pl: { xs: 1, sm: 1.25 },
+                                pr: { xs: 0.5, sm: 1 },
+                                py: { xs: 0.75, sm: 0.5 },
+                                textAlign: 'left',
+                                '&:hover': { bgcolor: 'action.hover' },
+                              }}
+                            >
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{
+                                  minWidth: '2.2ch',
+                                  textAlign: 'right',
+                                  flexShrink: 0,
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}
+                              >
+                                {index + 1}.
+                              </Typography>
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Box
+                                  title={file.name}
+                                  sx={{
+                                    display: 'flex',
+                                    alignItems: 'baseline',
+                                    minWidth: 0,
+                                  }}
+                                >
+                                  {head && (
+                                    <Typography component="span" variant="body2" noWrap sx={{ minWidth: 0 }}>
+                                      {head}
+                                    </Typography>
+                                  )}
+                                  <Typography
+                                    component="span"
+                                    variant="body2"
+                                    sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+                                  >
+                                    {tail}
+                                  </Typography>
+                                </Box>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{
+                                    display: { xs: 'block', sm: 'none' },
+                                    fontVariantNumeric: 'tabular-nums',
+                                    lineHeight: 1.2,
+                                  }}
+                                >
+                                  {formatFileTimestamp(file.lastModified)}
+                                </Typography>
+                              </Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{
+                                  display: { xs: 'none', sm: 'block' },
+                                  flexShrink: 0,
+                                  whiteSpace: 'nowrap',
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}
+                              >
+                                {formatFileTimestamp(file.lastModified)}
+                              </Typography>
+                            </ButtonBase>
+                            <IconButton
+                              size="small"
+                              aria-label={t('remove_file', { name: file.name })}
+                              onClick={() => handleRemoveImage(file)}
+                              disabled={isProcessing}
+                              sx={{
+                                minWidth: { xs: 40, sm: 30 },
+                                minHeight: { xs: 40, sm: 30 },
+                                p: { xs: 1, sm: 0.5 },
+                                ml: { xs: 0.25, sm: 0.5 },
+                                flexShrink: 0,
+                                color: 'text.secondary',
+                                '&:hover': { color: 'error.main' },
+                              }}
+                            >
+                              <CloseIcon sx={{ fontSize: { xs: 20, sm: 16 } }} />
+                            </IconButton>
+                          </Box>
+                        );
+                      })}
                     </Box>
                   </Collapse>
                 </Box>
@@ -2022,6 +2356,168 @@ const ImageProcessor: React.FC = () => {
             variant="contained"
           >
             {t('continue')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={previewOpen && Boolean(activePreviewFile)}
+        onClose={handleClosePreview}
+        onKeyDown={handlePreviewKeyDown}
+        maxWidth="md"
+        fullWidth
+        aria-labelledby="file-preview-dialog-title"
+        slotProps={{
+          paper: { sx: { m: { xs: 1.5, sm: 3 } } },
+          transition: { onExited: handlePreviewExited },
+        }}
+      >
+        <DialogTitle
+          id="file-preview-dialog-title"
+          component="div"
+          sx={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 1,
+            pb: 1.25,
+          }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              variant="subtitle1"
+              component="h2"
+              sx={{ fontWeight: 600, overflowWrap: 'anywhere', lineHeight: 1.35 }}
+            >
+              {activePreviewFile?.name}
+            </Typography>
+            {previewMetaText && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: 'block', mt: 0.25, fontVariantNumeric: 'tabular-nums' }}
+              >
+                {previewMetaText}
+              </Typography>
+            )}
+          </Box>
+          <IconButton
+            size="small"
+            aria-label={t('close')}
+            onClick={handleClosePreview}
+            sx={{
+              minWidth: { xs: 36, sm: 32 },
+              minHeight: { xs: 36, sm: 32 },
+              mt: -0.5,
+              mr: -1,
+              color: 'text.secondary',
+            }}
+          >
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            px: { xs: 1.5, sm: 2.5 },
+            py: { xs: 1.5, sm: 2 },
+            height: { xs: 'auto', sm: '62vh' },
+            minHeight: { xs: renderedPreview ? 0 : 160, sm: 320 },
+            maxHeight: { xs: 'none', sm: 620 },
+            overflow: { xs: 'auto', sm: 'hidden' },
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          {previewLoadError ? (
+            <Alert severity="error" sx={{ width: '100%' }}>
+              {t('preview_image_load_failed')}
+            </Alert>
+          ) : (
+            renderedPreview &&
+            renderedPreview.url !== '' && (
+              <Box
+                component="img"
+                src={renderedPreview.url}
+                alt={renderedPreview.file.name}
+                sx={{
+                  display: 'block',
+                  maxWidth: '100%',
+                  maxHeight: { xs: '60vh', sm: '100%' },
+                  width: 'auto',
+                  height: 'auto',
+                  objectFit: 'contain',
+                  borderRadius: 1,
+                  border: 1,
+                  borderColor: 'divider',
+                  bgcolor: 'background.default',
+                }}
+              />
+            )
+          )}
+        </DialogContent>
+        {hasMultiplePreviewFiles && (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 1,
+              px: { xs: 1.5, sm: 2.5 },
+              py: 1,
+              borderBottom: 1,
+              borderColor: 'divider',
+            }}
+          >
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              startIcon={<ChevronLeftIcon />}
+              onClick={() => handleStepPreview(-1)}
+              disabled={!canStepPreviewPrev}
+              sx={{ minHeight: { xs: 40, sm: 34 }, minWidth: { xs: 96, sm: 100 } }}
+            >
+              {t('previous_file')}
+            </Button>
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}
+            >
+              {previewIndex + 1} / {orderedImages.length}
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              endIcon={<ChevronRightIcon />}
+              onClick={() => handleStepPreview(1)}
+              disabled={!canStepPreviewNext}
+              sx={{ minHeight: { xs: 40, sm: 34 }, minWidth: { xs: 96, sm: 100 } }}
+            >
+              {t('next_file')}
+            </Button>
+          </Box>
+        )}
+        <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1.5, justifyContent: 'space-between' }}>
+          <Button
+            color="error"
+            variant="outlined"
+            startIcon={<DeleteOutlineIcon />}
+            onClick={handleRemovePreviewImage}
+            disabled={isProcessing || !activePreviewFile}
+            sx={{ minHeight: { xs: 40, sm: 36 } }}
+          >
+            {t('remove_from_list')}
+          </Button>
+          <Button
+            onClick={handleClosePreview}
+            variant="contained"
+            autoFocus
+            sx={{ minHeight: { xs: 40, sm: 36 } }}
+          >
+            {t('close')}
           </Button>
         </DialogActions>
       </Dialog>

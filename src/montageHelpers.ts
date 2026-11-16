@@ -1119,3 +1119,115 @@ export const resolveActionButtonVariants = (params: {
   process: params.hasImages && !params.hasFreshResult ? 'contained' : 'outlined',
   download: params.hasFreshResult ? 'contained' : 'outlined',
 });
+
+export interface FileTypeLike {
+  name: string;
+  type?: string;
+}
+
+const SUPPORTED_INPUT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg']);
+const SUPPORTED_INPUT_EXT_RE = /\.(png|jpe?g)$/i;
+
+/** Returns whether a picked or dropped file is a supported PNG/JPEG input image. */
+export const isSupportedInputImageFile = (file: FileTypeLike): boolean => {
+  const mime = (file.type ?? '').trim().toLowerCase();
+  if (mime !== '') {
+    return SUPPORTED_INPUT_MIME_TYPES.has(mime);
+  }
+  return SUPPORTED_INPUT_EXT_RE.test(file.name);
+};
+
+export interface FileIdentityLike {
+  name: string;
+  size: number;
+  lastModified: number;
+}
+
+export interface MergeImageFilesResult<F> {
+  files: F[];
+  addedCount: number;
+  skippedDuplicateCount: number;
+}
+
+/** Appends incoming files to `existing` while deduplicating by name, size, and lastModified. */
+export const mergeImageFiles = <F extends FileIdentityLike>(
+  existing: readonly F[],
+  incoming: readonly F[]
+): MergeImageFilesResult<F> => {
+  const toKey = (file: FileIdentityLike) => `${file.name}\0${file.size}\0${file.lastModified}`;
+  const seen = new Set(existing.map(toKey));
+  const appended: F[] = [];
+  let skippedDuplicateCount = 0;
+
+  for (const file of incoming) {
+    const key = toKey(file);
+    if (seen.has(key)) {
+      skippedDuplicateCount += 1;
+      continue;
+    }
+    seen.add(key);
+    appended.push(file);
+  }
+
+  return {
+    files: appended.length > 0 ? [...existing, ...appended] : [...existing],
+    addedCount: appended.length,
+    skippedDuplicateCount,
+  };
+};
+
+/**
+ * Splits long filenames into an ellipsized `head` and a fixed `tail` (preserving extension
+ * and trailing identifiers) so narrow mobile rows keep the distinguishing suffix visible.
+ */
+export const splitFilenameForMiddleEllipsis = (
+  filename: string
+): { head: string; tail: string } => {
+  const chars = Array.from(filename);
+  if (chars.length <= 14) {
+    return { head: '', tail: filename };
+  }
+  const tailCount = Math.min(12, Math.floor(chars.length / 2));
+  const splitAt = chars.length - tailCount;
+  return {
+    head: chars.slice(0, splitAt).join(''),
+    tail: chars.slice(splitAt).join(''),
+  };
+};
+
+/** Returns the adjacent item (`step`: -1 or +1) without wrapping around ends. */
+export const resolveAdjacentPreviewFile = <F>(
+  orderedFiles: readonly F[],
+  currentFile: F,
+  step: -1 | 1
+): F | null => {
+  const index = orderedFiles.indexOf(currentFile);
+  if (index === -1) {
+    return null;
+  }
+  const nextIndex = index + step;
+  if (nextIndex < 0 || nextIndex >= orderedFiles.length) {
+    return null;
+  }
+  return orderedFiles[nextIndex];
+};
+
+/**
+ * Selects the replacement file to display in the preview dialog after removing `removedFile`:
+ * prefers the next item at the same index, falling back to the previous item when deleting
+ * the last item, or `null` when no files remain.
+ */
+export const resolveNextPreviewAfterRemoval = <F>(
+  orderedFiles: readonly F[],
+  removedFile: F
+): F | null => {
+  const index = orderedFiles.indexOf(removedFile);
+  if (index === -1) {
+    return null;
+  }
+  const remaining = orderedFiles.filter((file) => file !== removedFile);
+  if (remaining.length === 0) {
+    return null;
+  }
+  return remaining[Math.min(index, remaining.length - 1)];
+};
