@@ -51,6 +51,7 @@ import {
   getMemoryReleaseDelayMs,
   prepareMontagePlan,
   renderMontageToBlob,
+  resolveActionButtonVariants,
   resolveMontageAbortUiTarget,
   resolveOutputExtension,
   shouldScrollToResult,
@@ -1452,6 +1453,11 @@ const ImageProcessor: React.FC = () => {
           ? t('result_stale_both')
           : null;
 
+  const buttonVariants = resolveActionButtonVariants({
+    hasImages: images.length > 0,
+    hasFreshResult: Boolean(processedResult) && resultStaleReason === 'none',
+  });
+
   return (
     <Container maxWidth="lg" sx={{ mt: 4, pb: 20, minHeight: '100vh' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
@@ -1653,7 +1659,7 @@ const ImageProcessor: React.FC = () => {
                 </Typography>
               </Box>
               <Button
-                variant="contained"
+                variant={buttonVariants.upload}
                 component="label"
                 fullWidth
                 size="large"
@@ -1791,7 +1797,7 @@ const ImageProcessor: React.FC = () => {
               )}
               <Box sx={{ mt: 2, display: 'flex', gap: 1.5, alignItems: 'stretch' }}>
                 <Button
-                  variant="contained"
+                  variant={buttonVariants.process}
                   color="primary"
                   onClick={processImages}
                   disabled={isProcessing || images.length === 0}
@@ -1911,7 +1917,7 @@ const ImageProcessor: React.FC = () => {
                     }}
                   />
                   <Button
-                    variant="contained"
+                    variant={buttonVariants.download}
                     href={processedResult.url}
                     download={processedResult.filename}
                     fullWidth

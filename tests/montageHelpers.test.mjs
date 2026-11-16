@@ -15,6 +15,7 @@ import {
   readEncodedImageDimensions,
   renderMontageTiles,
   renderMontageToBlob,
+  resolveActionButtonVariants,
   resolveMontageAbortUiTarget,
   resolveOutputExtension,
   shouldScrollToResult,
@@ -1841,6 +1842,29 @@ describe('result summary formatting and scroll decision', () => {
         viewportHeight: 0,
       }),
       false
+    );
+  });
+
+  it('highlights only the primary next action button as contained for each workflow state', () => {
+    // 1. No images selected yet -> upload is primary
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: false, hasFreshResult: false }),
+      { upload: 'contained', process: 'outlined', download: 'outlined' }
+    );
+    // 2. Images selected, no result (or stale result) -> process is primary
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: true, hasFreshResult: false }),
+      { upload: 'outlined', process: 'contained', download: 'outlined' }
+    );
+    // 3. Fresh result available -> download is primary
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: true, hasFreshResult: true }),
+      { upload: 'outlined', process: 'outlined', download: 'contained' }
+    );
+    // Guard against inconsistent state (no images + fresh result flag)
+    assert.deepEqual(
+      resolveActionButtonVariants({ hasImages: false, hasFreshResult: true }),
+      { upload: 'contained', process: 'outlined', download: 'contained' }
     );
   });
 });

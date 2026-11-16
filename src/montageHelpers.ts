@@ -1098,3 +1098,24 @@ export const shouldScrollToResult = ({
   }
   return resultTop < 0 || resultTop > viewportHeight * 0.65;
 };
+
+export type ActionButtonVariant = 'contained' | 'outlined';
+
+export interface ActionButtonVariants {
+  upload: ActionButtonVariant;
+  process: ActionButtonVariant;
+  download: ActionButtonVariant;
+}
+
+/**
+ * Resolves MUI button variants across the upload, process, and download steps so only the
+ * current primary next action uses `'contained'` while other available actions stay `'outlined'`.
+ */
+export const resolveActionButtonVariants = (params: {
+  hasImages: boolean;
+  hasFreshResult: boolean;
+}): ActionButtonVariants => ({
+  upload: params.hasImages ? 'outlined' : 'contained',
+  process: params.hasImages && !params.hasFreshResult ? 'contained' : 'outlined',
+  download: params.hasFreshResult ? 'contained' : 'outlined',
+});
