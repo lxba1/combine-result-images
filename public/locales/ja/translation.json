@@ -75,6 +75,7 @@
   "alert_image_decode_failed": "画像「{{fileName}}」の読み込みに失敗しました。ファイルを確認するか、一覧から削除して再度お試しください。",
   "alert_image_resolution_mismatch": "画像「{{fileName}}」（{{actualWidth}} × {{actualHeight}} px）の解像度が 1 枚目の画像（{{expectedWidth}} × {{expectedHeight}} px）と一致しません。同じ解像度の画像のみを選択して再度お試しください。",
   "alert_processing_failed": "メモリが不足している可能性があります。もう一度お試しください。",
+  "alert_canvas_not_ready": "Canvasが準備できていません。もう一度お試しください。",
   "alert_failed_to_get_context": "Canvasから2D描画コンテキストの取得に失敗しました。もう一度お試しください。",
   "alert_invalid_canvas_size": "出力画像のサイズ計算結果が無効です（{{width}} × {{height}} px）。設定値を見直してください。",
   "confirm_large_canvas_size": "出力画像が非常に大きくなります（{{width}} × {{height}} px / {{pixels}} ピクセル）。\nブラウザや端末のメモリ上限により生成・表示に失敗する可能性があります。このまま続行しますか？",

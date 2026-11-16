@@ -674,6 +674,7 @@ const ImageProcessor: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -993,12 +994,18 @@ const ImageProcessor: React.FC = () => {
       if (finalSettings.outputFormat === 'png') mimeType = 'image/png';
       else if (finalSettings.outputFormat === 'jpeg') mimeType = 'image/jpeg';
 
+      const montageCanvas = canvasRef.current;
+      if (!montageCanvas) {
+        throw new Error(t('alert_canvas_not_ready'));
+      }
+
       montageCanvasUsed = true;
       const renderResult = await renderMontageToBlob<File, ImageBitmap>({
         dimensions: sizeEval,
         bgColor: finalSettings.bgColor,
         mimeType,
         quality: finalSettings.quality / 100,
+        canvas: montageCanvas,
         files: orderedImages,
         colCount: finalSettings.colCount,
         offsetX: finalSettings.offsetX,
@@ -1492,6 +1499,7 @@ const ImageProcessor: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+      <canvas ref={canvasRef} width={1} height={1} style={{ display: 'none' }} aria-hidden="true"></canvas>
     </Container>
   );
 };

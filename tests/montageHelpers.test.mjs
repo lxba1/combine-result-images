@@ -1323,6 +1323,70 @@ describe('renderMontageToBlob', () => {
       'height=1',
     ]);
   });
+
+  it('reuses the provided persistent canvas across runs without invoking createCanvas', async () => {
+    const persistentMock = createMockOutputCanvas({
+      initialWidth: 1,
+      initialHeight: 1,
+      toBlobResult: new Blob([makePngHeaderBytes(160, 120)], { type: 'image/png' }),
+    });
+    let createCanvasCalls = 0;
+
+    await assert.rejects(
+      () =>
+        renderMontageToBlob({
+          dimensions: { width: 160, height: 120 },
+          bgColor: '#112233',
+          mimeType: 'image/png',
+          quality: 1,
+          canvas: persistentMock.canvas,
+          createCanvas: () => {
+            createCanvasCalls += 1;
+            return persistentMock.canvas;
+          },
+          files: [{ name: 'bad.png' }],
+          colCount: 1,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 160, height: 120 },
+          masks: [],
+          getFileName: (f) => f.name,
+          yieldFrame: async () => {},
+          decodeImage: async () => {
+            throw new ImageDecodeError('bad.png');
+          },
+        }),
+      (err) => err instanceof ImageDecodeError && err.fileName === 'bad.png'
+    );
+    assert.equal(persistentMock.canvas.width, 1);
+    assert.equal(persistentMock.canvas.height, 1);
+
+    const secondResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#445566',
+      mimeType: 'image/png',
+      quality: 1,
+      canvas: persistentMock.canvas,
+      createCanvas: () => {
+        createCanvasCalls += 1;
+        return persistentMock.canvas;
+      },
+      files: [{ name: 'ok.png' }],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 160, height: 120 },
+      masks: [],
+      getFileName: (f) => f.name,
+      yieldFrame: async () => {},
+      decodeImage: async () => ({ width: 160, height: 120, close: () => {} }),
+    });
+
+    assert.equal(secondResult.status, 'ok');
+    assert.equal(createCanvasCalls, 0);
+    assert.equal(persistentMock.canvas.width, 1);
+    assert.equal(persistentMock.canvas.height, 1);
+  });
 });
 
 describe('getMemoryReleaseDelayMs', () => {

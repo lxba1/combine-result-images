@@ -75,6 +75,7 @@
   "alert_image_decode_failed": "Failed to decode \"{{fileName}}\". Please check the file or remove it from the list and try again.",
   "alert_image_resolution_mismatch": "Resolution of \"{{fileName}}\" ({{actualWidth}} x {{actualHeight}} px) does not match the first image ({{expectedWidth}} x {{expectedHeight}} px). Please select only images with the same resolution and try again.",
   "alert_processing_failed": "There might not be enough memory. Please try again.",
+  "alert_canvas_not_ready": "Canvas is not ready. Please try again.",
   "alert_failed_to_get_context": "Failed to get 2D rendering context from canvas. Please try again.",
   "alert_invalid_canvas_size": "Calculated output canvas size is invalid ({{width}} x {{height}} px). Please check your settings.",
   "confirm_large_canvas_size": "The output image is very large ({{width}} x {{height}} px / {{pixels}} pixels).\nGeneration or display may fail depending on your browser or device memory limits. Do you want to continue?",

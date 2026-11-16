@@ -385,6 +385,8 @@ export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
   bgColor: string;
   mimeType: string;
   quality: number;
+  /** Persistent canvas element to reuse across runs (preferred over allocating a detached canvas per run). */
+  canvas?: MontageCanvasLike<B> | null;
   createCanvas?: () => MontageCanvasLike<B>;
   inspectBlobDimensions?: (blob: Blob) => Promise<ImageDimensions | null>;
 }
@@ -432,21 +434,22 @@ const verifyCanvasBackingAllocation = <B extends BitmapLike>(
 };
 
 /**
- * Allocates an offscreen detached canvas, verifies its backing store can actually be drawn and read,
- * renders the full montage onto it, encodes the output Blob, immediately shrinks the canvas to 1x1
- * so the backing store can be GC-reclaimed, and verifies encoded container dimensions against the
- * requested output size.
+ * Renders the full montage onto a reusable `canvas` (or falls back to `createCanvas()`),
+ * verifies its backing store can actually be drawn and read, encodes the output Blob, immediately
+ * shrinks the canvas to 1x1 so Chromium can promptly reclaim its pixel backing store and GPU
+ * transfer buffers, and verifies encoded container dimensions against the requested output size.
  */
 export const renderMontageToBlob = async <F, B extends BitmapLike>({
   dimensions,
   bgColor,
   mimeType,
   quality,
+  canvas,
   createCanvas = () => document.createElement('canvas') as unknown as MontageCanvasLike<B>,
   inspectBlobDimensions = readEncodedImageDimensions,
   ...tileOptions
 }: RenderMontageToBlobOptions<F, B>): Promise<RenderMontageToBlobResult> => {
-  const montageCanvas = createCanvas();
+  const montageCanvas = canvas ?? createCanvas();
   const shrinkCanvas = () => {
     if (montageCanvas.width !== 1 || montageCanvas.height !== 1) {
       montageCanvas.width = 1;
