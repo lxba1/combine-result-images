@@ -2778,6 +2778,12 @@ const ImageProcessor: React.FC = () => {
                                 py: { xs: 0.75, sm: 0.5 },
                                 textAlign: 'left',
                                 '&:hover': { bgcolor: 'action.hover' },
+                                // ButtonBase removes the native focus ring; show which row has keyboard focus.
+                                '&.Mui-focusVisible': {
+                                  bgcolor: 'action.hover',
+                                  outline: (muiTheme) => `2px solid ${(muiTheme.vars ?? muiTheme).palette.primary.main}`,
+                                  outlineOffset: -2,
+                                },
                               }}
                             >
                               <Typography
