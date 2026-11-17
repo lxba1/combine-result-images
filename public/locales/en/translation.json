@@ -36,7 +36,7 @@
   "mode_manual": "Manual",
   "mode_ratio": "Ratio",
   "mode_ocr": "OCR",
-  "mask_mode_ratio_help": "Specified as ratios (0–1) relative to the cropped area",
+  "mask_mode_ratio_help": "Specified as percentages (0–100%) of the cropped area",
   "ratio_preview_title": "Area preview (first image)",
   "ratio_preview_empty": "Select images to preview the masked area",
   "ratio_preview_alt": "Cropped area mask preview",

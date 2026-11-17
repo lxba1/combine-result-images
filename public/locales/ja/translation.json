@@ -36,7 +36,7 @@
   "mode_manual": "手動",
   "mode_ratio": "比率",
   "mode_ocr": "OCR",
-  "mask_mode_ratio_help": "クロップ後の範囲に対する割合（0〜1）で指定します",
+  "mask_mode_ratio_help": "クロップ後の範囲に対する割合（0〜100%）で指定します",
   "ratio_preview_title": "範囲プレビュー（1枚目の画像）",
   "ratio_preview_empty": "画像を選択するとマスク範囲を確認できます",
   "ratio_preview_alt": "クロップ後のマスク範囲プレビュー",

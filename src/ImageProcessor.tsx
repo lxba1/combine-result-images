@@ -42,6 +42,8 @@ import {
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
+  percentInputToRatio,
+  ratioToPercentInput,
   resolveCanvasSizeErrorUiTarget,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
@@ -525,6 +527,8 @@ interface NumericTextFieldProps {
   integer?: boolean;
   disabled?: boolean;
   error?: boolean;
+  /** Optional unit shown after the number, e.g. `%`. */
+  unit?: string;
   onCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
 }
 
@@ -538,6 +542,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
   value,
   min,
   max,
+  unit,
   step = 1,
   integer = false,
   disabled = false,
@@ -648,6 +653,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
       slotProps={{
         inputLabel: { shrink: true },
         htmlInput: { min, max, step },
+        input: unit ? { endAdornment: <InputAdornment position="end">{unit}</InputAdornment> } : undefined,
       }}
     />
   );
@@ -718,6 +724,9 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   const hasError = (field: SettingFieldKey): boolean => Boolean(errorFields?.has(field));
   const overlayBox = computeRatioMaskOverlayBox(ratioRect);
   const normalizedOverlayColor = normalizeHexColor(colorValue) ?? '#000000';
+  // Ratio inputs show percent like the sliders; settings keep the normalized 0..1 value.
+  const handleRatioPercentCommit = (name: string, percent: number, options?: { finalize?: boolean }) =>
+    onNumericCommit(name, percentInputToRatio(percent), options);
   const ratioAxes: ReadonlyArray<{
     axis: 'horizontal' | 'vertical';
     labelId: string;
@@ -942,10 +951,10 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                     </React.Fragment>
                   ))}
                 </Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx0`)} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry0`)} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx1`)} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry1`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioToPercentInput(ratioRect.rx0)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.rx0`)} onCommit={handleRatioPercentCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioToPercentInput(ratioRect.ry0)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.ry0`)} onCommit={handleRatioPercentCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioToPercentInput(ratioRect.rx1)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.rx1`)} onCommit={handleRatioPercentCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioToPercentInput(ratioRect.ry1)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.ry1`)} onCommit={handleRatioPercentCommit} /></Grid>
               </>
             ) : (
               <>

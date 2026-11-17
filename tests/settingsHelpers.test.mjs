@@ -27,6 +27,8 @@ import {
   normalizeHexColor,
   normalizeRatioRect,
   parseSavedSettings,
+  percentInputToRatio,
+  ratioToPercentInput,
   resolveCanvasSizeErrorUiTarget,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
@@ -760,6 +762,33 @@ describe('formatRatioPercent', () => {
     assert.equal(formatRatioPercent(-0.2), '0%');
     assert.equal(formatRatioPercent(1.5), '100%');
     assert.equal(formatRatioPercent(Number.NaN), '0%');
+  });
+});
+
+describe('ratioToPercentInput / percentInputToRatio', () => {
+  it('converts ratios to percent input values without float noise', () => {
+    assert.equal(ratioToPercentInput(0), 0);
+    assert.equal(ratioToPercentInput(0.785), 78.5);
+    assert.equal(ratioToPercentInput(0.14), 14);
+    assert.equal(ratioToPercentInput(0.1 + 0.2), 30);
+    assert.equal(ratioToPercentInput(0.7555), 75.55);
+    assert.equal(ratioToPercentInput(1), 100);
+  });
+
+  it('converts percent input values back to ratios without float noise', () => {
+    assert.equal(percentInputToRatio(0), 0);
+    assert.equal(percentInputToRatio(75.5), 0.755);
+    assert.equal(percentInputToRatio(78.5), 0.785);
+    assert.equal(percentInputToRatio(14), 0.14);
+    assert.equal(percentInputToRatio(33.3333), 0.333333);
+    assert.equal(percentInputToRatio(100), 1);
+  });
+
+  it('round-trips every 0.1% step of the ratio slider', () => {
+    for (let i = 0; i <= 1000; i += 1) {
+      const ratio = i / 1000;
+      assert.equal(percentInputToRatio(ratioToPercentInput(ratio)), ratio);
+    }
   });
 });
 

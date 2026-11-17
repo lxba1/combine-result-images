@@ -853,6 +853,18 @@ export const formatRatioPercent = (value: number): string => {
   return `${percent}%`;
 };
 
+/**
+ * Converts a normalized 0..1 ratio to the percent number shown in ratio inputs (e.g., `0.785` -> `78.5`),
+ * rounded to 4 decimals to drop float noise such as `78.50000000000001`.
+ */
+export const ratioToPercentInput = (ratio: number): number => Math.round(ratio * 1_000_000) / 10_000;
+
+/**
+ * Converts a percent number typed into a ratio input back to a normalized ratio (e.g., `78.5` -> `0.785`),
+ * keeping 6 decimals (= 4 decimals of percent) without float noise. Clamping is left to the caller.
+ */
+export const percentInputToRatio = (percent: number): number => Math.round(percent * 10_000) / 1_000_000;
+
 export interface RatioMaskOverlayBox {
   leftPct: number;
   topPct: number;
