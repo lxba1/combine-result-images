@@ -2546,7 +2546,8 @@ const ImageProcessor: React.FC = () => {
             onDragOver={handleCardDragOver}
             onDragLeave={handleCardDragLeave}
             onDrop={handleCardDrop}
-            sx={{ position: 'relative' }}
+            // `clip` instead of Card's default `hidden` so the drop message below can stay sticky in view.
+            sx={{ position: 'relative', overflow: 'clip' }}
           >
             {isFileDragOver && (
               <Box
@@ -2566,7 +2567,20 @@ const ImageProcessor: React.FC = () => {
                   pointerEvents: 'none',
                 }}
               >
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, color: 'primary.main' }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 1,
+                    color: 'primary.main',
+                    // Centered in the card normally; on a card taller than the screen it stays within the
+                    // middle band of the viewport instead of sitting off-screen.
+                    position: 'sticky',
+                    top: '30vh',
+                    bottom: '30vh',
+                  }}
+                >
                   <AddPhotoOutlinedIcon sx={{ fontSize: 40 }} aria-hidden="true" />
                   <Typography variant="h6" color="primary" align="center">
                     {t('drop_images_here')}
