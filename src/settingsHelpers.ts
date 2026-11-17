@@ -4,11 +4,25 @@ export const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 
 export type RatioRect = { rx0: number; ry0: number; rx1: number; ry1: number };
 
+/**
+ * Fixed-point scale of normalized ratios: 6 decimals (= 4 decimals of percent in the ratio inputs).
+ * Shared by the input conversion and equality so the precision a user can enter and the precision
+ * used to detect changes never drift apart.
+ */
+const RATIO_SCALE = 1_000_000;
+
+/** Ratio as an integer count of 0.000001 units, absorbing float noise such as `0.1 + 0.2`. */
+const toRatioUnits = (value: number): number => Math.round(value * RATIO_SCALE);
+
+/**
+ * Compares two ratio rectangles at the stored 6-decimal precision: any change that can be entered
+ * (down to 0.0001%) counts as different, while float noise does not.
+ */
 export const isRatioRectEqual = (a: RatioRect, b: RatioRect): boolean =>
-  Math.abs(a.rx0 - b.rx0) < 0.0001 &&
-  Math.abs(a.ry0 - b.ry0) < 0.0001 &&
-  Math.abs(a.rx1 - b.rx1) < 0.0001 &&
-  Math.abs(a.ry1 - b.ry1) < 0.0001;
+  toRatioUnits(a.rx0) === toRatioUnits(b.rx0) &&
+  toRatioUnits(a.ry0) === toRatioUnits(b.ry0) &&
+  toRatioUnits(a.rx1) === toRatioUnits(b.rx1) &&
+  toRatioUnits(a.ry1) === toRatioUnits(b.ry1);
 
 export const MASK_PRESETS: Record<string, RatioRect> = {
   name: { rx0: 0.785, ry0: 0.14, rx1: 1.0, ry1: 0.2 },
@@ -857,13 +871,14 @@ export const formatRatioPercent = (value: number): string => {
  * Converts a normalized 0..1 ratio to the percent number shown in ratio inputs (e.g., `0.785` -> `78.5`),
  * rounded to 4 decimals to drop float noise such as `78.50000000000001`.
  */
-export const ratioToPercentInput = (ratio: number): number => Math.round(ratio * 1_000_000) / 10_000;
+export const ratioToPercentInput = (ratio: number): number => toRatioUnits(ratio) / (RATIO_SCALE / 100);
 
 /**
  * Converts a percent number typed into a ratio input back to a normalized ratio (e.g., `78.5` -> `0.785`),
- * keeping 6 decimals (= 4 decimals of percent) without float noise. Clamping is left to the caller.
+ * keeping the stored 6 decimals (= 4 decimals of percent) without float noise. Clamping is left to the caller.
  */
-export const percentInputToRatio = (percent: number): number => Math.round(percent * 10_000) / 1_000_000;
+export const percentInputToRatio = (percent: number): number =>
+  Math.round(percent * (RATIO_SCALE / 100)) / RATIO_SCALE;
 
 export interface RatioMaskOverlayBox {
   leftPct: number;

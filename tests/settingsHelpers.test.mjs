@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_SETTINGS,
+  MASK_PRESETS,
   MAX_COL_COUNT,
   MAX_OFFSET_PX,
   MAX_RECOMMENDED_CANVAS_PIXELS,
@@ -23,6 +24,7 @@ import {
   getResultStaleReason,
   hasCropOverlapWithImage,
   intersectPixelRects,
+  isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
   normalizeRatioRect,
@@ -302,6 +304,51 @@ describe('hex color normalization and default comparison', () => {
       }),
       'none'
     );
+  });
+
+  it('marks the result stale for the smallest ratio change a user can enter', () => {
+    // 78.5% -> 78.499% moves a 300px-wide mask edge by 1px, so it must require reprocessing.
+    const snapshot = {
+      ...cloneSettings(createDefaultSettings()),
+      maskEnabled: true,
+      maskMode: 'ratio',
+      maskRatioRect: { ...MASK_PRESETS.name },
+    };
+    const current = {
+      ...snapshot,
+      maskRatioRect: { ...MASK_PRESETS.name, rx0: percentInputToRatio(78.499) },
+    };
+    const crop = { x: 0, y: 0, width: 300, height: 200 };
+    assert.notEqual(
+      computeRatioMaskRect(current.maskRatioRect, crop).x,
+      computeRatioMaskRect(snapshot.maskRatioRect, crop).x
+    );
+    assert.equal(
+      getResultStaleReason({
+        currentSettings: current,
+        snapshotSettings: snapshot,
+        currentImages: [],
+        snapshotImages: [],
+      }),
+      'settings'
+    );
+  });
+});
+
+describe('isRatioRectEqual', () => {
+  const base = { rx0: 0.785, ry0: 0.14, rx1: 1, ry1: 0.2 };
+
+  it('treats any change at the stored 6-decimal precision as different', () => {
+    assert.equal(isRatioRectEqual(base, { ...base, rx0: 0.78499 }), false);
+    assert.equal(isRatioRectEqual(base, { ...base, ry1: 0.200001 }), false);
+    // Previously missed: 0.7851 - 0.785 is 0.0000999… in floating point, under the old 0.0001 tolerance.
+    assert.equal(isRatioRectEqual(base, { ...base, rx0: 0.7851 }), false);
+  });
+
+  it('ignores float noise below the stored precision', () => {
+    assert.equal(isRatioRectEqual(base, { ...base }), true);
+    assert.equal(isRatioRectEqual({ ...base, ry0: 0.3 }, { ...base, ry0: 0.1 + 0.2 }), true);
+    assert.equal(isRatioRectEqual(base, { ...base, rx0: percentInputToRatio(78.5) }), true);
   });
 });
 
