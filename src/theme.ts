@@ -1,4 +1,14 @@
-import { createTheme } from '@mui/material/styles';
+import { useEffect } from 'react';
+import { createTheme, useColorScheme } from '@mui/material/styles';
+
+/**
+ * Page background per color scheme. Also used as the mobile browser toolbar color;
+ * keep the static `theme-color` tags in index.html in sync with these values.
+ */
+export const PAGE_BACKGROUND = {
+  light: '#F3F5F9',
+  dark: '#0D1117',
+} as const;
 
 /**
  * System font stack tuned for mixed Japanese / Latin UI text.
@@ -31,7 +41,7 @@ export const appTheme = createTheme({
     light: {
       palette: {
         primary: { main: '#0B5ED7', light: '#4C8DF0', dark: '#0848A8', contrastText: '#FFFFFF' },
-        background: { default: '#F3F5F9', paper: '#FFFFFF' },
+        background: { default: PAGE_BACKGROUND.light, paper: '#FFFFFF' },
         text: { primary: '#111827', secondary: '#4B5563' },
         divider: 'rgba(17, 24, 39, 0.11)',
       },
@@ -39,7 +49,7 @@ export const appTheme = createTheme({
     dark: {
       palette: {
         primary: { main: '#5AA9FF', light: '#8CC4FF', dark: '#2F80E0', contrastText: '#03152B' },
-        background: { default: '#0D1117', paper: '#161B22' },
+        background: { default: PAGE_BACKGROUND.dark, paper: '#161B22' },
         text: { primary: '#E6EAF0', secondary: '#9AA4B2' },
         divider: 'rgba(230, 234, 240, 0.12)',
       },
@@ -170,3 +180,22 @@ export const appTheme = createTheme({
     },
   },
 });
+
+/**
+ * Keeps `<meta name="theme-color">` (the mobile browser toolbar color) in line with the active color scheme,
+ * including a manual light/dark choice that differs from the OS setting. Must run inside the ThemeProvider.
+ * The static tags in index.html cover the first paint before this runs.
+ */
+export const useThemeColorMetaSync = (): void => {
+  const { mode, systemMode } = useColorScheme();
+  const activeScheme = mode === 'system' ? systemMode : mode;
+
+  useEffect(() => {
+    if (activeScheme !== 'light' && activeScheme !== 'dark') {
+      return;
+    }
+    document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]').forEach((meta) => {
+      meta.content = PAGE_BACKGROUND[activeScheme];
+    });
+  }, [activeScheme]);
+};
