@@ -2345,7 +2345,14 @@ const ImageProcessor: React.FC = () => {
                 title={t('settings')}
                 meta={
                   <StatusPill>
-                    {t('columns')}: {settings.colCount}, {settings.outputFormat === 'png' ? 'PNG' : `${t('quality')}: ${settings.quality}%`}
+                    {t('settings_summary', {
+                      columnsLabel: t('columns'),
+                      columns: settings.colCount,
+                      format:
+                        settings.outputFormat === 'png'
+                          ? formatOutputFormatLabel('png')
+                          : `${formatOutputFormatLabel(settings.outputFormat)} ${settings.quality}%`,
+                    })}
                   </StatusPill>
                 }
               />
@@ -2438,7 +2445,7 @@ const ImageProcessor: React.FC = () => {
                 title={t('cropping')}
                 meta={
                   <StatusPill active={settings.cropAuto}>
-                    {settings.cropAuto ? t('auto_mode') : `${settings.cropWidth}x${settings.cropHeight}`}
+                    {settings.cropAuto ? t('auto_mode') : `${settings.cropWidth} × ${settings.cropHeight}`}
                   </StatusPill>
                 }
               />

@@ -9,6 +9,7 @@
   "settings": "設定",
   "columns": "カラム",
   "columns_help": "横に並べる枚数",
+  "settings_summary": "{{columnsLabel}}: {{columns}} ・ {{format}}",
   "offset_px": "オフセット (px)",
   "offset_help": "画像間と外枠の余白（px）",
   "sort_order": "並び順",
