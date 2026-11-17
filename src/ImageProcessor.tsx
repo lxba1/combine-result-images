@@ -1469,15 +1469,23 @@ const ImageProcessor: React.FC = () => {
     });
   };
 
-  /**
-   * Lets a click anywhere in the empty-state drop zone open the file picker.
-   * Clicks on the label button (or its hidden input) keep their native path so the picker opens only once.
-   */
-  const handleDropZoneClick = (event: React.MouseEvent<HTMLElement>) => {
-    if (isProcessing || (event.target as Element).closest('label, input')) {
+  /** Opens the native file picker via the hidden input; used by the upload button (mouse and keyboard). */
+  const openFilePicker = () => {
+    if (isProcessing) {
       return;
     }
     fileInputRef.current?.click();
+  };
+
+  /**
+   * Lets a click anywhere in the empty-state drop zone open the file picker.
+   * Clicks on the upload button (or bubbling from the hidden input) are skipped so the picker opens only once.
+   */
+  const handleDropZoneClick = (event: React.MouseEvent<HTMLElement>) => {
+    if ((event.target as Element).closest('button, input')) {
+      return;
+    }
+    openFilePicker();
   };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2646,23 +2654,14 @@ const ImageProcessor: React.FC = () => {
                 )}
                 <Button
                   variant={buttonVariants.upload}
-                  component="label"
                   fullWidth
                   size="large"
                   startIcon={<AddPhotoIcon />}
                   disabled={isProcessing}
+                  onClick={openFilePicker}
                   sx={images.length === 0 ? { width: { sm: 'auto' }, minWidth: { sm: 260 }, px: { sm: 4 } } : undefined}
                 >
                   {images.length > 0 ? t('add_images') : t('upload_images')}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    hidden
-                    accept="image/png, image/jpeg"
-                    multiple
-                    disabled={isProcessing}
-                    onChange={handleFileChange}
-                  />
                 </Button>
                 <Typography
                   variant="caption"
@@ -2676,6 +2675,15 @@ const ImageProcessor: React.FC = () => {
                   {t('drop_zone_hint')}
                 </Typography>
               </Box>
+              <input
+                ref={fileInputRef}
+                type="file"
+                hidden
+                accept="image/png, image/jpeg"
+                multiple
+                disabled={isProcessing}
+                onChange={handleFileChange}
+              />
               {fileSelectionNotice && (
                 <Alert
                   ref={fileSelectionNoticeRef}
