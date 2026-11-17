@@ -1181,6 +1181,7 @@ const ImageProcessor: React.FC = () => {
   const ratioPreviewKeyRef = useRef<{ file: File; cropKey: string } | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const fileSelectionNoticeRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const processAlertRef = useRef<HTMLDivElement>(null);
   const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const isMountedRef = useRef(true);
@@ -1462,6 +1463,17 @@ const ImageProcessor: React.FC = () => {
       severity: notice.severity,
       message: 'params' in notice ? t(notice.messageKey, notice.params) : t(notice.messageKey),
     });
+  };
+
+  /**
+   * Lets a click anywhere in the empty-state drop zone open the file picker.
+   * Clicks on the label button (or its hidden input) keep their native path so the picker opens only once.
+   */
+  const handleDropZoneClick = (event: React.MouseEvent<HTMLElement>) => {
+    if (isProcessing || (event.target as Element).closest('label, input')) {
+      return;
+    }
+    fileInputRef.current?.click();
   };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2579,6 +2591,7 @@ const ImageProcessor: React.FC = () => {
                 </Box>
               </Box>
               <Box
+                onClick={images.length === 0 ? handleDropZoneClick : undefined}
                 sx={
                   images.length === 0
                     ? (muiTheme) => ({
@@ -2592,6 +2605,14 @@ const ImageProcessor: React.FC = () => {
                         borderColor: tint(muiTheme, 'primary', 0.35),
                         borderRadius: '12px',
                         bgcolor: tint(muiTheme, 'primary', 0.04),
+                        cursor: 'pointer',
+                        transition: muiTheme.transitions.create(['border-color', 'background-color'], {
+                          duration: muiTheme.transitions.duration.shorter,
+                        }),
+                        '&:hover': {
+                          borderColor: tint(muiTheme, 'primary', 0.6),
+                          bgcolor: tint(muiTheme, 'primary', 0.07),
+                        },
                       })
                     : undefined
                 }
@@ -2630,6 +2651,7 @@ const ImageProcessor: React.FC = () => {
                 >
                   {images.length > 0 ? t('add_images') : t('upload_images')}
                   <input
+                    ref={fileInputRef}
                     type="file"
                     hidden
                     accept="image/png, image/jpeg"
@@ -2901,7 +2923,7 @@ const ImageProcessor: React.FC = () => {
                         : undefined
                     }
                     aria-label={processingStatusText}
-                    sx={{ mt: 0.75, borderRadius: 1 }}
+                    sx={{ mt: 0.75 }}
                   />
                 )}
               </Box>
