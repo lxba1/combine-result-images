@@ -131,9 +131,17 @@ export const appTheme = createTheme({
           // Match the accordion's inner corners so hover / keyboard-focus backgrounds don't poke out.
           borderRadius: SURFACE_RADIUS - 1,
           '&.Mui-expanded': { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
+          // Keyboard focus: keep MUI's focus background and add the same inset outline as the file list rows.
+          '&.Mui-focusVisible': {
+            outline: `2px solid ${(theme.vars ?? theme).palette.primary.main}`,
+            outlineOffset: -2,
+          },
           // Hover feedback only on devices with a real hover, so it doesn't stick after a tap.
+          // Skipped while focus-visible so it never masks the keyboard focus background.
           '@media (hover: hover)': {
-            '&:hover:not(.Mui-disabled)': { backgroundColor: (theme.vars ?? theme).palette.action.hover },
+            '&:hover:not(.Mui-disabled):not(.Mui-focusVisible)': {
+              backgroundColor: (theme.vars ?? theme).palette.action.hover,
+            },
           },
         }),
         content: {
