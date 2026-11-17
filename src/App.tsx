@@ -2,22 +2,13 @@ import './App.css'
 import ImageProcessor from './ImageProcessor'
 import React from 'react'
 import { Box, CircularProgress, CssBaseline } from '@mui/material'
-import { ThemeProvider, createTheme } from '@mui/material/styles'
-
-const theme = createTheme({
-  cssVariables: {
-    colorSchemeSelector: 'data',
-  },
-  colorSchemes: {
-    light: true,
-    dark: true,
-  },
-})
+import { ThemeProvider } from '@mui/material/styles'
+import { appTheme } from './theme'
 
 function App() {
 
   return (
-    <ThemeProvider theme={theme} defaultMode="system" disableTransitionOnChange>
+    <ThemeProvider theme={appTheme} defaultMode="system" disableTransitionOnChange>
       <CssBaseline enableColorScheme />
       <React.Suspense
         fallback={
