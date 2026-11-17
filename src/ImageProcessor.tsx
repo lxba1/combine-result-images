@@ -2367,7 +2367,8 @@ const ImageProcessor: React.FC = () => {
               />
             </AccordionSummary>
             <AccordionDetails>
-              <Grid container spacing={2}>
+              {/* Outlined field labels float above their box; extra top space keeps them clear of the header. */}
+              <Grid container spacing={2} sx={{ pt: 2 }}>
                 <Grid size={{ xs: 6 }}>
                   <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('colCount')}>
                     <InputLabel id="col-count-label">{t('columns')}</InputLabel>
