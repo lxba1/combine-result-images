@@ -296,20 +296,24 @@ interface StatusPillProps {
   children: React.ReactNode;
 }
 
-/** Small non-interactive pill summarizing a section's current state in its header. */
+/**
+ * Small non-interactive pill summarizing a section's current state in its header.
+ * Stays on one line normally (the header moves it below the title first) and only wraps
+ * its own text when even a full row is too narrow, e.g. very small screens with enlarged text.
+ */
 const StatusPill: React.FC<StatusPillProps> = ({ active = false, children }) => (
   <Box
     component="span"
     sx={(theme) => ({
       display: 'inline-flex',
       alignItems: 'center',
+      maxWidth: '100%',
       px: 1,
       py: 0.25,
-      borderRadius: 999,
+      borderRadius: '12px',
       fontSize: '0.75rem',
       fontWeight: 600,
       lineHeight: 1.5,
-      whiteSpace: 'nowrap',
       fontVariantNumeric: 'tabular-nums',
       ...(active
         ? { color: 'primary.main', bgcolor: tint(theme, 'primary', 0.12) }
@@ -2292,7 +2296,7 @@ const ImageProcessor: React.FC = () => {
               <Typography
                 variant="h4"
                 component="h1"
-                sx={{ fontSize: { xs: '1.25rem', sm: '1.625rem', md: '1.875rem' }, lineHeight: 1.2, whiteSpace: 'nowrap' }}
+                sx={{ fontSize: { xs: '1.25rem', sm: '1.625rem', md: '1.875rem' }, lineHeight: 1.2 }}
               >
                 {t('title')}
               </Typography>
