@@ -128,6 +128,13 @@ export const appTheme = createTheme({
           minHeight: 56,
           paddingLeft: theme.spacing(2),
           paddingRight: theme.spacing(2),
+          // Match the accordion's inner corners so hover / keyboard-focus backgrounds don't poke out.
+          borderRadius: SURFACE_RADIUS - 1,
+          '&.Mui-expanded': { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
+          // Hover feedback only on devices with a real hover, so it doesn't stick after a tap.
+          '@media (hover: hover)': {
+            '&:hover:not(.Mui-disabled)': { backgroundColor: (theme.vars ?? theme).palette.action.hover },
+          },
         }),
         content: {
           margin: '10px 0',
@@ -167,7 +174,10 @@ export const appTheme = createTheme({
     },
     MuiDialog: {
       styleOverrides: {
-        paper: { borderRadius: 16 },
+        paper: ({ theme }) => ({
+          borderRadius: 16,
+          border: `1px solid ${(theme.vars ?? theme).palette.divider}`,
+        }),
       },
     },
     MuiMenu: {
