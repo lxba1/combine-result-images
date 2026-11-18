@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "node --experimental-strip-types --test tests/ocrHelpers.test.mjs tests/ocrUnpatchedTesseract.test.mjs tests/settingsHelpers.test.mjs tests/cropHelpers.test.mjs tests/montageHelpers.test.mjs",
-    "preview": "vite preview",
+    "preview": "vite preview --host",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },
