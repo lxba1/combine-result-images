@@ -1199,9 +1199,12 @@ const ImageProcessor: React.FC = () => {
     lines: readonly TranslatableMessage[];
     fields: ReadonlySet<SettingFieldKey>;
   } | null>(null);
-  const [largeCanvasConfirm, setLargeCanvasConfirm] = useState<{ open: boolean; message: string }>({
+  const [largeCanvasConfirm, setLargeCanvasConfirm] = useState<{
+    open: boolean;
+    message: TranslatableMessage | null;
+  }>({
     open: false,
-    message: '',
+    message: null,
   });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
@@ -1276,12 +1279,12 @@ const ImageProcessor: React.FC = () => {
     const resolve = largeCanvasConfirmResolverRef.current;
     largeCanvasConfirmResolverRef.current = null;
     if (isMountedRef.current) {
-      setLargeCanvasConfirm({ open: false, message: '' });
+      setLargeCanvasConfirm({ open: false, message: null });
     }
     resolve?.(confirmed);
   };
 
-  const requestLargeCanvasConfirm = (message: string): Promise<boolean> => {
+  const requestLargeCanvasConfirm = (message: TranslatableMessage): Promise<boolean> => {
     if (largeCanvasConfirmResolverRef.current) {
       largeCanvasConfirmResolverRef.current(false);
       largeCanvasConfirmResolverRef.current = null;
@@ -1820,6 +1823,9 @@ const ImageProcessor: React.FC = () => {
   };
 
   const processImages = async () => {
+    // This run outlives the render it started from, and `t` stays fixed to that render's
+    // language. Messages kept in state therefore hold keys (msg) and are translated at render
+    // time; strings needed right away use i18n.t, which follows the current language.
     if (isProcessing) return;
     if (images.length === 0) {
       reportProcessError(msg('alert_select_images_first'));
@@ -2020,7 +2026,7 @@ const ImageProcessor: React.FC = () => {
         // Release before blocking on user confirmation or allocating an oversized montage.
         releaseFirstImageBitmap();
         setProcessingProgress({ phase: 'confirming' });
-        const confirmMessage = t('confirm_large_canvas_size', {
+        const confirmMessage = msg('confirm_large_canvas_size', {
           width: sizeEval.width.toLocaleString(),
           height: sizeEval.height.toLocaleString(),
           pixels: sizeEval.pixels.toLocaleString(),
@@ -2036,7 +2042,7 @@ const ImageProcessor: React.FC = () => {
 
       const montageCanvas = canvasRef.current;
       if (!montageCanvas) {
-        throw new Error(t('alert_canvas_not_ready'));
+        throw new Error(i18n.t('alert_canvas_not_ready'));
       }
 
       montageCanvasUsed = true;
@@ -2081,7 +2087,7 @@ const ImageProcessor: React.FC = () => {
         return;
       }
       if (renderResult.status === 'context_failed') {
-        throw new Error(t('alert_failed_to_get_context'));
+        throw new Error(i18n.t('alert_failed_to_get_context'));
       }
       if (renderResult.status === 'dimension_mismatch') {
         console.warn(
@@ -2148,7 +2154,7 @@ const ImageProcessor: React.FC = () => {
 
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error("An unexpected error occurred during image processing:", error);
-      alert(`${t('alert_processing_failed')}: ${errorMessage}`);
+      alert(`${i18n.t('alert_processing_failed')}: ${errorMessage}`);
 
       // Best-effort cleanup before reloading
       void releaseOcrResources(ocrAbortRef, ocrSessionRef, { abort: true }).catch((cleanupError) => {
@@ -3127,7 +3133,8 @@ const ImageProcessor: React.FC = () => {
             id="large-canvas-confirm-dialog-description"
             sx={{ whiteSpace: 'pre-line' }}
           >
-            {largeCanvasConfirm.message}
+            {largeCanvasConfirm.message &&
+              t(largeCanvasConfirm.message.key, largeCanvasConfirm.message.params)}
           </DialogContentText>
         </DialogContent>
         <DialogActions>
