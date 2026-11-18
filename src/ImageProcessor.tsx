@@ -72,6 +72,7 @@ import {
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveRatioPreviewBuildDelayMs,
   resolveRatioPreviewCropRect,
   resolveRemovablePreviewTarget,
   shouldScrollToResult,
@@ -83,6 +84,7 @@ import {
   type HeavyResourceReleaseTimes,
   type ImageDimensions,
   type MaskAccordionPreviewState,
+  type RatioPreviewRequest,
   type RatioPreviewSnapshot,
 } from './montageHelpers.ts';
 
@@ -1220,6 +1222,8 @@ const ImageProcessor: React.FC = () => {
   const previewRequestIdRef = useRef(0);
   const requestedPreviewFileRef = useRef<File | null>(null);
   const ratioPreviewKeyRef = useRef<{ file: File; cropKey: string } | null>(null);
+  // What the open ratio preview last asked for; null while no ratio preview is shown.
+  const ratioPreviewRequestRef = useRef<RatioPreviewRequest<File> | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const fileSelectionNoticeRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1417,8 +1421,11 @@ const ImageProcessor: React.FC = () => {
 
   useEffect(() => {
     if (!needsRatioPreview || !previewSourceImage) {
+      ratioPreviewRequestRef.current = null;
       return;
     }
+    const previousRequest = ratioPreviewRequestRef.current;
+    ratioPreviewRequestRef.current = { file: previewSourceImage, cropKey: activePreviewCropKey };
     if (
       ratioPreviewKeyRef.current?.file === previewSourceImage &&
       ratioPreviewKeyRef.current?.cropKey === activePreviewCropKey
@@ -1427,7 +1434,7 @@ const ImageProcessor: React.FC = () => {
     }
     let cancelled = false;
 
-    void buildCroppedRatioPreview({
+    const startBuild = () => void buildCroppedRatioPreview({
       file: previewSourceImage,
       cropAuto: settings.cropAuto,
       cropX: settings.cropX,
@@ -1445,11 +1452,13 @@ const ImageProcessor: React.FC = () => {
       if (!built) {
         return;
       }
-      ratioPreviewKeyRef.current = {
-        file: previewSourceImage,
-        cropKey: activePreviewCropKey,
-      };
       if (built.status === 'ok') {
+        // Only a successful build is remembered, so a failed one (e.g. a decode that ran out of
+        // memory) is retried the next time the preview opens.
+        ratioPreviewKeyRef.current = {
+          file: previewSourceImage,
+          cropKey: activePreviewCropKey,
+        };
         setRatioPreview({
           status: 'ok',
           url: built.url,
@@ -1468,8 +1477,24 @@ const ImageProcessor: React.FC = () => {
       }
     });
 
+    // Typing in the crop fields commits every keystroke; wait for a pause before decoding the
+    // full-size image again. Opening the preview or switching images builds right away.
+    const delayMs = resolveRatioPreviewBuildDelayMs(previousRequest, {
+      file: previewSourceImage,
+      cropKey: activePreviewCropKey,
+    });
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    if (delayMs > 0) {
+      timerId = setTimeout(startBuild, delayMs);
+    } else {
+      startBuild();
+    }
+
     return () => {
       cancelled = true;
+      if (timerId !== undefined) {
+        clearTimeout(timerId);
+      }
     };
   }, [
     needsRatioPreview,
@@ -1551,12 +1576,20 @@ const ImageProcessor: React.FC = () => {
 
   const removeImageFile = (targetFile: File) => {
     const nextImages = images.filter((file) => file !== targetFile);
-    if (nextImages.length === 0) {
+    if (
+      nextImages.length === 0 ||
+      ratioPreview?.sourceFile === targetFile ||
+      ratioPreviewKeyRef.current?.file === targetFile
+    ) {
+      // Drop a ratio preview built from the removed image right away, so its File and blob URL
+      // are released and reopening the mask section never flashes the removed image.
       ratioPreviewKeyRef.current = null;
+      setRatioPreview(null);
+    }
+    if (nextImages.length === 0) {
       setFileListExpanded(true);
       setProcessedResult(null);
       setShareError(null);
-      setRatioPreview(null);
     }
     setImages(nextImages);
     setFileSelectionNotice(null);

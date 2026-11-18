@@ -31,11 +31,13 @@ import {
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveRatioPreviewBuildDelayMs,
   resolveRatioPreviewCropRect,
   resolveRemovablePreviewTarget,
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
   updateHeavyResourceReleaseTimes,
+  RATIO_PREVIEW_CROP_DEBOUNCE_MS,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
 
@@ -2682,6 +2684,42 @@ describe('file list selection, deduplication, and middle ellipsis helpers', () =
         },
       }),
       { hasImages: true, status: 'loading' }
+    );
+  });
+
+  it('waits before rebuilding the ratio preview only when the crop changed on the same open image', () => {
+    const fileA = { name: 'a.png' };
+    const fileB = { name: 'b.png' };
+    assert.equal(RATIO_PREVIEW_CROP_DEBOUNCE_MS, 200);
+
+    // Typing in a crop field while the preview is open.
+    assert.equal(
+      resolveRatioPreviewBuildDelayMs(
+        { file: fileA, cropKey: 'manual:0,0,15,100' },
+        { file: fileA, cropKey: 'manual:0,0,153,100' }
+      ),
+      RATIO_PREVIEW_CROP_DEBOUNCE_MS
+    );
+    // Opening the preview builds right away, even if the crop changed while it was closed.
+    assert.equal(
+      resolveRatioPreviewBuildDelayMs(null, { file: fileA, cropKey: 'manual:0,0,153,100' }),
+      0
+    );
+    // A different first image builds right away.
+    assert.equal(
+      resolveRatioPreviewBuildDelayMs(
+        { file: fileA, cropKey: 'auto' },
+        { file: fileB, cropKey: 'auto' }
+      ),
+      0
+    );
+    // Same image and crop (e.g. an effect re-run): nothing to debounce.
+    assert.equal(
+      resolveRatioPreviewBuildDelayMs(
+        { file: fileA, cropKey: 'auto' },
+        { file: fileA, cropKey: 'auto' }
+      ),
+      0
     );
   });
 });
