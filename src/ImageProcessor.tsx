@@ -1214,6 +1214,8 @@ const ImageProcessor: React.FC = () => {
   // keyed by getFileKey, so it never holds on to a File that was removed from the list.
   const ocrMaskCacheRef = useRef<OcrMaskCacheEntry<number> | null>(null);
   const processAbortRef = useRef<AbortController | null>(null);
+  // Synchronous twin of isSharing, so a second share call before the re-render is ignored.
+  const isSharingRef = useRef(false);
   const fileDragDepthRef = useRef(0);
   const previewRequestIdRef = useRef(0);
   const requestedPreviewFileRef = useRef<File | null>(null);
@@ -1826,7 +1828,9 @@ const ImageProcessor: React.FC = () => {
     // This run outlives the render it started from, and `t` stays fixed to that render's
     // language. Messages kept in state therefore hold keys (msg) and are translated at render
     // time; strings needed right away use i18n.t, which follows the current language.
-    if (isProcessing) return;
+    // processAbortRef is set synchronously below, so it also blocks a second call made before
+    // React re-renders with isProcessing (e.g. two calls in the same task).
+    if (isProcessing || processAbortRef.current) return;
     if (images.length === 0) {
       reportProcessError(msg('alert_select_images_first'));
       return;
@@ -2267,11 +2271,13 @@ const ImageProcessor: React.FC = () => {
     if (
       !shareableResultFile ||
       isSharing ||
+      isSharingRef.current ||
       typeof navigator === 'undefined' ||
       typeof navigator.share !== 'function'
     ) {
       return;
     }
+    isSharingRef.current = true;
     setIsSharing(true);
     setShareError(null);
     try {
@@ -2292,6 +2298,7 @@ const ImageProcessor: React.FC = () => {
         }
       }
     } finally {
+      isSharingRef.current = false;
       if (isMountedRef.current) {
         setIsSharing(false);
       }
