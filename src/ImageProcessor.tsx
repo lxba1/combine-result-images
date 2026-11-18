@@ -1221,6 +1221,8 @@ const ImageProcessor: React.FC = () => {
   const fileDragDepthRef = useRef(0);
   const previewRequestIdRef = useRef(0);
   const requestedPreviewFileRef = useRef<File | null>(null);
+  // Image and crop of the successful preview held in ratioPreview; null whenever ratioPreview
+  // holds no successful preview (none yet, cleared, or an error).
   const ratioPreviewKeyRef = useRef<{ file: File; cropKey: string } | null>(null);
   // What the open ratio preview last asked for; null while no ratio preview is shown.
   const ratioPreviewRequestRef = useRef<RatioPreviewRequest<File> | null>(null);
@@ -1454,7 +1456,8 @@ const ImageProcessor: React.FC = () => {
       }
       if (built.status === 'ok') {
         // Only a successful build is remembered, so a failed one (e.g. a decode that ran out of
-        // memory) is retried the next time the preview opens.
+        // memory) is retried the next time the preview opens. Every setRatioPreview keeps this
+        // key in step with the stored snapshot.
         ratioPreviewKeyRef.current = {
           file: previewSourceImage,
           cropKey: activePreviewCropKey,
@@ -1467,6 +1470,9 @@ const ImageProcessor: React.FC = () => {
           cropKey: activePreviewCropKey,
         });
       } else {
+        // The error replaces any earlier successful preview, so forget its key too; otherwise
+        // returning to that image would skip the rebuild and stay on "loading".
+        ratioPreviewKeyRef.current = null;
         setRatioPreview({
           status: 'error',
           url: '',
