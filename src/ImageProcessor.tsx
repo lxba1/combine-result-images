@@ -79,7 +79,6 @@ import {
   splitFilenameForMiddleEllipsis,
   updateHeavyResourceReleaseTimes,
   recordLateMontageRelease,
-  ABANDONED_ENCODE_WAIT_MAX_MS,
   NO_HEAVY_RESOURCE_RELEASES,
   PROCESS_START_SETTLE_MS,
   type FileSelectionNoticeSpec,
@@ -996,6 +995,7 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
 };
 
 type ProcessingProgressState =
+  | { phase: 'waiting_encode' }
   | { phase: 'preparing' }
   | { phase: 'ocr' }
   | { phase: 'confirming' }
@@ -1031,22 +1031,16 @@ const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
   });
 };
 
-/** Resolves when `task` settles, after `maxMs`, or on abort, whichever comes first. */
-const waitForSettleWithAbort = (
-  task: Promise<unknown>,
-  maxMs: number,
-  signal: AbortSignal
-): Promise<void> => {
+/** Resolves when `task` settles or on abort, whichever comes first. */
+const waitForSettleWithAbort = (task: Promise<unknown>, signal: AbortSignal): Promise<void> => {
   if (signal.aborted) {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
     const finish = () => {
-      clearTimeout(timerId);
       signal.removeEventListener('abort', finish);
       resolve();
     };
-    const timerId = setTimeout(finish, maxMs);
     signal.addEventListener('abort', finish, { once: true });
     task.then(finish, finish);
   });
@@ -1946,12 +1940,14 @@ const ImageProcessor: React.FC = () => {
     // A run cancelled mid-encode leaves the browser encoding its own full-size copy of that
     // montage. Wait for it to finish (then the montage cooldown below runs from that moment)
     // before this run allocates anything large, so the two never overlap in memory.
+    // There is no time limit: a slow phone encode can run past any fixed limit, and the spec
+    // always calls toBlob back. The wait shows its own status and can be cancelled.
     const abandonedEncode = abandonedMontageEncodeRef.current;
     if (abandonedEncode) {
-      await waitForSettleWithAbort(abandonedEncode, ABANDONED_ENCODE_WAIT_MAX_MS, signal);
-      if (!signal.aborted && abandonedMontageEncodeRef.current === abandonedEncode) {
-        // Gave up waiting (e.g. toBlob never called back); later runs should not wait again.
-        abandonedMontageEncodeRef.current = null;
+      setProcessingProgress({ phase: 'waiting_encode' });
+      await waitForSettleWithAbort(abandonedEncode, signal);
+      if (!signal.aborted) {
+        setProcessingProgress({ phase: 'preparing' });
       }
     }
 
@@ -2301,6 +2297,8 @@ const ImageProcessor: React.FC = () => {
       return t('status_cancelling');
     }
     switch (processingProgress.phase) {
+      case 'waiting_encode':
+        return t('status_waiting_previous_encode');
       case 'preparing':
         return t('status_preparing');
       case 'ocr':

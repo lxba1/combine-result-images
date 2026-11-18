@@ -1216,12 +1216,6 @@ export const updateHeavyResourceReleaseTimes = (
 };
 
 /**
- * Longest a new run waits for an encode left running by a cancelled run before going ahead
- * anyway, so a `toBlob` that never calls back cannot block every later run.
- */
-export const ABANDONED_ENCODE_WAIT_MAX_MS = 30_000;
-
-/**
  * Moves the montage release time to `now` (never earlier), for when an encode abandoned by a
  * cancelled run finishes after that run ended: only then is its montage snapshot freed.
  */

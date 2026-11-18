@@ -126,6 +126,7 @@
   "processing": "Processing...",
   "cancelling": "Cancelling...",
   "status_preparing": "Preparing images...",
+  "status_waiting_previous_encode": "Waiting for the previous encode to finish...",
   "status_processing_progress": "Processing… {{current}} / {{total}}",
   "status_encoding": "Encoding image...",
   "status_cancelling": "Cancelling processing..."

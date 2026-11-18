@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ABANDONED_ENCODE_WAIT_MAX_MS,
   ImageDecodeError,
   ImageResolutionMismatchError,
   MONTAGE_RERUN_COOLDOWN_MS,
@@ -2082,7 +2081,6 @@ describe('rerun cooldown', () => {
   });
 
   it('restarts the montage cooldown when an abandoned encode finishes after the run ended', () => {
-    assert.equal(ABANDONED_ENCODE_WAIT_MAX_MS, 30000);
     // The cancelled run ended at 10000; its browser encode finished at 13000.
     const ended = { montageReleasedAt: 10000, ocrReleasedAt: 4000 };
     const late = recordLateMontageRelease(ended, 13000);
