@@ -57,7 +57,7 @@ import {
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
-  getMemoryReleaseDelayMs,
+  getRerunCooldownRemainingMs,
   guardWindowFileDragEvent,
   hasExternalFilesDataTransfer,
   mergeInputImageFiles,
@@ -74,6 +74,10 @@ import {
   resolveRemovablePreviewTarget,
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
+  updateHeavyResourceReleaseTimes,
+  NO_HEAVY_RESOURCE_RELEASES,
+  PROCESS_START_SETTLE_MS,
+  type HeavyResourceReleaseTimes,
   type ImageDimensions,
   type MaskAccordionPreviewState,
   type RatioPreviewSnapshot,
@@ -976,8 +980,7 @@ type ProcessingProgressState =
   | { phase: 'ocr' }
   | { phase: 'confirming' }
   | { phase: 'drawing'; current: number; total: number }
-  | { phase: 'encoding' }
-  | { phase: 'releasing' };
+  | { phase: 'encoding' };
 
 interface ProcessedMontageResult {
   blob: Blob;
@@ -1198,11 +1201,13 @@ const ImageProcessor: React.FC = () => {
   const processAlertRef = useRef<HTMLDivElement>(null);
   const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const isMountedRef = useRef(true);
+  // When the previous run released its montage canvas / OCR worker, so that a quick re-run
+  // can wait out the remaining cooldown instead of every run locking the UI afterwards.
+  const heavyResourceReleaseTimesRef = useRef<HeavyResourceReleaseTimes>(NO_HEAVY_RESOURCE_RELEASES);
 
   const isDefaultSettings = areSettingsDefault(settings);
-  const isReleasingMemory = processingProgress?.phase === 'releasing';
 
-  const canCancelProcessing = isProcessing && !isReleasingMemory;
+  const canCancelProcessing = isProcessing;
 
   const handleCancelProcessing = () => {
     if (!canCancelProcessing || isCancelling || !processAbortRef.current) return;
@@ -1831,13 +1836,29 @@ const ImageProcessor: React.FC = () => {
     fileDragDepthRef.current = 0;
     setIsFileDragOver(false);
     setProcessError(null);
-    setProcessedResult(null);
     setShareError(null);
     setFileSelectionNotice(null);
     setProcessingProgress({ phase: 'preparing' });
 
-    // Add a short delay to allow the UI to update (e.g., show progress) before blocking the main thread.
-    await waitWithAbort(200, signal);
+    // When the previous run ended moments ago, first wait out its cooldown so mobile browsers
+    // can hand back the previous canvas / OCR worker memory before this run allocates its own.
+    // The previous result stays available meanwhile, so cancelling here keeps it.
+    const rerunCooldownMs = getRerunCooldownRemainingMs(
+      heavyResourceReleaseTimesRef.current,
+      performance.now()
+    );
+    if (rerunCooldownMs > 0) {
+      // Only await when there is something to wait for, so a normal run keeps clearing the
+      // result and starting the 200ms timer in the same tick as the click.
+      await waitWithAbort(rerunCooldownMs, signal);
+    }
+    if (!signal.aborted) {
+      setProcessedResult(null);
+    }
+    // Let the UI update (e.g., show progress) and the previous result go before blocking the
+    // main thread. Coming after the cooldown, this keeps back-to-back runs as far apart as the
+    // old post-run lock did (cooldown + 200ms).
+    await waitWithAbort(PROCESS_START_SETTLE_MS, signal);
 
     let firstImageBitmap: ImageBitmap | null = null;
     let ocrSessionStarted = false;
@@ -2121,38 +2142,28 @@ const ImageProcessor: React.FC = () => {
         processAbortRef.current = null;
       }
       releaseFirstImageBitmap();
-      const releaseDelayMs = isMountedRef.current
-        ? getMemoryReleaseDelayMs({
-            ocrSessionStarted,
-            montageCanvasUsed,
-            reloadTriggered,
-          })
-        : 0;
-      if (isMountedRef.current && releaseDelayMs > 0) {
-        setProcessingProgress({ phase: 'releasing' });
-      }
       await releaseOcrResources(ocrAbortRef, ocrSessionRef);
+      // No wait here: the UI unlocks right away, and only a re-run started within the
+      // cooldown waits for the remainder (see the start of processImages).
+      heavyResourceReleaseTimesRef.current = updateHeavyResourceReleaseTimes(
+        heavyResourceReleaseTimesRef.current,
+        {
+          ocrSessionStarted,
+          montageCanvasUsed,
+          reloadTriggered,
+          now: performance.now(),
+        }
+      );
       if (isMountedRef.current) {
-        if (releaseDelayMs > 0) {
-          // Add a small delay to allow GC to run before re-enabling the button
-          await new Promise(resolve => setTimeout(resolve, releaseDelayMs));
-        }
-        if (isMountedRef.current) {
-          setProcessingProgress(null);
-          setIsCancelling(false);
-          setIsProcessing(false);
-        }
+        setProcessingProgress(null);
+        setIsCancelling(false);
+        setIsProcessing(false);
       }
     }
   };
 
   const processingStatusText = (() => {
     if (!processingProgress) return '';
-    if (isReleasingMemory) {
-      return processedResult
-        ? t('status_releasing_memory_ready')
-        : t('status_releasing_memory');
-    }
     if (isCancelling) {
       return t('status_cancelling');
     }
@@ -2909,7 +2920,7 @@ const ImageProcessor: React.FC = () => {
                   fullWidth={!canCancelProcessing}
                   size="large"
                   startIcon={
-                    isProcessing && !isReleasingMemory ? (
+                    isProcessing ? (
                       <CircularProgress size={20} color="inherit" />
                     ) : (
                       <PlayArrow />
@@ -2917,11 +2928,7 @@ const ImageProcessor: React.FC = () => {
                   }
                   sx={{ flex: 1 }}
                 >
-                  {!isProcessing
-                    ? t('process_images')
-                    : isReleasingMemory
-                      ? t('releasing_memory')
-                      : t('processing')}
+                  {isProcessing ? t('processing') : t('process_images')}
                 </Button>
                 {canCancelProcessing && (
                   <Button
@@ -2963,7 +2970,7 @@ const ImageProcessor: React.FC = () => {
                 >
                   {processingStatusText}
                 </Typography>
-                {isProcessing && !isReleasingMemory && processingStatusText && (
+                {isProcessing && processingStatusText && (
                   <LinearProgress
                     variant={drawingProgress ? 'determinate' : 'indeterminate'}
                     value={

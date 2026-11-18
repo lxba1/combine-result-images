@@ -123,11 +123,8 @@
   "alert_output_dimension_mismatch": "生成された画像のサイズ（{{actualWidth}} × {{actualHeight}} px）が期待サイズ（{{expectedWidth}} × {{expectedHeight}} px）と一致しません。\n画像形式やブラウザのサイズ上限により一部が切り捨てられた可能性があります。出力形式（PNG / JPEG）やカラム数・画像の枚数を調整して再度お試しください。",
   "processing": "処理中...",
   "cancelling": "キャンセル中...",
-  "releasing_memory": "メモリ解放中...",
-  "status_preparing": "画像を読み込んでいます...",
+  "status_preparing": "画像処理を準備しています...",
   "status_processing_progress": "処理中… {{current}} / {{total}} 枚",
   "status_encoding": "画像を書き出しています...",
-  "status_cancelling": "処理をキャンセルしています...",
-  "status_releasing_memory": "メモリを解放しています...",
-  "status_releasing_memory_ready": "メモリを解放しています（出力画像の保存は可能です）"
+  "status_cancelling": "処理をキャンセルしています..."
 }
