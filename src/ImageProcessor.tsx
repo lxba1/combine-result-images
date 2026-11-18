@@ -9,8 +9,10 @@ import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
 import {
+  type OcrMaskCacheEntry,
   type OcrSessionController,
   canvasToBlob,
+  detectOcrMasksWithCache,
   isAbortError,
   releaseOcrResources,
   runOcrMaskDetection,
@@ -1190,6 +1192,10 @@ const ImageProcessor: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
+  // OCR masks found for the current first image and crop, so re-runs that change only other
+  // settings (columns, colors, format, ...) skip starting an OCR worker. Kept in memory only and
+  // keyed by getFileKey, so it never holds on to a File that was removed from the list.
+  const ocrMaskCacheRef = useRef<OcrMaskCacheEntry<number> | null>(null);
   const processAbortRef = useRef<AbortController | null>(null);
   const fileDragDepthRef = useRef(0);
   const previewRequestIdRef = useRef(0);
@@ -1893,27 +1899,36 @@ const ImageProcessor: React.FC = () => {
           if (signal.aborted) {
             return Promise.resolve({ status: 'aborted' });
           }
-          return runOcrMaskDetection<Tesseract.Worker, HTMLCanvasElement, ImageBitmap>({
-            sourceImage: sourceBitmap,
+          // Reuses masks already found for this first image and crop; only uncached sides run
+          // OCR, and a full cache hit starts no worker (so no OCR cooldown either).
+          return detectOcrMasksWithCache({
+            cacheHolder: ocrMaskCacheRef,
+            sourceKey: getFileKey(orderedImages[0]),
             cropRect,
             needsEnemyOcr,
             needsSelfOcr,
-            abortHolder: ocrAbortRef,
-            sessionHolder: ocrSessionRef,
-            onSourceConsumed: releaseFirstImageBitmap,
-            startSession: (ocrSignal) => {
-              ocrSessionStarted = true;
-              return startOcrSession({
-                createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
-                configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
-                signal: ocrSignal,
-              });
-            },
-            onStatus: (status) => {
-              if (status === 'starting' && !signal.aborted && isMountedRef.current) {
-                setProcessingProgress({ phase: 'ocr' });
-              }
-            },
+            detect: (sides) =>
+              runOcrMaskDetection<Tesseract.Worker, HTMLCanvasElement, ImageBitmap>({
+                sourceImage: sourceBitmap,
+                cropRect,
+                ...sides,
+                abortHolder: ocrAbortRef,
+                sessionHolder: ocrSessionRef,
+                onSourceConsumed: releaseFirstImageBitmap,
+                startSession: (ocrSignal) => {
+                  ocrSessionStarted = true;
+                  return startOcrSession({
+                    createWorkerFn: (langs, oem, opts) => Tesseract.createWorker(langs, oem, opts),
+                    configureWorker: (w) => w.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }),
+                    signal: ocrSignal,
+                  });
+                },
+                onStatus: (status) => {
+                  if (status === 'starting' && !signal.aborted && isMountedRef.current) {
+                    setProcessingProgress({ phase: 'ocr' });
+                  }
+                },
+              }),
           });
         },
       });
