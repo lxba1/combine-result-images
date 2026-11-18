@@ -1193,8 +1193,9 @@ const ImageProcessor: React.FC = () => {
   const ocrSessionRef = useRef<OcrSessionController<Tesseract.Worker> | null>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
   // OCR masks found for the current first image and crop, so re-runs that change only other
-  // settings (columns, colors, format, ...) skip starting an OCR worker. Kept in memory only.
-  const ocrMaskCacheRef = useRef<OcrMaskCacheEntry<File> | null>(null);
+  // settings (columns, colors, format, ...) skip starting an OCR worker. Kept in memory only and
+  // keyed by getFileKey, so it never holds on to a File that was removed from the list.
+  const ocrMaskCacheRef = useRef<OcrMaskCacheEntry<number> | null>(null);
   const processAbortRef = useRef<AbortController | null>(null);
   const fileDragDepthRef = useRef(0);
   const previewRequestIdRef = useRef(0);
@@ -1902,7 +1903,7 @@ const ImageProcessor: React.FC = () => {
           // OCR, and a full cache hit starts no worker (so no OCR cooldown either).
           return detectOcrMasksWithCache({
             cacheHolder: ocrMaskCacheRef,
-            file: orderedImages[0],
+            sourceKey: getFileKey(orderedImages[0]),
             cropRect,
             needsEnemyOcr,
             needsSelfOcr,

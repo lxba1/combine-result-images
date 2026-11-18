@@ -1124,8 +1124,9 @@ describe('OCR cancellation & scratch context safety', () => {
 });
 
 describe('detectOcrMasksWithCache', () => {
-  const fileA = { name: 'a.png' };
-  const fileB = { name: 'b.png' };
+  // Per-image IDs (as getFileKey returns); the cache keeps only the ID, never the File.
+  const fileA = 1;
+  const fileB = 2;
   const crop = { x: 150, y: 100, width: 2100, height: 900 };
   const enemyRect = { x: 1800, y: 215, width: 450, height: 53 };
   const selfRect = { x: 760, y: 215, width: 300, height: 53 };
@@ -1148,13 +1149,13 @@ describe('detectOcrMasksWithCache', () => {
     const cacheHolder = { current: null };
     const { calls, detect } = createDetect(okFor);
     const first = await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: true, detect,
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: true, detect,
     });
     assert.deepEqual(first, { status: 'ok', enemyMaskRect: enemyRect, selfMaskRect: selfRect });
     assert.deepEqual(calls, [{ needsEnemyOcr: true, needsSelfOcr: true }]);
 
     const second = await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: { ...crop }, needsEnemyOcr: true, needsSelfOcr: true, detect,
+      cacheHolder, sourceKey: fileA, cropRect: { ...crop }, needsEnemyOcr: true, needsSelfOcr: true, detect,
     });
     assert.deepEqual(second, first);
     assert.equal(calls.length, 1, 'a full hit must not start OCR');
@@ -1163,15 +1164,15 @@ describe('detectOcrMasksWithCache', () => {
   it('runs OCR again when the first image or the crop changes', async () => {
     const cacheHolder = { current: null };
     const { calls, detect } = createDetect(okFor);
-    const run = (file, cropRect) =>
+    const run = (sourceKey, cropRect) =>
       detectOcrMasksWithCache({
-        cacheHolder, file, cropRect, needsEnemyOcr: true, needsSelfOcr: false, detect,
+        cacheHolder, sourceKey, cropRect, needsEnemyOcr: true, needsSelfOcr: false, detect,
       });
     await run(fileA, crop);
     await run(fileB, crop);
     await run(fileB, { ...crop, width: crop.width - 1 });
     assert.equal(calls.length, 3);
-    assert.equal(cacheHolder.current.file, fileB);
+    assert.equal(cacheHolder.current.sourceKey, fileB);
     assert.deepEqual(cacheHolder.current.cropRect, { ...crop, width: crop.width - 1 });
   });
 
@@ -1179,10 +1180,10 @@ describe('detectOcrMasksWithCache', () => {
     const cacheHolder = { current: null };
     const { calls, detect } = createDetect(okFor);
     await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
     });
     const both = await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: true, detect,
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: true, detect,
     });
     assert.deepEqual(calls, [
       { needsEnemyOcr: true, needsSelfOcr: false },
@@ -1195,18 +1196,18 @@ describe('detectOcrMasksWithCache', () => {
 
   it('keeps a cached side that is not requested this time', async () => {
     const cacheHolder = {
-      current: { file: fileA, cropRect: crop, enemyMaskRect: enemyRect, selfMaskRect: null },
+      current: { sourceKey: fileA, cropRect: crop, enemyMaskRect: enemyRect, selfMaskRect: null },
     };
     const { calls, detect } = createDetect(okFor);
     const selfOnly = await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: false, needsSelfOcr: true, detect,
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: false, needsSelfOcr: true, detect,
     });
     assert.deepEqual(calls, [{ needsEnemyOcr: false, needsSelfOcr: true }]);
     assert.deepEqual(selfOnly, { status: 'ok', enemyMaskRect: null, selfMaskRect: selfRect });
     assert.deepEqual(cacheHolder.current.enemyMaskRect, enemyRect);
 
     const enemyOnly = await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
     });
     assert.equal(calls.length, 1);
     assert.deepEqual(enemyOnly, { status: 'ok', enemyMaskRect: enemyRect, selfMaskRect: null });
@@ -1223,7 +1224,7 @@ describe('detectOcrMasksWithCache', () => {
       const { calls, detect } = createDetect(outcome);
       const run = () =>
         detectOcrMasksWithCache({
-          cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
+          cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
         });
       assert.deepEqual(await run(), outcome);
       assert.equal(cacheHolder.current, null);
@@ -1233,11 +1234,11 @@ describe('detectOcrMasksWithCache', () => {
   });
 
   it('keeps the previous cache when a partial re-run fails', async () => {
-    const entry = { file: fileA, cropRect: crop, enemyMaskRect: enemyRect, selfMaskRect: null };
+    const entry = { sourceKey: fileA, cropRect: crop, enemyMaskRect: enemyRect, selfMaskRect: null };
     const cacheHolder = { current: entry };
     const { detect } = createDetect({ status: 'not_found', enemyMissing: false, selfMissing: true });
     const result = await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: true, detect,
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: true, detect,
     });
     assert.deepEqual(result, { status: 'not_found', enemyMissing: false, selfMissing: true });
     assert.equal(cacheHolder.current, entry);
@@ -1248,12 +1249,26 @@ describe('detectOcrMasksWithCache', () => {
     const { calls, detect } = createDetect(okFor);
     const mutableCrop = { ...crop };
     await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: mutableCrop, needsEnemyOcr: true, needsSelfOcr: false, detect,
+      cacheHolder, sourceKey: fileA, cropRect: mutableCrop, needsEnemyOcr: true, needsSelfOcr: false, detect,
     });
     mutableCrop.x += 10;
     await detectOcrMasksWithCache({
-      cacheHolder, file: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: false, detect,
     });
     assert.equal(calls.length, 1);
+  });
+
+  it('stores only the source key and rectangles, not the source image', async () => {
+    const cacheHolder = { current: null };
+    const { detect } = createDetect(okFor);
+    await detectOcrMasksWithCache({
+      cacheHolder, sourceKey: fileA, cropRect: crop, needsEnemyOcr: true, needsSelfOcr: true, detect,
+    });
+    assert.deepEqual(cacheHolder.current, {
+      sourceKey: fileA,
+      cropRect: crop,
+      enemyMaskRect: enemyRect,
+      selfMaskRect: selfRect,
+    });
   });
 });

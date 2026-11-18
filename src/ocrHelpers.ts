@@ -943,17 +943,20 @@ export const runOcrMaskDetection = async <
  * Mask rectangles OCR found on one source image within one crop. The result depends only on
  * those two inputs, so a re-run with the same first image and crop can reuse it.
  */
-export interface OcrMaskCacheEntry<F> {
-  /** The source file itself (identity, not name): a File never changes its contents. */
-  file: F;
+export interface OcrMaskCacheEntry<K> {
+  /**
+   * Identifies the source image, e.g. a per-File ID that is never reused. Use an ID rather than
+   * the File itself so the cache does not keep a removed image alive.
+   */
+  sourceKey: K;
   cropRect: PixelRect;
   enemyMaskRect: PixelRect | null;
   selfMaskRect: PixelRect | null;
 }
 
-export interface DetectOcrMasksWithCacheOptions<F> {
-  cacheHolder: MutableHolder<OcrMaskCacheEntry<F>>;
-  file: F;
+export interface DetectOcrMasksWithCacheOptions<K> {
+  cacheHolder: MutableHolder<OcrMaskCacheEntry<K>>;
+  sourceKey: K;
   cropRect: PixelRect;
   needsEnemyOcr: boolean;
   needsSelfOcr: boolean;
@@ -970,17 +973,19 @@ const isSamePixelRect = (a: PixelRect, b: PixelRect): boolean =>
  * OCR worker starts. Only successful detections are cached; not-found, error and aborted results
  * leave the cache unchanged so the next run tries again.
  */
-export const detectOcrMasksWithCache = async <F>({
+export const detectOcrMasksWithCache = async <K>({
   cacheHolder,
-  file,
+  sourceKey,
   cropRect,
   needsEnemyOcr,
   needsSelfOcr,
   detect,
-}: DetectOcrMasksWithCacheOptions<F>): Promise<OcrMaskDetectionResult> => {
+}: DetectOcrMasksWithCacheOptions<K>): Promise<OcrMaskDetectionResult> => {
   const cached = cacheHolder.current;
   const usable =
-    cached && cached.file === file && isSamePixelRect(cached.cropRect, cropRect) ? cached : null;
+    cached && cached.sourceKey === sourceKey && isSamePixelRect(cached.cropRect, cropRect)
+      ? cached
+      : null;
   const cachedEnemy = needsEnemyOcr ? (usable?.enemyMaskRect ?? null) : null;
   const cachedSelf = needsSelfOcr ? (usable?.selfMaskRect ?? null) : null;
   const runEnemy = needsEnemyOcr && !cachedEnemy;
@@ -998,7 +1003,7 @@ export const detectOcrMasksWithCache = async <F>({
   const enemyMaskRect = runEnemy ? outcome.enemyMaskRect : cachedEnemy;
   const selfMaskRect = runSelf ? outcome.selfMaskRect : cachedSelf;
   cacheHolder.current = {
-    file,
+    sourceKey,
     cropRect: { ...cropRect },
     // Keep a side that was cached but not requested this time (e.g. its mask was switched off).
     enemyMaskRect: enemyMaskRect ?? usable?.enemyMaskRect ?? null,
