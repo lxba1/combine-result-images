@@ -938,3 +938,71 @@ export const runOcrMaskDetection = async <
 
   return { status: 'ok', enemyMaskRect, selfMaskRect };
 };
+
+/**
+ * Mask rectangles OCR found on one source image within one crop. The result depends only on
+ * those two inputs, so a re-run with the same first image and crop can reuse it.
+ */
+export interface OcrMaskCacheEntry<F> {
+  /** The source file itself (identity, not name): a File never changes its contents. */
+  file: F;
+  cropRect: PixelRect;
+  enemyMaskRect: PixelRect | null;
+  selfMaskRect: PixelRect | null;
+}
+
+export interface DetectOcrMasksWithCacheOptions<F> {
+  cacheHolder: MutableHolder<OcrMaskCacheEntry<F>>;
+  file: F;
+  cropRect: PixelRect;
+  needsEnemyOcr: boolean;
+  needsSelfOcr: boolean;
+  /** Runs OCR for the given sides only (e.g. `runOcrMaskDetection`). */
+  detect: (sides: { needsEnemyOcr: boolean; needsSelfOcr: boolean }) => Promise<OcrMaskDetectionResult>;
+}
+
+const isSamePixelRect = (a: PixelRect, b: PixelRect): boolean =>
+  a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+/**
+ * Runs OCR only for the sides that are not already cached for this file and crop, and returns
+ * the combined result. When every requested side is cached, `detect` is not called at all, so no
+ * OCR worker starts. Only successful detections are cached; not-found, error and aborted results
+ * leave the cache unchanged so the next run tries again.
+ */
+export const detectOcrMasksWithCache = async <F>({
+  cacheHolder,
+  file,
+  cropRect,
+  needsEnemyOcr,
+  needsSelfOcr,
+  detect,
+}: DetectOcrMasksWithCacheOptions<F>): Promise<OcrMaskDetectionResult> => {
+  const cached = cacheHolder.current;
+  const usable =
+    cached && cached.file === file && isSamePixelRect(cached.cropRect, cropRect) ? cached : null;
+  const cachedEnemy = needsEnemyOcr ? (usable?.enemyMaskRect ?? null) : null;
+  const cachedSelf = needsSelfOcr ? (usable?.selfMaskRect ?? null) : null;
+  const runEnemy = needsEnemyOcr && !cachedEnemy;
+  const runSelf = needsSelfOcr && !cachedSelf;
+
+  if (!runEnemy && !runSelf) {
+    return { status: 'ok', enemyMaskRect: cachedEnemy, selfMaskRect: cachedSelf };
+  }
+
+  const outcome = await detect({ needsEnemyOcr: runEnemy, needsSelfOcr: runSelf });
+  if (outcome.status !== 'ok') {
+    return outcome;
+  }
+
+  const enemyMaskRect = runEnemy ? outcome.enemyMaskRect : cachedEnemy;
+  const selfMaskRect = runSelf ? outcome.selfMaskRect : cachedSelf;
+  cacheHolder.current = {
+    file,
+    cropRect: { ...cropRect },
+    // Keep a side that was cached but not requested this time (e.g. its mask was switched off).
+    enemyMaskRect: enemyMaskRect ?? usable?.enemyMaskRect ?? null,
+    selfMaskRect: selfMaskRect ?? usable?.selfMaskRect ?? null,
+  };
+  return { status: 'ok', enemyMaskRect, selfMaskRect };
+};
