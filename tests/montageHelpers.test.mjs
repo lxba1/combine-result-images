@@ -217,6 +217,77 @@ describe('renderMontageTiles', () => {
     assert.deepEqual(drawCalls[2].slice(1), [5, 15, 100, 80, 10, 120, 100, 80]);
   });
 
+  it('clips the drawImage source to the bitmap when the crop overhangs the image edges', async () => {
+    const montage = createMockMontageContext();
+    const closed = [];
+
+    // 100x100 bitmaps with a 150x130 crop starting at (-20, -10): overhangs every edge.
+    await renderMontageTiles({
+      files: ['img-0', 'img-1'],
+      colCount: 2,
+      offsetX: 8,
+      offsetY: 4,
+      cropRect: { x: -20, y: -10, width: 150, height: 130 },
+      masks: [{ x: 0, y: 0, width: 10, height: 10, color: '#ffffff' }],
+      expectedDimensions: { width: 100, height: 100 },
+      decodeImage: async (file) => ({
+        width: 100,
+        height: 100,
+        close() {
+          closed.push(file);
+        },
+      }),
+      montageCtx: montage.ctx,
+      yieldFrame: async () => {},
+    });
+
+    const drawCalls = montage.ops.filter((op) => op.type === 'drawImage').map((op) => op.args.slice(1));
+    // Tile 0 starts at (8, 4) and tile 1 at (8 + 150 + 8, 4); the image lands 20px right, 10px down.
+    assert.deepEqual(drawCalls, [
+      [0, 0, 100, 100, 28, 14, 100, 100],
+      [0, 0, 100, 100, 186, 14, 100, 100],
+    ]);
+    // Masks still cover the whole tile, padding included.
+    assert.deepEqual(
+      montage.ops.filter((op) => op.type === 'fillRect').map((op) => op.args),
+      [
+        [8, 4, 10, 10],
+        [166, 4, 10, 10],
+      ]
+    );
+    assert.deepEqual(closed, ['img-0', 'img-1']);
+  });
+
+  it('skips drawImage but still closes the bitmap and paints masks when the crop misses the bitmap', async () => {
+    const montage = createMockMontageContext();
+    let closed = false;
+
+    await renderMontageTiles({
+      files: ['img-0'],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 100, y: 0, width: 50, height: 100 },
+      masks: [{ x: 0, y: 0, width: 10, height: 10, color: '#ffffff' }],
+      decodeImage: async () => ({
+        width: 100,
+        height: 100,
+        close() {
+          closed = true;
+        },
+      }),
+      montageCtx: montage.ctx,
+      yieldFrame: async () => {},
+    });
+
+    assert.equal(montage.ops.filter((op) => op.type === 'drawImage').length, 0);
+    assert.deepEqual(
+      montage.ops.filter((op) => op.type === 'fillRect').map((op) => op.args),
+      [[0, 0, 10, 10]]
+    );
+    assert.equal(closed, true);
+  });
+
   it('guarantees ImageBitmap.close runs in finally when direct drawImage throws', async () => {
     const montage = createMockMontageContext({ throwOnDraw: true });
     let closed = false;

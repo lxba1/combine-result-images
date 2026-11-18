@@ -149,6 +149,22 @@ export class ImageResolutionMismatchError extends Error {
   }
 }
 
+/** Returns the bitmap's pixel bounds, or `null` when it does not report a usable size. */
+const getBitmapBounds = (bitmap: BitmapLike): PixelRect | null => {
+  const { width, height } = bitmap;
+  if (
+    typeof width !== 'number' ||
+    typeof height !== 'number' ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+  return { x: 0, y: 0, width, height };
+};
+
 const throwIfAborted = (signal?: AbortSignal): void => {
   if (signal?.aborted) {
     throw createAbortError();
@@ -220,17 +236,24 @@ export const renderMontageTiles = async <F, B extends BitmapLike>(
         });
       }
 
-      montageCtx.drawImage(
-        bitmap,
-        cropRect.x,
-        cropRect.y,
-        cropRect.width,
-        cropRect.height,
-        drawX,
-        drawY,
-        cropRect.width,
-        cropRect.height
-      );
+      // A manual crop may overhang the image edges. Clip the source to the bitmap ourselves:
+      // WebKit has mishandled out-of-bounds source rects (dropping or shifting the image),
+      // while clipping here gives the spec result everywhere and leaves the overhang as bgColor.
+      const bitmapBounds = getBitmapBounds(bitmap);
+      const source = bitmapBounds ? intersectPixelRects(cropRect, bitmapBounds) : cropRect;
+      if (source) {
+        montageCtx.drawImage(
+          bitmap,
+          source.x,
+          source.y,
+          source.width,
+          source.height,
+          drawX + (source.x - cropRect.x),
+          drawY + (source.y - cropRect.y),
+          source.width,
+          source.height
+        );
+      }
     } finally {
       bitmap.close();
     }
