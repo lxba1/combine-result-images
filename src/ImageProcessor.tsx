@@ -78,6 +78,8 @@ import {
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
   updateHeavyResourceReleaseTimes,
+  recordLateMontageRelease,
+  ABANDONED_ENCODE_WAIT_MAX_MS,
   NO_HEAVY_RESOURCE_RELEASES,
   PROCESS_START_SETTLE_MS,
   type FileSelectionNoticeSpec,
@@ -1029,6 +1031,27 @@ const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
   });
 };
 
+/** Resolves when `task` settles, after `maxMs`, or on abort, whichever comes first. */
+const waitForSettleWithAbort = (
+  task: Promise<unknown>,
+  maxMs: number,
+  signal: AbortSignal
+): Promise<void> => {
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timerId);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timerId = setTimeout(finish, maxMs);
+    signal.addEventListener('abort', finish, { once: true });
+    task.then(finish, finish);
+  });
+};
+
 interface RenderedPreviewState {
   file: File;
   url: string;
@@ -1235,6 +1258,22 @@ const ImageProcessor: React.FC = () => {
   // When the previous run released its montage canvas / OCR worker, so that a quick re-run
   // can wait out the remaining cooldown instead of every run locking the UI afterwards.
   const heavyResourceReleaseTimesRef = useRef<HeavyResourceReleaseTimes>(NO_HEAVY_RESOURCE_RELEASES);
+  // Settles when the browser finishes an encode that a cancelled run stopped waiting for.
+  const abandonedMontageEncodeRef = useRef<Promise<void> | null>(null);
+
+  const trackAbandonedMontageEncode = (encodeFinished: Promise<void>) => {
+    abandonedMontageEncodeRef.current = encodeFinished;
+    void encodeFinished.then(() => {
+      if (abandonedMontageEncodeRef.current === encodeFinished) {
+        abandonedMontageEncodeRef.current = null;
+      }
+      // The montage snapshot is only freed now, so run the montage cooldown from here.
+      heavyResourceReleaseTimesRef.current = recordLateMontageRelease(
+        heavyResourceReleaseTimesRef.current,
+        performance.now()
+      );
+    });
+  };
 
   const isDefaultSettings = areSettingsDefault(settings);
 
@@ -1904,6 +1943,18 @@ const ImageProcessor: React.FC = () => {
     // When the previous run ended moments ago, first wait out its cooldown so mobile browsers
     // can hand back the previous canvas / OCR worker memory before this run allocates its own.
     // The previous result stays available meanwhile, so cancelling here keeps it.
+    // A run cancelled mid-encode leaves the browser encoding its own full-size copy of that
+    // montage. Wait for it to finish (then the montage cooldown below runs from that moment)
+    // before this run allocates anything large, so the two never overlap in memory.
+    const abandonedEncode = abandonedMontageEncodeRef.current;
+    if (abandonedEncode) {
+      await waitForSettleWithAbort(abandonedEncode, ABANDONED_ENCODE_WAIT_MAX_MS, signal);
+      if (!signal.aborted && abandonedMontageEncodeRef.current === abandonedEncode) {
+        // Gave up waiting (e.g. toBlob never called back); later runs should not wait again.
+        abandonedMontageEncodeRef.current = null;
+      }
+    }
+
     const rerunCooldownMs = getRerunCooldownRemainingMs(
       heavyResourceReleaseTimesRef.current,
       performance.now()
@@ -2136,6 +2187,9 @@ const ImageProcessor: React.FC = () => {
       });
 
       if (renderResult.status === 'aborted' || signal.aborted) {
+        if (renderResult.status === 'aborted' && renderResult.abandonedEncode) {
+          trackAbandonedMontageEncode(renderResult.abandonedEncode);
+        }
         return;
       }
       if (renderResult.status === 'context_failed') {

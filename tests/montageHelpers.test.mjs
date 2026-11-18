@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ABANDONED_ENCODE_WAIT_MAX_MS,
   ImageDecodeError,
   ImageResolutionMismatchError,
   MONTAGE_RERUN_COOLDOWN_MS,
@@ -37,6 +38,7 @@ import {
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
   updateHeavyResourceReleaseTimes,
+  recordLateMontageRelease,
   RATIO_PREVIEW_CROP_DEBOUNCE_MS,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
@@ -1870,7 +1872,7 @@ describe('renderMontageToBlob', () => {
       },
       decodeImage: async () => ({ close: () => {} }),
     });
-    assert.equal(midDrawResult.status, 'aborted');
+    assert.deepEqual(midDrawResult, { status: 'aborted' }); // nothing left encoding
     assert.equal(midDrawMock.canvas.width, 1);
     assert.equal(midDrawMock.canvas.height, 1);
     assert.ok(!midDrawMock.events.some((e) => e.startsWith('toBlob:')));
@@ -1960,15 +1962,26 @@ describe('renderMontageToBlob', () => {
     });
 
     const result = await resultPromise;
-    assert.deepEqual(result, { status: 'aborted' });
+    assert.equal(result.status, 'aborted');
+    assert.deepEqual(Object.keys(result).sort(), ['abandonedEncode', 'status']);
     assert.equal(mock.canvas.width, 1);
     assert.equal(mock.canvas.height, 1);
     assert.ok(mock.events.includes('toBlob:image/png:1'));
     assert.deepEqual(added, ['abort']);
 
-    // The browser finishing its own encode later must not throw or change anything.
+    // abandonedEncode stays pending until the browser's own encode calls back.
+    let encodeFinished = false;
+    void result.abandonedEncode.then(() => {
+      encodeFinished = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(encodeFinished, false);
+
+    // The browser finishing its own encode later must not throw or change the canvas.
     assert.equal(typeof pendingCallback, 'function');
     pendingCallback(new Blob(['late'], { type: 'image/png' }));
+    await result.abandonedEncode;
+    assert.equal(encodeFinished, true);
     assert.equal(mock.canvas.width, 1);
 
     // A normal encode removes its abort listener once toBlob answers.
@@ -2066,6 +2079,22 @@ describe('rerun cooldown', () => {
     assert.equal(getRerunCooldownRemainingMs(times, 10400), 600);
     assert.equal(getRerunCooldownRemainingMs(times, 11000), 0);
     assert.equal(getRerunCooldownRemainingMs(times, 60000), 0);
+  });
+
+  it('restarts the montage cooldown when an abandoned encode finishes after the run ended', () => {
+    assert.equal(ABANDONED_ENCODE_WAIT_MAX_MS, 30000);
+    // The cancelled run ended at 10000; its browser encode finished at 13000.
+    const ended = { montageReleasedAt: 10000, ocrReleasedAt: 4000 };
+    const late = recordLateMontageRelease(ended, 13000);
+    assert.deepEqual(late, { montageReleasedAt: 13000, ocrReleasedAt: 4000 });
+    assert.equal(getRerunCooldownRemainingMs(late, 13000), 1000);
+    assert.equal(getRerunCooldownRemainingMs(late, 14000), 0);
+    // Never moves the release time backwards, and works with no earlier release.
+    assert.deepEqual(recordLateMontageRelease(late, 12000), late);
+    assert.deepEqual(recordLateMontageRelease(NO_HEAVY_RESOURCE_RELEASES, 500), {
+      montageReleasedAt: 500,
+      ocrReleasedAt: null,
+    });
   });
 
   it('measures the OCR cooldown from the end of the run', () => {

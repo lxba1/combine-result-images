@@ -435,24 +435,32 @@ export const readEncodedImageDimensions = async (
 /**
  * Waits for `canvas.toBlob`, rejecting with an AbortError as soon as `signal` aborts so a cancel
  * during a long encode returns right away. The browser encodes its own snapshot of the bitmap and
- * keeps going after that; its late callback is ignored.
+ * keeps going after that; its late callback is ignored. `onAbandon` then receives a promise that
+ * settles when that callback finally arrives, so the caller can hold back the next large
+ * allocation until the snapshot's memory is free.
  */
 const encodeCanvasToBlob = <B extends BitmapLike>(
   canvas: MontageCanvasLike<B>,
   mimeType: string,
   quality: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onAbandon?: (encodeFinished: Promise<void>) => void
 ): Promise<Blob | null> =>
   new Promise<Blob | null>((resolve, reject) => {
     if (signal?.aborted) {
       reject(createAbortError());
       return;
     }
+    let markEncodeFinished: () => void = () => {};
+    const encodeFinished = new Promise<void>((resolveFinished) => {
+      markEncodeFinished = resolveFinished;
+    });
     let settled = false;
     const handleAbort = () => {
       if (settled) return;
       settled = true;
       reject(createAbortError());
+      onAbandon?.(encodeFinished);
     };
     const settle = (finish: () => void) => {
       if (settled) return;
@@ -462,8 +470,16 @@ const encodeCanvasToBlob = <B extends BitmapLike>(
     };
     signal?.addEventListener('abort', handleAbort, { once: true });
     try {
-      canvas.toBlob((blob) => settle(() => resolve(blob)), mimeType, quality);
+      canvas.toBlob(
+        (blob) => {
+          markEncodeFinished();
+          settle(() => resolve(blob));
+        },
+        mimeType,
+        quality
+      );
     } catch (error) {
+      markEncodeFinished();
       settle(() => reject(error));
     }
   });
@@ -483,7 +499,14 @@ export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
 
 export type RenderMontageToBlobResult =
   | { status: 'ok'; blob: Blob }
-  | { status: 'aborted' }
+  | {
+      status: 'aborted';
+      /**
+       * Present when the run was cancelled mid-encode: settles once the browser finishes the
+       * encode it keeps running on its own snapshot of the montage.
+       */
+      abandonedEncode?: Promise<void>;
+    }
   | { status: 'allocation_failed' }
   | { status: 'context_failed' }
   | { status: 'encode_failed' }
@@ -551,6 +574,7 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
       montageCanvas.height = 1;
     }
   };
+  let abandonedEncode: Promise<void> | undefined;
   try {
     // willReadFrequently keeps the montage on a CPU-backed canvas. On a GPU canvas, toBlob (and
     // the allocation probe) first read the full montage back from the GPU, which blocked the
@@ -586,7 +610,10 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
       montageCanvas,
       mimeType,
       quality,
-      tileOptions.signal
+      tileOptions.signal,
+      (encodeFinished) => {
+        abandonedEncode = encodeFinished;
+      }
     );
     shrinkCanvas();
     throwIfAborted(tileOptions.signal);
@@ -609,7 +636,7 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
     return { status: 'ok', blob: montageBlob };
   } catch (error) {
     if (tileOptions.signal?.aborted || isAbortError(error)) {
-      return { status: 'aborted' };
+      return abandonedEncode ? { status: 'aborted', abandonedEncode } : { status: 'aborted' };
     }
     throw error;
   } finally {
@@ -1187,6 +1214,25 @@ export const updateHeavyResourceReleaseTimes = (
     ocrReleasedAt: ocrSessionStarted ? now : previous.ocrReleasedAt,
   };
 };
+
+/**
+ * Longest a new run waits for an encode left running by a cancelled run before going ahead
+ * anyway, so a `toBlob` that never calls back cannot block every later run.
+ */
+export const ABANDONED_ENCODE_WAIT_MAX_MS = 30_000;
+
+/**
+ * Moves the montage release time to `now` (never earlier), for when an encode abandoned by a
+ * cancelled run finishes after that run ended: only then is its montage snapshot freed.
+ */
+export const recordLateMontageRelease = (
+  previous: HeavyResourceReleaseTimes,
+  now: number
+): HeavyResourceReleaseTimes => ({
+  ...previous,
+  montageReleasedAt:
+    previous.montageReleasedAt === null ? now : Math.max(previous.montageReleasedAt, now),
+});
 
 /**
  * Returns how much of the re-run cooldown is still left, i.e. how long a new run must wait
