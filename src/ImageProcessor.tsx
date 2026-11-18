@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, ButtonBase, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, FormHelperText, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
-import { useColorScheme, useTheme, styled, alpha } from '@mui/material/styles';
-import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, Share as ShareIcon, AddPhotoAlternate as AddPhotoIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon, ChevronLeft as ChevronLeftIcon, ChevronRight as ChevronRightIcon } from '@mui/icons-material';
+import { useColorScheme, useTheme, styled } from '@mui/material/styles';
+import type { Theme } from '@mui/material/styles';
+import { PlayArrow, ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon, GetApp as DownloadIcon, Share as ShareIcon, AddPhotoAlternate as AddPhotoIcon, AddPhotoAlternateOutlined as AddPhotoOutlinedIcon, LightMode as LightModeIcon, DarkMode as DarkModeIcon, SettingsBrightness as SystemModeIcon, Language as LanguageIcon, RestartAlt as RestartAltIcon, Check as CheckIcon, Close as CloseIcon, DeleteOutline as DeleteOutlineIcon, LockOutlined as LockOutlinedIcon, ChevronLeft as ChevronLeftIcon, ChevronRight as ChevronRightIcon, TuneRounded as TuneIcon, CropRounded as CropIcon, VisibilityOffOutlined as MaskIcon, FaceRetouchingOffOutlined as SelfMaskIcon } from '@mui/icons-material';
 import type { SelectChangeEvent } from '@mui/material';
 import Tesseract, { PSM } from 'tesseract.js';
 import packageJson from '../package.json';
@@ -41,6 +42,8 @@ import {
   isRatioRectEqual,
   loadSettingsFromStorage,
   normalizeHexColor,
+  percentInputToRatio,
+  ratioToPercentInput,
   resolveCanvasSizeErrorUiTarget,
   saveSettingsToStorage,
   validateSettingsBeforeProcess,
@@ -174,7 +177,15 @@ function HeaderMenuButton<T extends string>({
           aria-controls={anchorEl ? menuId : undefined}
           aria-haspopup="true"
           aria-expanded={Boolean(anchorEl)}
-          sx={{ border: 1, borderColor: 'divider' }}
+          sx={{
+            width: 36,
+            height: 36,
+            border: 1,
+            borderColor: 'divider',
+            bgcolor: 'background.paper',
+            color: 'text.secondary',
+            '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
+          }}
         >
           {icon}
         </IconButton>
@@ -277,6 +288,92 @@ const LanguageButton: React.FC = () => {
     />
   );
 };
+
+/** Theme-aware translucent palette color that follows the active light/dark scheme via CSS variables. */
+const tint = (theme: Theme, color: 'primary' | 'success', opacity: number): string =>
+  theme.alpha((theme.vars ?? theme).palette[color].main, opacity);
+
+interface StatusPillProps {
+  active?: boolean;
+  children: React.ReactNode;
+}
+
+/**
+ * Small non-interactive pill summarizing a section's current state in its header.
+ * Stays on one line normally (the header moves it below the title first) and only wraps
+ * its own text when even a full row is too narrow, e.g. very small screens with enlarged text.
+ */
+const StatusPill: React.FC<StatusPillProps> = ({ active = false, children }) => (
+  <Box
+    component="span"
+    sx={(theme) => ({
+      display: 'inline-flex',
+      alignItems: 'center',
+      maxWidth: '100%',
+      px: 1,
+      py: 0.25,
+      borderRadius: '12px',
+      fontSize: '0.75rem',
+      fontWeight: 600,
+      lineHeight: 1.5,
+      fontVariantNumeric: 'tabular-nums',
+      ...(active
+        ? { color: 'primary.main', bgcolor: tint(theme, 'primary', 0.12) }
+        : { color: 'text.secondary', bgcolor: 'action.hover' }),
+    })}
+  >
+    {children}
+  </Box>
+);
+
+interface SectionSummaryProps {
+  icon: React.ReactElement;
+  title: string;
+  meta: React.ReactNode;
+}
+
+/**
+ * Accordion header row: tinted icon badge, section title, and a right-aligned status summary.
+ * On narrow screens the summary wraps under the title instead of truncating it.
+ */
+const SectionSummary: React.FC<SectionSummaryProps> = ({ icon, title, meta }) => (
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%', minWidth: 0, pr: 1 }}>
+    <Box
+      aria-hidden="true"
+      sx={(theme) => ({
+        width: 32,
+        height: 32,
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: '10px',
+        color: 'primary.main',
+        bgcolor: tint(theme, 'primary', 0.1),
+        '& svg': { fontSize: 18 },
+      })}
+    >
+      {icon}
+    </Box>
+    <Box
+      sx={{
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        columnGap: 1,
+        rowGap: 0.25,
+      }}
+    >
+      <Typography variant="h6" sx={{ minWidth: 0 }}>
+        {title}
+      </Typography>
+      <Box sx={{ display: 'flex' }}>{meta}</Box>
+    </Box>
+  </Box>
+);
 
 const ColorSwatchInput = styled('input')({
   width: 22,
@@ -430,6 +527,8 @@ interface NumericTextFieldProps {
   integer?: boolean;
   disabled?: boolean;
   error?: boolean;
+  /** Optional unit shown after the number, e.g. `%`. */
+  unit?: string;
   onCommit: (name: string, value: number, options?: { finalize?: boolean }) => void;
 }
 
@@ -443,6 +542,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
   value,
   min,
   max,
+  unit,
   step = 1,
   integer = false,
   disabled = false,
@@ -553,6 +653,7 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
       slotProps={{
         inputLabel: { shrink: true },
         htmlInput: { min, max, step },
+        input: unit ? { endAdornment: <InputAdornment position="end">{unit}</InputAdornment> } : undefined,
       }}
     />
   );
@@ -566,6 +667,7 @@ const getActivePreset = (current: RatioRect, presets: Record<string, RatioRect>)
 };
 
 interface MaskAccordionProps {
+  icon: React.ReactElement;
   title: string;
   description: string;
   expanded: boolean;
@@ -593,6 +695,7 @@ interface MaskAccordionProps {
 
 /** Shared settings accordion for target and self masking controls with compact 2-column pairing. */
 const MaskAccordion: React.FC<MaskAccordionProps> = ({
+  icon,
   title,
   description,
   expanded,
@@ -621,6 +724,9 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   const hasError = (field: SettingFieldKey): boolean => Boolean(errorFields?.has(field));
   const overlayBox = computeRatioMaskOverlayBox(ratioRect);
   const normalizedOverlayColor = normalizeHexColor(colorValue) ?? '#000000';
+  // Ratio inputs show percent like the sliders; settings keep the normalized 0..1 value.
+  const handleRatioPercentCommit = (name: string, percent: number, options?: { finalize?: boolean }) =>
+    onNumericCommit(name, percentInputToRatio(percent), options);
   const ratioAxes: ReadonlyArray<{
     axis: 'horizontal' | 'vertical';
     labelId: string;
@@ -647,12 +753,11 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
   return (
     <Accordion expanded={expanded} onChange={onAccordionChange} sx={{ mt: 2 }}>
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
-          <Typography variant="h6">{title}</Typography>
-          <Typography variant="caption" color={enabled ? 'primary' : 'text.secondary'}>
-            {enabled ? t(`mode_${mode}`) : 'OFF'}
-          </Typography>
-        </Box>
+        <SectionSummary
+          icon={icon}
+          title={title}
+          meta={<StatusPill active={enabled}>{enabled ? t(`mode_${mode}`) : 'OFF'}</StatusPill>}
+        />
       </AccordionSummary>
       <AccordionDetails>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
@@ -846,10 +951,10 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
                     </React.Fragment>
                   ))}
                 </Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioRect.rx0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx0`)} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioRect.ry0} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry0`)} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioRect.rx1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.rx1`)} onCommit={onNumericCommit} /></Grid>
-                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioRect.ry1} min={0} max={1} step={0.001} disabled={disabled} error={hasError(`${ratioKey}.ry1`)} onCommit={onNumericCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_left')} name={`${ratioKey}.rx0`} value={ratioToPercentInput(ratioRect.rx0)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.rx0`)} onCommit={handleRatioPercentCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_top')} name={`${ratioKey}.ry0`} value={ratioToPercentInput(ratioRect.ry0)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.ry0`)} onCommit={handleRatioPercentCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_right')} name={`${ratioKey}.rx1`} value={ratioToPercentInput(ratioRect.rx1)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.rx1`)} onCommit={handleRatioPercentCommit} /></Grid>
+                <Grid size={{ xs: 6 }}><NumericTextField label={t('ratio_bottom')} name={`${ratioKey}.ry1`} value={ratioToPercentInput(ratioRect.ry1)} min={0} max={100} step={0.1} unit="%" disabled={disabled} error={hasError(`${ratioKey}.ry1`)} onCommit={handleRatioPercentCommit} /></Grid>
               </>
             ) : (
               <>
@@ -1089,6 +1194,7 @@ const ImageProcessor: React.FC = () => {
   const ratioPreviewKeyRef = useRef<{ file: File; cropKey: string } | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const fileSelectionNoticeRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const processAlertRef = useRef<HTMLDivElement>(null);
   const largeCanvasConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const isMountedRef = useRef(true);
@@ -1370,6 +1476,25 @@ const ImageProcessor: React.FC = () => {
       severity: notice.severity,
       message: 'params' in notice ? t(notice.messageKey, notice.params) : t(notice.messageKey),
     });
+  };
+
+  /** Opens the native file picker via the hidden input; used by the upload button (mouse and keyboard). */
+  const openFilePicker = () => {
+    if (isProcessing) {
+      return;
+    }
+    fileInputRef.current?.click();
+  };
+
+  /**
+   * Lets a click anywhere in the empty-state drop zone open the file picker.
+   * Clicks on the upload button (or bubbling from the hidden input) are skipped so the picker opens only once.
+   */
+  const handleDropZoneClick = (event: React.MouseEvent<HTMLElement>) => {
+    if ((event.target as Element).closest('button, input')) {
+      return;
+    }
+    openFilePicker();
   };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2166,25 +2291,56 @@ const ImageProcessor: React.FC = () => {
 
   return (
     <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 2 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
-            <Typography
-              variant="h4"
-              component="h1"
-              sx={{ fontSize: { xs: '1.375rem', sm: '1.875rem', md: '2.125rem' } }}
-            >
-              {t('title')}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-              v{packageJson.version}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: { xs: 2, sm: 3 } }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.75 }, minWidth: 0 }}>
+          <Box
+            component="img"
+            src={`${import.meta.env.BASE_URL}favicon.svg`}
+            alt=""
+            aria-hidden="true"
+            width={48}
+            height={48}
+            sx={{
+              display: 'block',
+              flexShrink: 0,
+              width: { xs: 36, sm: 48 },
+              height: { xs: 36, sm: 48 },
+              filter: 'drop-shadow(0 4px 10px rgba(11, 94, 215, 0.28))',
+            }}
+          />
+          <Box sx={{ minWidth: 0 }}>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 1, rowGap: 0.25 }}>
+              <Typography
+                variant="h4"
+                component="h1"
+                sx={{ fontSize: { xs: '1.25rem', sm: '1.625rem', md: '1.875rem' }, lineHeight: 1.2 }}
+              >
+                {t('title')}
+              </Typography>
+              <Box
+                component="span"
+                sx={{
+                  flexShrink: 0,
+                  px: 0.75,
+                  border: 1,
+                  borderColor: 'divider',
+                  borderRadius: 999,
+                  color: 'text.secondary',
+                  fontSize: '0.6875rem',
+                  fontWeight: 600,
+                  lineHeight: 1.6,
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                v{packageJson.version}
+              </Box>
+            </Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+              {t('subtitle')}
             </Typography>
           </Box>
-          <Typography variant="body2" color="text.secondary">
-            {t('subtitle')}
-          </Typography>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.75, sm: 1 }, flexShrink: 0 }}>
           <LanguageButton />
           <ThemeModeButton />
         </Box>
@@ -2193,15 +2349,26 @@ const ImageProcessor: React.FC = () => {
         <Grid size={{ xs: 12, md: 5, lg: 4 }} sx={{ order: { xs: 2, md: 1 } }}>
           <Accordion expanded={expandedAccordions.settings} onChange={handleAccordionChange('settings')}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
-                <Typography variant="h6">{t('settings')}</Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {t('columns')}: {settings.colCount}, {settings.outputFormat === 'png' ? 'PNG' : `${t('quality')}: ${settings.quality}%`}
-                </Typography>
-              </Box>
+              <SectionSummary
+                icon={<TuneIcon />}
+                title={t('settings')}
+                meta={
+                  <StatusPill>
+                    {t('settings_summary', {
+                      columnsLabel: t('columns'),
+                      columns: settings.colCount,
+                      format:
+                        settings.outputFormat === 'png'
+                          ? formatOutputFormatLabel('png')
+                          : `${formatOutputFormatLabel(settings.outputFormat)} ${settings.quality}%`,
+                    })}
+                  </StatusPill>
+                }
+              />
             </AccordionSummary>
             <AccordionDetails>
-              <Grid container spacing={2}>
+              {/* Outlined field labels float above their box; extra top space keeps them clear of the header. */}
+              <Grid container spacing={2} sx={{ pt: 2 }}>
                 <Grid size={{ xs: 6 }}>
                   <FormControl fullWidth size="small" disabled={isProcessing} error={hasFieldError('colCount')}>
                     <InputLabel id="col-count-label">{t('columns')}</InputLabel>
@@ -2283,12 +2450,15 @@ const ImageProcessor: React.FC = () => {
 
           <Accordion expanded={expandedAccordions.crop} onChange={handleAccordionChange('crop')} sx={{ mt: 2 }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', pr: 2, alignItems: 'center' }}>
-                <Typography variant="h6">{t('cropping')}</Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {settings.cropAuto ? t('auto_mode') : `${settings.cropWidth}x${settings.cropHeight}`}
-                </Typography>
-              </Box>
+              <SectionSummary
+                icon={<CropIcon />}
+                title={t('cropping')}
+                meta={
+                  <StatusPill active={settings.cropAuto}>
+                    {settings.cropAuto ? t('auto_mode') : `${settings.cropWidth} × ${settings.cropHeight}`}
+                  </StatusPill>
+                }
+              />
             </AccordionSummary>
             <AccordionDetails>
               <FormControlLabel
@@ -2314,6 +2484,7 @@ const ImageProcessor: React.FC = () => {
           </Accordion>
 
           <MaskAccordion
+            icon={<MaskIcon />}
             title={t('masking')}
             description={t('mask_description')}
             expanded={expandedAccordions.mask}
@@ -2340,6 +2511,7 @@ const ImageProcessor: React.FC = () => {
           />
 
           <MaskAccordion
+            icon={<SelfMaskIcon />}
             title={t('self_mask')}
             description={t('self_mask_description')}
             expanded={expandedAccordions.selfMask}
@@ -2384,7 +2556,8 @@ const ImageProcessor: React.FC = () => {
             onDragOver={handleCardDragOver}
             onDragLeave={handleCardDragLeave}
             onDrop={handleCardDrop}
-            sx={{ position: 'relative' }}
+            // `clip` instead of Card's default `hidden` so the drop message below can stay sticky in view.
+            sx={{ position: 'relative', overflow: 'clip' }}
           >
             {isFileDragOver && (
               <Box
@@ -2400,65 +2573,148 @@ const ImageProcessor: React.FC = () => {
                   border: 2,
                   borderStyle: 'dashed',
                   borderColor: 'primary.main',
-                  bgcolor: (muiTheme) => alpha(muiTheme.palette.background.paper, 0.9),
+                  bgcolor: (muiTheme) => muiTheme.alpha((muiTheme.vars ?? muiTheme).palette.background.paper, 0.92),
                   pointerEvents: 'none',
                 }}
               >
-                <Typography variant="h6" color="primary" align="center">
-                  {t('drop_images_here')}
-                </Typography>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 1,
+                    color: 'primary.main',
+                    // Centered in the card normally; on a card taller than the screen it stays within the
+                    // middle band of the viewport instead of sitting off-screen.
+                    position: 'sticky',
+                    top: '30vh',
+                    bottom: '30vh',
+                  }}
+                >
+                  <AddPhotoOutlinedIcon sx={{ fontSize: 40 }} aria-hidden="true" />
+                  <Typography variant="h6" color="primary" align="center">
+                    {t('drop_images_here')}
+                  </Typography>
+                </Box>
               </Box>
             )}
             <CardContent>
-              <Typography variant="h5" component="h2" sx={{ mb: 0.75 }}>{t('upload_and_process')}</Typography>
               <Box
                 sx={{
                   display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 0.75,
-                  mb: images.length === 0 ? 1 : 2,
-                  color: 'text.secondary',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  columnGap: 1.5,
+                  rowGap: 0.75,
+                  mb: 2,
                 }}
               >
-                <LockOutlinedIcon sx={{ fontSize: 15, mt: '2px', flexShrink: 0 }} aria-hidden="true" />
-                <Typography variant="caption" color="text.secondary">
-                  {t('local_processing_notice')}
+                <Typography variant="h5" component="h2">{t('upload_and_process')}</Typography>
+                <Box
+                  sx={(muiTheme) => ({
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 0.5,
+                    px: 1,
+                    py: 0.375,
+                    borderRadius: 999,
+                    color: (muiTheme.vars ?? muiTheme).palette.success.dark,
+                    bgcolor: tint(muiTheme, 'success', 0.1),
+                    ...muiTheme.applyStyles('dark', {
+                      color: (muiTheme.vars ?? muiTheme).palette.success.light,
+                      bgcolor: tint(muiTheme, 'success', 0.14),
+                    }),
+                  })}
+                >
+                  <LockOutlinedIcon sx={{ fontSize: 14, flexShrink: 0 }} aria-hidden="true" />
+                  <Typography variant="caption" component="span" sx={{ fontWeight: 600, lineHeight: 1.4 }}>
+                    {t('local_processing_notice')}
+                  </Typography>
+                </Box>
+              </Box>
+              <Box
+                onClick={images.length === 0 ? handleDropZoneClick : undefined}
+                sx={
+                  images.length === 0
+                    ? (muiTheme) => ({
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        textAlign: 'center',
+                        px: 2,
+                        py: { xs: 3, sm: 4 },
+                        border: '2px dashed',
+                        borderColor: tint(muiTheme, 'primary', 0.35),
+                        borderRadius: '12px',
+                        bgcolor: tint(muiTheme, 'primary', 0.04),
+                        cursor: 'pointer',
+                        transition: muiTheme.transitions.create(['border-color', 'background-color'], {
+                          duration: muiTheme.transitions.duration.shorter,
+                        }),
+                        '&:hover': {
+                          borderColor: tint(muiTheme, 'primary', 0.6),
+                          bgcolor: tint(muiTheme, 'primary', 0.07),
+                        },
+                      })
+                    : undefined
+                }
+              >
+                {images.length === 0 && (
+                  <>
+                    <Box
+                      aria-hidden="true"
+                      sx={(muiTheme) => ({
+                        width: 56,
+                        height: 56,
+                        mb: 1.5,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: '50%',
+                        color: 'primary.main',
+                        bgcolor: tint(muiTheme, 'primary', 0.12),
+                      })}
+                    >
+                      <AddPhotoOutlinedIcon sx={{ fontSize: 28 }} />
+                    </Box>
+                    <Typography variant="body1" sx={{ fontWeight: 600, mb: 2, textWrap: 'balance', wordBreak: 'auto-phrase' }}>
+                      {t('upload_intro')}
+                    </Typography>
+                  </>
+                )}
+                <Button
+                  variant={buttonVariants.upload}
+                  fullWidth
+                  size="large"
+                  startIcon={<AddPhotoIcon />}
+                  disabled={isProcessing}
+                  onClick={openFilePicker}
+                  sx={images.length === 0 ? { width: { sm: 'auto' }, minWidth: { sm: 260 }, px: { sm: 4 } } : undefined}
+                >
+                  {images.length > 0 ? t('add_images') : t('upload_images')}
+                </Button>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    display: { xs: 'none', sm: 'block' },
+                    mt: images.length === 0 ? 1.25 : 0.75,
+                    textAlign: 'center',
+                  }}
+                >
+                  {t('drop_zone_hint')}
                 </Typography>
               </Box>
-              {images.length === 0 && (
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                  {t('upload_intro')}
-                </Typography>
-              )}
-              <Button
-                variant={buttonVariants.upload}
-                component="label"
-                fullWidth
-                size="large"
-                startIcon={<AddPhotoIcon />}
+              <input
+                ref={fileInputRef}
+                type="file"
+                hidden
+                accept="image/png, image/jpeg"
+                multiple
                 disabled={isProcessing}
-              >
-                {images.length > 0 ? t('add_images') : t('upload_images')}
-                <input
-                  type="file"
-                  hidden
-                  accept="image/png, image/jpeg"
-                  multiple
-                  disabled={isProcessing}
-                  onChange={handleFileChange}
-                />
-              </Button>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{
-                  display: { xs: 'none', sm: 'block' },
-                  mt: 0.75,
-                  textAlign: 'center',
-                }}
-              >
-                {t('drop_zone_hint')}
-              </Typography>
+                onChange={handleFileChange}
+              />
               {fileSelectionNotice && (
                 <Alert
                   ref={fileSelectionNoticeRef}
@@ -2553,6 +2809,12 @@ const ImageProcessor: React.FC = () => {
                                 py: { xs: 0.75, sm: 0.5 },
                                 textAlign: 'left',
                                 '&:hover': { bgcolor: 'action.hover' },
+                                // ButtonBase removes the native focus ring; show which row has keyboard focus.
+                                '&.Mui-focusVisible': {
+                                  bgcolor: 'action.hover',
+                                  outline: (muiTheme) => `2px solid ${(muiTheme.vars ?? muiTheme).palette.primary.main}`,
+                                  outlineOffset: -2,
+                                },
                               }}
                             >
                               <Typography
@@ -2710,12 +2972,12 @@ const ImageProcessor: React.FC = () => {
                         : undefined
                     }
                     aria-label={processingStatusText}
-                    sx={{ mt: 0.75, borderRadius: 1 }}
+                    sx={{ mt: 0.75 }}
                   />
                 )}
               </Box>
               {processedResult && (
-                <Box sx={{ mt: 3, overflowAnchor: 'none' }} ref={resultRef}>
+                <Box sx={{ mt: 3, pt: 2.5, borderTop: 1, borderColor: 'divider', overflowAnchor: 'none' }} ref={resultRef}>
                   <Box
                     sx={{
                       display: 'flex',
