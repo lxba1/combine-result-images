@@ -432,6 +432,42 @@ export const readEncodedImageDimensions = async (
   }
 };
 
+/**
+ * Waits for `canvas.toBlob`, rejecting with an AbortError as soon as `signal` aborts so a cancel
+ * during a long encode returns right away. The browser encodes its own snapshot of the bitmap and
+ * keeps going after that; its late callback is ignored.
+ */
+const encodeCanvasToBlob = <B extends BitmapLike>(
+  canvas: MontageCanvasLike<B>,
+  mimeType: string,
+  quality: number,
+  signal?: AbortSignal
+): Promise<Blob | null> =>
+  new Promise<Blob | null>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+    let settled = false;
+    const handleAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(createAbortError());
+    };
+    const settle = (finish: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', handleAbort);
+      finish();
+    };
+    signal?.addEventListener('abort', handleAbort, { once: true });
+    try {
+      canvas.toBlob((blob) => settle(() => resolve(blob)), mimeType, quality);
+    } catch (error) {
+      settle(() => reject(error));
+    }
+  });
+
 export interface RenderMontageToBlobOptions<F, B extends BitmapLike>
   extends Omit<RenderMontageTilesOptions<F, B>, 'montageCtx'> {
   dimensions: ImageDimensions;
@@ -546,8 +582,11 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
     throwIfAborted(tileOptions.signal);
 
     onPhaseChange?.('encoding');
-    const montageBlob = await new Promise<Blob | null>((resolve) =>
-      montageCanvas.toBlob(resolve, mimeType, quality)
+    const montageBlob = await encodeCanvasToBlob(
+      montageCanvas,
+      mimeType,
+      quality,
+      tileOptions.signal
     );
     shrinkCanvas();
     throwIfAborted(tileOptions.signal);

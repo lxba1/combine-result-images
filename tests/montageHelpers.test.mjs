@@ -1914,6 +1914,119 @@ describe('renderMontageToBlob', () => {
     assert.equal(canvasW, 1);
     assert.equal(canvasH, 1);
   });
+
+  it('returns aborted without waiting for toBlob when cancelled mid-encode, and ignores the late callback', async () => {
+    const mock = createMockOutputCanvas();
+    let pendingCallback = null;
+    mock.canvas.toBlob = (cb, type, quality) => {
+      mock.events.push(`toBlob:${type}:${quality}`);
+      pendingCallback = cb; // never answers on its own
+    };
+    const controller = new AbortController();
+    const added = [];
+    const removed = [];
+    const realAdd = controller.signal.addEventListener.bind(controller.signal);
+    const realRemove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = (type, listener, options) => {
+      added.push(type);
+      realAdd(type, listener, options);
+    };
+    controller.signal.removeEventListener = (type, listener, options) => {
+      removed.push(type);
+      realRemove(type, listener, options);
+    };
+
+    const resultPromise = renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/png',
+      quality: 1,
+      signal: controller.signal,
+      createCanvas: () => mock.canvas,
+      files: [],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 160, height: 120 },
+      masks: [],
+      onPhaseChange: (phase) => {
+        if (phase === 'encoding') {
+          setTimeout(() => controller.abort(), 0);
+        }
+      },
+      decodeImage: async () => ({ close: () => {} }),
+    });
+
+    const result = await resultPromise;
+    assert.deepEqual(result, { status: 'aborted' });
+    assert.equal(mock.canvas.width, 1);
+    assert.equal(mock.canvas.height, 1);
+    assert.ok(mock.events.includes('toBlob:image/png:1'));
+    assert.deepEqual(added, ['abort']);
+
+    // The browser finishing its own encode later must not throw or change anything.
+    assert.equal(typeof pendingCallback, 'function');
+    pendingCallback(new Blob(['late'], { type: 'image/png' }));
+    assert.equal(mock.canvas.width, 1);
+
+    // A normal encode removes its abort listener once toBlob answers.
+    const okController = new AbortController();
+    const okRemoved = [];
+    const okRealRemove = okController.signal.removeEventListener.bind(okController.signal);
+    okController.signal.removeEventListener = (type, listener, options) => {
+      okRemoved.push(type);
+      okRealRemove(type, listener, options);
+    };
+    const okMock = createMockOutputCanvas({
+      toBlobResult: new Blob([makePngHeaderBytes(160, 120)], { type: 'image/png' }),
+    });
+    const okResult = await renderMontageToBlob({
+      dimensions: { width: 160, height: 120 },
+      bgColor: '#000000',
+      mimeType: 'image/png',
+      quality: 1,
+      signal: okController.signal,
+      createCanvas: () => okMock.canvas,
+      files: [],
+      colCount: 1,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: { x: 0, y: 0, width: 160, height: 120 },
+      masks: [],
+      decodeImage: async () => ({ close: () => {} }),
+    });
+    assert.equal(okResult.status, 'ok');
+    assert.deepEqual(okRemoved, ['abort']);
+    assert.deepEqual(removed, []);
+  });
+
+  it('rethrows a synchronous toBlob exception after shrinking the canvas', async () => {
+    const mock = createMockOutputCanvas();
+    mock.canvas.toBlob = () => {
+      throw new Error('toBlob exploded');
+    };
+    await assert.rejects(
+      () =>
+        renderMontageToBlob({
+          dimensions: { width: 160, height: 120 },
+          bgColor: '#000000',
+          mimeType: 'image/png',
+          quality: 1,
+          signal: new AbortController().signal,
+          createCanvas: () => mock.canvas,
+          files: [],
+          colCount: 1,
+          offsetX: 0,
+          offsetY: 0,
+          cropRect: { x: 0, y: 0, width: 160, height: 120 },
+          masks: [],
+          decodeImage: async () => ({ close: () => {} }),
+        }),
+      /toBlob exploded/
+    );
+    assert.equal(mock.canvas.width, 1);
+    assert.equal(mock.canvas.height, 1);
+  });
 });
 
 describe('rerun cooldown', () => {
