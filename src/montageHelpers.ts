@@ -1025,30 +1025,85 @@ export const prepareMontagePlan = async ({
   };
 };
 
-export const OCR_MEMORY_RELEASE_DELAY_MS = 5000;
-export const MONTAGE_MEMORY_RELEASE_DELAY_MS = 1000;
+/**
+ * Minimum gap kept between the end of a run that used OCR and the next run.
+ * Browsers hand worker (WASM) memory back asynchronously, which mobile tabs can trip over
+ * when runs are started back to back.
+ */
+export const OCR_RERUN_COOLDOWN_MS = 5000;
+/** Minimum gap kept between the end of a run that used the montage canvas and the next run. */
+export const MONTAGE_RERUN_COOLDOWN_MS = 1000;
+/** Short wait at the start of every run so the UI can show progress before heavy work begins. */
+export const PROCESS_START_SETTLE_MS = 200;
 
-export interface MemoryReleaseDelayParams {
+/**
+ * `performance.now()` timestamps of when the last run that used each heavy resource ended
+ * (by then the resource has been released), or null.
+ */
+export interface HeavyResourceReleaseTimes {
+  montageReleasedAt: number | null;
+  ocrReleasedAt: number | null;
+}
+
+export const NO_HEAVY_RESOURCE_RELEASES: HeavyResourceReleaseTimes = {
+  montageReleasedAt: null,
+  ocrReleasedAt: null,
+};
+
+export interface HeavyResourceReleaseUpdate {
   ocrSessionStarted: boolean;
   montageCanvasUsed: boolean;
   reloadTriggered?: boolean;
+  /** When the run finished (after its cleanup). */
+  now: number;
 }
 
 /**
- * Returns the GC cooldown wait duration after `processImages`, skipping any sleep
- * when returning early before heavy resources (OCR worker or montage canvas) were used,
- * or when the page is already reloading.
+ * Records which heavy resources a finished `processImages` run used, timestamped with the
+ * end of the run. Runs that returned before allocating anything heavy keep the previous
+ * timestamps, and a run that is reloading the page records nothing.
  */
-export const getMemoryReleaseDelayMs = ({
-  ocrSessionStarted,
-  montageCanvasUsed,
-  reloadTriggered = false,
-}: MemoryReleaseDelayParams): number => {
-  if (reloadTriggered || (!ocrSessionStarted && !montageCanvasUsed)) {
-    return 0;
+export const updateHeavyResourceReleaseTimes = (
+  previous: HeavyResourceReleaseTimes,
+  { ocrSessionStarted, montageCanvasUsed, reloadTriggered = false, now }: HeavyResourceReleaseUpdate
+): HeavyResourceReleaseTimes => {
+  if (reloadTriggered) {
+    return previous;
   }
-  return ocrSessionStarted ? OCR_MEMORY_RELEASE_DELAY_MS : MONTAGE_MEMORY_RELEASE_DELAY_MS;
+  return {
+    montageReleasedAt: montageCanvasUsed ? now : previous.montageReleasedAt,
+    ocrReleasedAt: ocrSessionStarted ? now : previous.ocrReleasedAt,
+  };
 };
+
+/**
+ * Returns how much of the re-run cooldown is still left, i.e. how long a new run must wait
+ * so that it starts at least the cooldown after the previous run ended.
+ * Returns 0 once every cooldown has elapsed, so a normal single run never waits for it.
+ */
+export const getRerunCooldownRemainingMs = (
+  releaseTimes: HeavyResourceReleaseTimes,
+  now: number
+): number => {
+  const remaining = (releasedAt: number | null, cooldownMs: number): number => {
+    if (releasedAt === null) return 0;
+    return Math.min(cooldownMs, Math.max(0, releasedAt + cooldownMs - now));
+  };
+  return Math.max(
+    remaining(releaseTimes.montageReleasedAt, MONTAGE_RERUN_COOLDOWN_MS),
+    remaining(releaseTimes.ocrReleasedAt, OCR_RERUN_COOLDOWN_MS)
+  );
+};
+
+/**
+ * Returns the wait at the start of `processImages`: the remaining re-run cooldown followed by
+ * the usual start settle time. Adding (rather than overlapping) the two keeps the minimum gap
+ * between back-to-back runs the same as the old post-run lock (cooldown + 200ms).
+ */
+export const getProcessStartWaitMs = (
+  releaseTimes: HeavyResourceReleaseTimes,
+  now: number
+): number => getRerunCooldownRemainingMs(releaseTimes, now) + PROCESS_START_SETTLE_MS;
 
 /** Formats a byte count into a human-readable B / KB / MB string. */
 export const formatFileSize = (bytes: number): string => {

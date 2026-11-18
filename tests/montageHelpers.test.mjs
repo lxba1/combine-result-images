@@ -3,15 +3,18 @@ import assert from 'node:assert/strict';
 import {
   ImageDecodeError,
   ImageResolutionMismatchError,
-  MONTAGE_MEMORY_RELEASE_DELAY_MS,
-  OCR_MEMORY_RELEASE_DELAY_MS,
+  MONTAGE_RERUN_COOLDOWN_MS,
+  NO_HEAVY_RESOURCE_RELEASES,
+  OCR_RERUN_COOLDOWN_MS,
+  PROCESS_START_SETTLE_MS,
   buildTileMaskRects,
   canShareImageFile,
   computeScaledPreviewDimensions,
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
-  getMemoryReleaseDelayMs,
+  getProcessStartWaitMs,
+  getRerunCooldownRemainingMs,
   guardWindowFileDragEvent,
   hasExternalFilesDataTransfer,
   isSupportedInputImageFile,
@@ -33,6 +36,7 @@ import {
   resolveRemovablePreviewTarget,
   shouldScrollToResult,
   splitFilenameForMiddleEllipsis,
+  updateHeavyResourceReleaseTimes,
 } from '../src/montageHelpers.ts';
 import { areSettingsDefault, createDefaultSettings } from '../src/settingsHelpers.ts';
 
@@ -1710,62 +1714,107 @@ describe('renderMontageToBlob', () => {
   });
 });
 
-describe('getMemoryReleaseDelayMs', () => {
-  it('returns 0 when aborted before OCR session or montage canvas allocation', () => {
-    assert.equal(
-      getMemoryReleaseDelayMs({
+describe('rerun cooldown', () => {
+  it('keeps the existing cooldown lengths (1000ms montage, 5000ms OCR)', () => {
+    assert.equal(MONTAGE_RERUN_COOLDOWN_MS, 1000);
+    assert.equal(OCR_RERUN_COOLDOWN_MS, 5000);
+  });
+
+  it('does not wait before the first run', () => {
+    assert.equal(getRerunCooldownRemainingMs(NO_HEAVY_RESOURCE_RELEASES, 0), 0);
+    assert.equal(getRerunCooldownRemainingMs(NO_HEAVY_RESOURCE_RELEASES, 123456), 0);
+  });
+
+  it('keeps previous timestamps when a run returned before allocating heavy resources', () => {
+    const previous = { montageReleasedAt: 100, ocrReleasedAt: 50 };
+    assert.deepEqual(
+      updateHeavyResourceReleaseTimes(previous, {
         ocrSessionStarted: false,
         montageCanvasUsed: false,
+        now: 9000,
       }),
-      0
+      previous
     );
   });
 
-  it('returns MONTAGE_MEMORY_RELEASE_DELAY_MS (1000ms) when only montage canvas was used', () => {
-    assert.equal(
-      getMemoryReleaseDelayMs({
-        ocrSessionStarted: false,
-        montageCanvasUsed: true,
-      }),
-      MONTAGE_MEMORY_RELEASE_DELAY_MS
-    );
-    assert.equal(MONTAGE_MEMORY_RELEASE_DELAY_MS, 1000);
+  it('records the montage release at the end of a run', () => {
+    const times = updateHeavyResourceReleaseTimes(NO_HEAVY_RESOURCE_RELEASES, {
+      ocrSessionStarted: false,
+      montageCanvasUsed: true,
+      now: 10000,
+    });
+    assert.deepEqual(times, { montageReleasedAt: 10000, ocrReleasedAt: null });
+    assert.equal(getRerunCooldownRemainingMs(times, 10000), 1000);
+    assert.equal(getRerunCooldownRemainingMs(times, 10400), 600);
+    assert.equal(getRerunCooldownRemainingMs(times, 11000), 0);
+    assert.equal(getRerunCooldownRemainingMs(times, 60000), 0);
   });
 
-  it('returns OCR_MEMORY_RELEASE_DELAY_MS (5000ms) when OCR session started', () => {
-    assert.equal(
-      getMemoryReleaseDelayMs({
+  it('measures the OCR cooldown from the end of the run', () => {
+    const times = updateHeavyResourceReleaseTimes(NO_HEAVY_RESOURCE_RELEASES, {
+      ocrSessionStarted: true,
+      montageCanvasUsed: true,
+      now: 12500,
+    });
+    assert.deepEqual(times, { montageReleasedAt: 12500, ocrReleasedAt: 12500 });
+    assert.equal(getRerunCooldownRemainingMs(times, 12500), 5000);
+    assert.equal(getRerunCooldownRemainingMs(times, 14000), 3500);
+    assert.equal(getRerunCooldownRemainingMs(times, 17500), 0);
+  });
+
+  it('records the OCR cooldown for runs that stopped after OCR without drawing', () => {
+    const times = updateHeavyResourceReleaseTimes(NO_HEAVY_RESOURCE_RELEASES, {
+      ocrSessionStarted: true,
+      montageCanvasUsed: false,
+      now: 20000,
+    });
+    assert.deepEqual(times, { montageReleasedAt: null, ocrReleasedAt: 20000 });
+    assert.equal(getRerunCooldownRemainingMs(times, 20000), 5000);
+  });
+
+  it('adds the start settle time after the cooldown, keeping the old minimum gap between runs', () => {
+    assert.equal(PROCESS_START_SETTLE_MS, 200);
+    // First run, or a run started after every cooldown: only the usual 200ms.
+    assert.equal(getProcessStartWaitMs(NO_HEAVY_RESOURCE_RELEASES, 0), 200);
+    const afterMontageRun = { montageReleasedAt: 10000, ocrReleasedAt: null };
+    const afterOcrRun = { montageReleasedAt: 10000, ocrReleasedAt: 10000 };
+    // Re-run right away: same as the old post-run lock + 200ms start wait.
+    assert.equal(getProcessStartWaitMs(afterMontageRun, 10000), 1200);
+    assert.equal(getProcessStartWaitMs(afterOcrRun, 10000), 5200);
+    // Re-run part-way through the cooldown waits only for the rest.
+    assert.equal(getProcessStartWaitMs(afterOcrRun, 12000), 3200);
+    assert.equal(getProcessStartWaitMs(afterMontageRun, 11000), 200);
+    assert.equal(getProcessStartWaitMs(afterOcrRun, 15000), 200);
+  });
+
+  it('keeps an earlier OCR cooldown running through a later montage-only run', () => {
+    const afterOcrRun = { montageReleasedAt: 12000, ocrReleasedAt: 10000 };
+    const afterMontageRun = updateHeavyResourceReleaseTimes(afterOcrRun, {
+      ocrSessionStarted: false,
+      montageCanvasUsed: true,
+      now: 13500,
+    });
+    assert.deepEqual(afterMontageRun, { montageReleasedAt: 13500, ocrReleasedAt: 10000 });
+    assert.equal(getRerunCooldownRemainingMs(afterMontageRun, 14000), 1000);
+  });
+
+  it('records nothing when the page is reloading', () => {
+    const previous = { montageReleasedAt: 1, ocrReleasedAt: 2 };
+    assert.deepEqual(
+      updateHeavyResourceReleaseTimes(previous, {
         ocrSessionStarted: true,
-        montageCanvasUsed: false,
-      }),
-      OCR_MEMORY_RELEASE_DELAY_MS
-    );
-    assert.equal(
-      getMemoryReleaseDelayMs({
-        ocrSessionStarted: true,
-        montageCanvasUsed: true,
-      }),
-      OCR_MEMORY_RELEASE_DELAY_MS
-    );
-    assert.equal(OCR_MEMORY_RELEASE_DELAY_MS, 5000);
-  });
-
-  it('returns 0 when page reload was triggered regardless of allocated resources', () => {
-    assert.equal(
-      getMemoryReleaseDelayMs({
-        ocrSessionStarted: false,
         montageCanvasUsed: true,
         reloadTriggered: true,
+        now: 1000,
       }),
-      0
+      previous
     );
+  });
+
+  it('never waits longer than the cooldown even if a timestamp is in the future', () => {
     assert.equal(
-      getMemoryReleaseDelayMs({
-        ocrSessionStarted: true,
-        montageCanvasUsed: true,
-        reloadTriggered: true,
-      }),
-      0
+      getRerunCooldownRemainingMs({ montageReleasedAt: 50000, ocrReleasedAt: 50000 }, 1000),
+      OCR_RERUN_COOLDOWN_MS
     );
   });
 });
