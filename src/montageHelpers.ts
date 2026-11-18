@@ -1095,16 +1095,6 @@ export const getRerunCooldownRemainingMs = (
   );
 };
 
-/**
- * Returns the wait at the start of `processImages`: the remaining re-run cooldown followed by
- * the usual start settle time. Adding (rather than overlapping) the two keeps the minimum gap
- * between back-to-back runs the same as the old post-run lock (cooldown + 200ms).
- */
-export const getProcessStartWaitMs = (
-  releaseTimes: HeavyResourceReleaseTimes,
-  now: number
-): number => getRerunCooldownRemainingMs(releaseTimes, now) + PROCESS_START_SETTLE_MS;
-
 /** Formats a byte count into a human-readable B / KB / MB string. */
 export const formatFileSize = (bytes: number): string => {
   if (!Number.isFinite(bytes) || bytes <= 0) {

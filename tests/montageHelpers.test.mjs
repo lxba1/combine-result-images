@@ -13,7 +13,6 @@ import {
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
-  getProcessStartWaitMs,
   getRerunCooldownRemainingMs,
   guardWindowFileDragEvent,
   hasExternalFilesDataTransfer,
@@ -1715,9 +1714,10 @@ describe('renderMontageToBlob', () => {
 });
 
 describe('rerun cooldown', () => {
-  it('keeps the existing cooldown lengths (1000ms montage, 5000ms OCR)', () => {
+  it('keeps the existing wait lengths (1000ms montage, 5000ms OCR, 200ms start)', () => {
     assert.equal(MONTAGE_RERUN_COOLDOWN_MS, 1000);
     assert.equal(OCR_RERUN_COOLDOWN_MS, 5000);
+    assert.equal(PROCESS_START_SETTLE_MS, 200);
   });
 
   it('does not wait before the first run', () => {
@@ -1770,21 +1770,6 @@ describe('rerun cooldown', () => {
     });
     assert.deepEqual(times, { montageReleasedAt: null, ocrReleasedAt: 20000 });
     assert.equal(getRerunCooldownRemainingMs(times, 20000), 5000);
-  });
-
-  it('adds the start settle time after the cooldown, keeping the old minimum gap between runs', () => {
-    assert.equal(PROCESS_START_SETTLE_MS, 200);
-    // First run, or a run started after every cooldown: only the usual 200ms.
-    assert.equal(getProcessStartWaitMs(NO_HEAVY_RESOURCE_RELEASES, 0), 200);
-    const afterMontageRun = { montageReleasedAt: 10000, ocrReleasedAt: null };
-    const afterOcrRun = { montageReleasedAt: 10000, ocrReleasedAt: 10000 };
-    // Re-run right away: same as the old post-run lock + 200ms start wait.
-    assert.equal(getProcessStartWaitMs(afterMontageRun, 10000), 1200);
-    assert.equal(getProcessStartWaitMs(afterOcrRun, 10000), 5200);
-    // Re-run part-way through the cooldown waits only for the rest.
-    assert.equal(getProcessStartWaitMs(afterOcrRun, 12000), 3200);
-    assert.equal(getProcessStartWaitMs(afterMontageRun, 11000), 200);
-    assert.equal(getProcessStartWaitMs(afterOcrRun, 15000), 200);
   });
 
   it('keeps an earlier OCR cooldown running through a later montage-only run', () => {

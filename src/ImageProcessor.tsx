@@ -57,7 +57,7 @@ import {
   decodeImageWithFallback,
   formatFileSize,
   formatOutputFormatLabel,
-  getProcessStartWaitMs,
+  getRerunCooldownRemainingMs,
   guardWindowFileDragEvent,
   hasExternalFilesDataTransfer,
   mergeInputImageFiles,
@@ -76,6 +76,7 @@ import {
   splitFilenameForMiddleEllipsis,
   updateHeavyResourceReleaseTimes,
   NO_HEAVY_RESOURCE_RELEASES,
+  PROCESS_START_SETTLE_MS,
   type HeavyResourceReleaseTimes,
   type ImageDimensions,
   type MaskAccordionPreviewState,
@@ -1835,18 +1836,29 @@ const ImageProcessor: React.FC = () => {
     fileDragDepthRef.current = 0;
     setIsFileDragOver(false);
     setProcessError(null);
-    setProcessedResult(null);
     setShareError(null);
     setFileSelectionNotice(null);
     setProcessingProgress({ phase: 'preparing' });
 
-    // Let the UI update (e.g., show progress) before blocking the main thread. When the previous
-    // run ended moments ago, first wait out its cooldown so mobile browsers can hand back the
-    // previous canvas / OCR worker memory before this run allocates its own.
-    await waitWithAbort(
-      getProcessStartWaitMs(heavyResourceReleaseTimesRef.current, performance.now()),
-      signal
+    // When the previous run ended moments ago, first wait out its cooldown so mobile browsers
+    // can hand back the previous canvas / OCR worker memory before this run allocates its own.
+    // The previous result stays available meanwhile, so cancelling here keeps it.
+    const rerunCooldownMs = getRerunCooldownRemainingMs(
+      heavyResourceReleaseTimesRef.current,
+      performance.now()
     );
+    if (rerunCooldownMs > 0) {
+      // Only await when there is something to wait for, so a normal run keeps clearing the
+      // result and starting the 200ms timer in the same tick as the click.
+      await waitWithAbort(rerunCooldownMs, signal);
+    }
+    if (!signal.aborted) {
+      setProcessedResult(null);
+    }
+    // Let the UI update (e.g., show progress) and the previous result go before blocking the
+    // main thread. Coming after the cooldown, this keeps back-to-back runs as far apart as the
+    // old post-run lock did (cooldown + 200ms).
+    await waitWithAbort(PROCESS_START_SETTLE_MS, signal);
 
     let firstImageBitmap: ImageBitmap | null = null;
     let ocrSessionStarted = false;
