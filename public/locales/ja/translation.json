@@ -102,6 +102,7 @@
   "alert_crop_outside_image": "クロップ領域が 1 枚目の画像範囲（{{width}} × {{height}} px）から完全に外れています。クロップ設定を見直してください。",
   "alert_invalid_mask_area": "有効になっているマスク（またはセルフマスク）の範囲は、幅・高さが 0 より大きくなるように設定してください。",
   "alert_mask_outside_crop": "有効になっている手動マスク（またはセルフマスク）の範囲がクロップ領域から完全に外れています。マスク座標（元画像基準）またはクロップ設定を見直してください。",
+  "alert_mask_outside_image": "有効になっているマスク（またはセルフマスク）の範囲が 1 枚目の画像範囲（{{width}} × {{height}} px）の外側の余白にしかかかっておらず、何も隠せません。マスクが画像に重なるよう、マスクまたはクロップ設定を見直してください。",
   "alert_invalid_color_setting": "色設定は有効な不透明の HEX カラーコード（例: #000000）にしてください。",
   "alert_failed_to_get_temp_canvas_context_for_auto_crop": "オートモード用の一時的なコンテキストの取得に失敗しました。",
   "alert_failed_to_detect_crop_area": "クロップ領域の自動検出に失敗しました。手動で設定してください。",

@@ -718,6 +718,13 @@ export type PrepareMontagePlanAlert =
   | { kind: 'crop_outside_image'; width: number; height: number }
   | { kind: 'invalid_mask_area'; target: MaskTarget; mode: 'manual' | 'ratio' }
   | { kind: 'mask_outside_crop'; target: MaskTarget }
+  | {
+      kind: 'mask_outside_image';
+      target: MaskTarget;
+      mode: 'manual' | 'ratio';
+      width: number;
+      height: number;
+    }
   | { kind: 'ocr_not_found'; enemyMissing: boolean; selfMissing: boolean }
   | { kind: 'ocr_error'; error: unknown }
   | { kind: 'ocr_aborted' };
@@ -758,14 +765,29 @@ const buildMaskCoordPatch = (
     ? { maskX: rect.x, maskY: rect.y, maskWidth: rect.width, maskHeight: rect.height }
     : { selfMaskX: rect.x, selfMaskY: rect.y, selfMaskWidth: rect.width, selfMaskHeight: rect.height };
 
+type StaticMaskFailureReason = 'invalid_mask_area' | 'mask_outside_crop' | 'mask_outside_image';
+
 const toStaticMaskAlert = (
   target: MaskTarget,
-  reason: 'invalid_mask_area' | 'mask_outside_crop',
-  mode: 'manual' | 'ratio'
-): PrepareMontagePlanAlert =>
-  reason === 'invalid_mask_area'
-    ? { kind: 'invalid_mask_area', target, mode }
-    : { kind: 'mask_outside_crop', target };
+  reason: StaticMaskFailureReason,
+  mode: 'manual' | 'ratio',
+  imageSize: ImageDimensions
+): PrepareMontagePlanAlert => {
+  switch (reason) {
+    case 'invalid_mask_area':
+      return { kind: 'invalid_mask_area', target, mode };
+    case 'mask_outside_crop':
+      return { kind: 'mask_outside_crop', target };
+    case 'mask_outside_image':
+      return {
+        kind: 'mask_outside_image',
+        target,
+        mode,
+        width: imageSize.width,
+        height: imageSize.height,
+      };
+  }
+};
 
 /**
  * Maps a `PrepareMontagePlanAlert` to the settings accordions that should expand
@@ -796,6 +818,14 @@ export const resolveMontageAbortUiTarget = (
         accordions: [alert.target],
         fields: [...getMaskCoordFieldKeys(alert.target)],
       };
+    case 'mask_outside_image':
+      return {
+        accordions: [alert.target],
+        fields:
+          alert.mode === 'ratio'
+            ? [...getMaskRatioFieldKeys(alert.target)]
+            : [...getMaskCoordFieldKeys(alert.target)],
+      };
     case 'ocr_not_found': {
       const accordions: SettingsAccordionId[] = [];
       if (alert.enemyMissing) accordions.push('mask');
@@ -816,15 +846,23 @@ export const resolveMontageAbortUiTarget = (
   }
 };
 
+/**
+ * Resolves a manual or ratio mask against the crop. A mask that only covers the crop's overhang
+ * past the image edges paints nothing but padding, so it fails with `mask_outside_image`.
+ */
 const resolveStaticMaskRect = (
   enabled: boolean,
   mode: ImageSettings['maskMode'],
   manualRect: PixelRect,
   ratioRect: ImageSettings['maskRatioRect'],
-  cropRect: PixelRect
+  cropRect: PixelRect,
+  imageSize: ImageDimensions
 ):
   | { ok: true; rect: PixelRect | null; needsRatioPatch: boolean }
-  | { ok: false; reason: 'invalid_mask_area' | 'mask_outside_crop'; mode: 'manual' | 'ratio' } => {
+  | { ok: false; reason: StaticMaskFailureReason; mode: 'manual' | 'ratio' } => {
+  const imageBounds: PixelRect = { x: 0, y: 0, width: imageSize.width, height: imageSize.height };
+  const overlapsImage = (rect: PixelRect): boolean =>
+    intersectPixelRects(rect, imageBounds) !== null;
   if (!enabled) {
     return { ok: true, rect: null, needsRatioPatch: false };
   }
@@ -843,12 +881,18 @@ const resolveStaticMaskRect = (
     if (!clipped) {
       return { ok: false, reason: 'mask_outside_crop', mode: 'manual' };
     }
+    if (!overlapsImage(clipped)) {
+      return { ok: false, reason: 'mask_outside_image', mode: 'manual' };
+    }
     return { ok: true, rect: clipped, needsRatioPatch: false };
   }
   if (mode === 'ratio') {
     const computed = computeRatioMaskRect(ratioRect, cropRect);
     if (!computed) {
       return { ok: false, reason: 'invalid_mask_area', mode: 'ratio' };
+    }
+    if (!overlapsImage(computed)) {
+      return { ok: false, reason: 'mask_outside_image', mode: 'ratio' };
     }
     return { ok: true, rect: computed, needsRatioPatch: true };
   }
@@ -912,13 +956,14 @@ export const prepareMontagePlan = async ({
       height: settings.maskHeight,
     },
     settings.maskRatioRect,
-    cropRect
+    cropRect,
+    imageSize
   );
   if (!enemyStatic.ok) {
     return {
       status: 'abort',
       settingsPatch,
-      alert: toStaticMaskAlert('mask', enemyStatic.reason, enemyStatic.mode),
+      alert: toStaticMaskAlert('mask', enemyStatic.reason, enemyStatic.mode, imageSize),
     };
   }
 
@@ -932,13 +977,14 @@ export const prepareMontagePlan = async ({
       height: settings.selfMaskHeight,
     },
     settings.selfMaskRatioRect,
-    cropRect
+    cropRect,
+    imageSize
   );
   if (!selfStatic.ok) {
     return {
       status: 'abort',
       settingsPatch,
-      alert: toStaticMaskAlert('selfMask', selfStatic.reason, selfStatic.mode),
+      alert: toStaticMaskAlert('selfMask', selfStatic.reason, selfStatic.mode, imageSize),
     };
   }
 

@@ -958,6 +958,116 @@ describe('prepareMontagePlan', () => {
     });
   });
 
+  it('aborts with mask_outside_image when a manual or ratio mask only covers crop padding past the image edge', async () => {
+    // 100x100 image with a 200x100 crop: x 100..200 of every tile is padding, not image pixels.
+    const paddedCropSettings = {
+      ...createDefaultSettings(),
+      cropAuto: false,
+      cropX: 0,
+      cropY: 0,
+      cropWidth: 200,
+      cropHeight: 100,
+      maskEnabled: false,
+      selfMaskEnabled: false,
+    };
+    const imageSize = { width: 100, height: 100 };
+    let ocrCalled = false;
+    const runPlan = (overrides) =>
+      prepareMontagePlan({
+        settings: { ...paddedCropSettings, ...overrides },
+        imageSize,
+        detectAutoCrop: () => ({ status: 'not_found' }),
+        detectOcrMasks: async () => {
+          ocrCalled = true;
+          return { status: 'not_found', enemyMissing: false, selfMissing: false };
+        },
+      });
+
+    const manualPaddingPlan = await runPlan({
+      maskEnabled: true,
+      maskMode: 'manual',
+      maskX: 150,
+      maskY: 0,
+      maskWidth: 50,
+      maskHeight: 100,
+    });
+    assert.equal(manualPaddingPlan.status, 'abort');
+    assert.deepEqual(manualPaddingPlan.alert, {
+      kind: 'mask_outside_image',
+      target: 'mask',
+      mode: 'manual',
+      width: 100,
+      height: 100,
+    });
+
+    // Touching the image edge (x=100) is still zero overlap.
+    const manualEdgePlan = await runPlan({
+      selfMaskEnabled: true,
+      selfMaskMode: 'manual',
+      selfMaskX: 100,
+      selfMaskY: 0,
+      selfMaskWidth: 100,
+      selfMaskHeight: 100,
+    });
+    assert.equal(manualEdgePlan.status, 'abort');
+    assert.deepEqual(manualEdgePlan.alert, {
+      kind: 'mask_outside_image',
+      target: 'selfMask',
+      mode: 'manual',
+      width: 100,
+      height: 100,
+    });
+
+    const ratioPaddingPlan = await runPlan({
+      selfMaskEnabled: true,
+      selfMaskMode: 'ratio',
+      selfMaskRatioRect: { rx0: 0.6, ry0: 0, rx1: 1, ry1: 1 },
+    });
+    assert.equal(ratioPaddingPlan.status, 'abort');
+    assert.deepEqual(ratioPaddingPlan.alert, {
+      kind: 'mask_outside_image',
+      target: 'selfMask',
+      mode: 'ratio',
+      width: 100,
+      height: 100,
+    });
+    assert.deepEqual(ratioPaddingPlan.settingsPatch, {});
+
+    // A crop that starts before the image puts the padding on the left/top instead.
+    const leadingPaddingPlan = await runPlan({
+      cropX: -100,
+      cropY: -50,
+      maskEnabled: true,
+      maskMode: 'ratio',
+      maskRatioRect: { rx0: 0, ry0: 0, rx1: 0.5, ry1: 1 },
+    });
+    assert.equal(leadingPaddingPlan.status, 'abort');
+    assert.equal(leadingPaddingPlan.alert.kind, 'mask_outside_image');
+
+    assert.equal(ocrCalled, false);
+
+    // Masks with at least 1px over the image keep working, and partial overlap is unchanged.
+    const partialPlan = await runPlan({
+      maskEnabled: true,
+      maskMode: 'manual',
+      maskX: 99,
+      maskY: 0,
+      maskWidth: 101,
+      maskHeight: 100,
+      selfMaskEnabled: true,
+      selfMaskMode: 'ratio',
+      selfMaskRatioRect: { rx0: 0.25, ry0: 0, rx1: 0.75, ry1: 1 },
+    });
+    assert.equal(partialPlan.status, 'ok');
+    assert.deepEqual(
+      partialPlan.tileMasks.map(({ x, y, width, height }) => ({ x, y, width, height })),
+      [
+        { x: 99, y: 0, width: 101, height: 100 },
+        { x: 50, y: 0, width: 100, height: 100 },
+      ]
+    );
+  });
+
   it('clips partially overlapping manual mask to cropRect without mutating manual mask coordinates', async () => {
     const plan = await prepareMontagePlan({
       settings: {
@@ -1050,6 +1160,28 @@ describe('prepareMontagePlan', () => {
     assert.deepEqual(
       resolveMontageAbortUiTarget({ kind: 'mask_outside_crop', target: 'selfMask' }, base),
       { accordions: ['selfMask'], fields: ['selfMaskX', 'selfMaskY', 'selfMaskWidth', 'selfMaskHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'mask_outside_image', target: 'mask', mode: 'manual', width: 100, height: 100 },
+        base
+      ),
+      { accordions: ['mask'], fields: ['maskX', 'maskY', 'maskWidth', 'maskHeight'] }
+    );
+    assert.deepEqual(
+      resolveMontageAbortUiTarget(
+        { kind: 'mask_outside_image', target: 'selfMask', mode: 'ratio', width: 100, height: 100 },
+        base
+      ),
+      {
+        accordions: ['selfMask'],
+        fields: [
+          'selfMaskRatioRect.rx0',
+          'selfMaskRatioRect.ry0',
+          'selfMaskRatioRect.rx1',
+          'selfMaskRatioRect.ry1',
+        ],
+      }
     );
     assert.deepEqual(
       resolveMontageAbortUiTarget(

@@ -1981,6 +1981,15 @@ const ImageProcessor: React.FC = () => {
           case 'mask_outside_crop':
             reportProcessError(msg('alert_mask_outside_crop'), uiTarget);
             break;
+          case 'mask_outside_image':
+            reportProcessError(
+              msg('alert_mask_outside_image', {
+                width: plan.alert.width,
+                height: plan.alert.height,
+              }),
+              uiTarget
+            );
+            break;
           case 'ocr_aborted':
             break;
           case 'ocr_error':

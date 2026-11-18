@@ -103,6 +103,7 @@
   "alert_crop_outside_image": "The crop area is completely outside the first image ({{width}} × {{height}} px). Please adjust the crop settings.",
   "alert_invalid_mask_area": "Active mask area must have a width and height greater than 0.",
   "alert_mask_outside_crop": "The active manual mask (or self-mask) area is completely outside the crop region. Adjust the mask coordinates (relative to the full image) or crop settings.",
+  "alert_mask_outside_image": "The active mask (or self-mask) area only covers the padding outside the first image ({{width}} × {{height}} px), so it would not hide anything. Adjust the mask or crop settings so the mask overlaps the image.",
   "alert_invalid_color_setting": "Color settings must be valid opaque hex colors (e.g., #000000).",
   "alert_failed_to_get_temp_canvas_context_for_auto_crop": "Failed to get temporary canvas context for auto-crop.",
   "alert_failed_to_detect_crop_area": "Failed to detect crop area automatically. Please set it manually.",
