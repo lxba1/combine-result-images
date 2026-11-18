@@ -493,7 +493,11 @@ export const renderMontageToBlob = async <F, B extends BitmapLike>({
     }
   };
   try {
-    const montageCtx = montageCanvas.getContext('2d', { alpha: false });
+    // willReadFrequently keeps the montage on a CPU-backed canvas. On a GPU canvas, toBlob (and
+    // the allocation probe) first read the full montage back from the GPU, which blocked the
+    // main thread for ~0.1s at encode start on desktop and keeps a second full-size copy in
+    // memory while encoding. Each tile is drawn 1:1 once, so CPU drawing costs about the same.
+    const montageCtx = montageCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
     if (!montageCtx) {
       return { status: 'context_failed' };
     }

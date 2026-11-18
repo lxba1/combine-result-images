@@ -1184,7 +1184,7 @@ describe('renderMontageToBlob', () => {
     assert.equal(mock.canvas.width, 1);
     assert.equal(mock.canvas.height, 1);
     assert.deepEqual(mock.events, [
-      'getContext:2d:{"alpha":false}',
+      'getContext:2d:{"alpha":false,"willReadFrequently":true}',
       'width=100',
       'height=80',
       'fillRect:#123456:0,0,100x80',
@@ -1508,7 +1508,7 @@ describe('renderMontageToBlob', () => {
 
     assert.equal(result.status, 'ok');
     assert.deepEqual(probeSuccessMock.events, [
-      'getContext:2d:{"alpha":false}',
+      'getContext:2d:{"alpha":false,"willReadFrequently":true}',
       'width=200',
       'height=100',
       'fillRect:#55aa55:199,99,1x1',
