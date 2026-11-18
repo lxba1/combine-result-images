@@ -995,7 +995,8 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
 };
 
 type ProcessingProgressState =
-  | { phase: 'waiting_encode' }
+  // `slow` turns on once the wait passes SLOW_ENCODE_WAIT_NOTICE_MS, showing the reload hint.
+  | { phase: 'waiting_encode'; slow: boolean }
   | { phase: 'preparing' }
   | { phase: 'ocr' }
   | { phase: 'confirming' }
@@ -1030,6 +1031,12 @@ const waitWithAbort = (ms: number, signal: AbortSignal): Promise<void> => {
     signal.addEventListener('abort', onAbort, { once: true });
   });
 };
+
+/**
+ * How long a run waits for a cancelled run's encode before suggesting a reload. A large PNG on a
+ * phone can take tens of seconds, so this only adds a hint; the wait itself goes on.
+ */
+const SLOW_ENCODE_WAIT_NOTICE_MS = 30_000;
 
 /** Resolves when `task` settles or on abort, whichever comes first. */
 const waitForSettleWithAbort = (task: Promise<unknown>, signal: AbortSignal): Promise<void> => {
@@ -1944,8 +1951,15 @@ const ImageProcessor: React.FC = () => {
     // always calls toBlob back. The wait shows its own status and can be cancelled.
     const abandonedEncode = abandonedMontageEncodeRef.current;
     if (abandonedEncode) {
-      setProcessingProgress({ phase: 'waiting_encode' });
+      setProcessingProgress({ phase: 'waiting_encode', slow: false });
+      // If toBlob never calls back, only a reload recovers, so say so after a long wait.
+      const slowNoticeTimerId = setTimeout(() => {
+        if (!signal.aborted && isMountedRef.current) {
+          setProcessingProgress({ phase: 'waiting_encode', slow: true });
+        }
+      }, SLOW_ENCODE_WAIT_NOTICE_MS);
       await waitForSettleWithAbort(abandonedEncode, signal);
+      clearTimeout(slowNoticeTimerId);
       if (!signal.aborted) {
         setProcessingProgress({ phase: 'preparing' });
       }
@@ -2298,7 +2312,7 @@ const ImageProcessor: React.FC = () => {
     }
     switch (processingProgress.phase) {
       case 'waiting_encode':
-        return t('status_waiting_previous_encode');
+        return t('status_waiting_cancelled_encode');
       case 'preparing':
         return t('status_preparing');
       case 'ocr':
@@ -2314,6 +2328,11 @@ const ImageProcessor: React.FC = () => {
         return t('status_encoding');
     }
   })();
+
+  const showSlowEncodeWaitNotice =
+    !isCancelling &&
+    processingProgress?.phase === 'waiting_encode' &&
+    processingProgress.slow;
 
   const drawingProgress =
     !isCancelling &&
@@ -3119,6 +3138,22 @@ const ImageProcessor: React.FC = () => {
                   />
                 )}
               </Box>
+              {showSlowEncodeWaitNotice && (
+                <Alert severity="warning" sx={{ mt: 1.5 }}>
+                  {t('alert_cancelled_encode_slow')}
+                  <Box sx={{ mt: 1 }}>
+                    <Button
+                      variant="outlined"
+                      color="inherit"
+                      size="small"
+                      onClick={() => window.location.reload()}
+                      sx={{ whiteSpace: 'nowrap' }}
+                    >
+                      {t('reload_page')}
+                    </Button>
+                  </Box>
+                </Alert>
+              )}
               {processedResult && (
                 <Box sx={{ mt: 3, pt: 2.5, borderTop: 1, borderColor: 'divider', overflowAnchor: 'none' }} ref={resultRef}>
                   <Box

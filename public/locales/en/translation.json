@@ -126,7 +126,9 @@
   "processing": "Processing...",
   "cancelling": "Cancelling...",
   "status_preparing": "Preparing images...",
-  "status_waiting_previous_encode": "Waiting for the previous encode to finish...",
+  "status_waiting_cancelled_encode": "Waiting for the cancelled processing to stop...",
+  "alert_cancelled_encode_slow": "The cancelled processing is taking a long time to stop. If it does not stop, reload the page (you will need to select the images again).",
+  "reload_page": "Reload",
   "status_processing_progress": "Processing… {{current}} / {{total}}",
   "status_encoding": "Encoding image...",
   "status_cancelling": "Cancelling processing..."
