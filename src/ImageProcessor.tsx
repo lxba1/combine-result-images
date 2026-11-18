@@ -79,11 +79,25 @@ import {
   updateHeavyResourceReleaseTimes,
   NO_HEAVY_RESOURCE_RELEASES,
   PROCESS_START_SETTLE_MS,
+  type FileSelectionNoticeSpec,
   type HeavyResourceReleaseTimes,
   type ImageDimensions,
   type MaskAccordionPreviewState,
   type RatioPreviewSnapshot,
 } from './montageHelpers.ts';
+
+/**
+ * A translation key plus its interpolation params. Messages kept in state use this instead of a
+ * translated string and are translated at render time, so a visible message follows the UI
+ * language when it is switched.
+ */
+interface TranslatableMessage {
+  key: string;
+  params?: Record<string, string | number>;
+}
+
+const msg = (key: string, params?: TranslatableMessage['params']): TranslatableMessage =>
+  params ? { key, params } : { key };
 
 const fileKeyMap = new WeakMap<File, number>();
 let nextFileKeyId = 1;
@@ -1160,17 +1174,16 @@ const ImageProcessor: React.FC = () => {
   const [images, setImages] = useState<File[]>([]);
   const [fileListExpanded, setFileListExpanded] = useState(true);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
-  const [fileSelectionNotice, setFileSelectionNotice] = useState<{
-    severity: 'info' | 'warning' | 'error';
-    message: string;
-  } | null>(null);
+  // Kept as a translation key + params (not a translated string) so a visible notice
+  // follows the UI language when it is switched.
+  const [fileSelectionNotice, setFileSelectionNotice] = useState<FileSelectionNoticeSpec | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
   const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
   const [ratioPreview, setRatioPreview] = useState<RatioPreviewSnapshot<File> | null>(null);
   const [processedResult, setProcessedResult] = useState<ProcessedMontageResult | null>(null);
   const [isSharing, setIsSharing] = useState(false);
-  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<TranslatableMessage | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgressState | null>(null);
@@ -1182,7 +1195,8 @@ const ImageProcessor: React.FC = () => {
     selfMask: false,
   });
   const [processError, setProcessError] = useState<{
-    message: string;
+    /** Shown one per line. */
+    lines: readonly TranslatableMessage[];
     fields: ReadonlySet<SettingFieldKey>;
   } | null>(null);
   const [largeCanvasConfirm, setLargeCanvasConfirm] = useState<{ open: boolean; message: string }>({
@@ -1247,13 +1261,13 @@ const ImageProcessor: React.FC = () => {
   };
 
   const reportProcessError = (
-    message: string,
+    message: TranslatableMessage | readonly TranslatableMessage[],
     target: { accordions?: readonly SettingsAccordionId[]; fields?: readonly SettingFieldKey[] } = {}
   ) => {
     if (!isMountedRef.current) return;
     expandAccordions(target.accordions ?? []);
     setProcessError({
-      message,
+      lines: 'key' in message ? [message] : message,
       fields: new Set(target.fields ?? []),
     });
   };
@@ -1478,15 +1492,7 @@ const ImageProcessor: React.FC = () => {
     if (merged.addedCount > 0 || images.length === 0) {
       setProcessError(null);
     }
-    const notice = resolveFileSelectionNotice(merged);
-    if (!notice) {
-      setFileSelectionNotice(null);
-      return;
-    }
-    setFileSelectionNotice({
-      severity: notice.severity,
-      message: 'params' in notice ? t(notice.messageKey, notice.params) : t(notice.messageKey),
-    });
+    setFileSelectionNotice(resolveFileSelectionNotice(merged));
   };
 
   /** Opens the native file picker via the hidden input; used by the upload button (mouse and keyboard). */
@@ -1816,13 +1822,13 @@ const ImageProcessor: React.FC = () => {
   const processImages = async () => {
     if (isProcessing) return;
     if (images.length === 0) {
-      reportProcessError(t('alert_select_images_first'));
+      reportProcessError(msg('alert_select_images_first'));
       return;
     }
 
     const validation = validateSettingsBeforeProcess(settings);
     if (!validation.valid) {
-      reportProcessError(t(validation.alertKey), {
+      reportProcessError(msg(validation.alertKey), {
         accordions: [validation.accordion],
         fields: validation.fields,
       });
@@ -1949,14 +1955,14 @@ const ImageProcessor: React.FC = () => {
         const uiTarget = resolveMontageAbortUiTarget(plan.alert, nextSettings);
         switch (plan.alert.kind) {
           case 'auto_crop_context_error':
-            reportProcessError(t('alert_failed_to_get_temp_canvas_context_for_auto_crop'), uiTarget);
+            reportProcessError(msg('alert_failed_to_get_temp_canvas_context_for_auto_crop'), uiTarget);
             break;
           case 'auto_crop_not_found':
-            reportProcessError(t('alert_failed_to_detect_crop_area'), uiTarget);
+            reportProcessError(msg('alert_failed_to_detect_crop_area'), uiTarget);
             break;
           case 'crop_outside_image':
             reportProcessError(
-              t('alert_crop_outside_image', {
+              msg('alert_crop_outside_image', {
                 width: plan.alert.width,
                 height: plan.alert.height,
               }),
@@ -1964,23 +1970,23 @@ const ImageProcessor: React.FC = () => {
             );
             break;
           case 'invalid_mask_area':
-            reportProcessError(t('alert_invalid_mask_area'), uiTarget);
+            reportProcessError(msg('alert_invalid_mask_area'), uiTarget);
             break;
           case 'mask_outside_crop':
-            reportProcessError(t('alert_mask_outside_crop'), uiTarget);
+            reportProcessError(msg('alert_mask_outside_crop'), uiTarget);
             break;
           case 'ocr_aborted':
             break;
           case 'ocr_error':
             console.error(plan.alert.error);
-            reportProcessError(t('alert_ocr_error'), uiTarget);
+            reportProcessError(msg('alert_ocr_error'), uiTarget);
             break;
           case 'ocr_not_found':
             reportProcessError(
               [
-                plan.alert.enemyMissing ? t('alert_could_not_find_right_lv') : '',
-                plan.alert.selfMissing ? t('alert_could_not_find_left_lv') : '',
-              ].filter(Boolean).join('\n'),
+                ...(plan.alert.enemyMissing ? [msg('alert_could_not_find_right_lv')] : []),
+                ...(plan.alert.selfMissing ? [msg('alert_could_not_find_left_lv')] : []),
+              ],
               uiTarget
             );
             break;
@@ -1995,7 +2001,7 @@ const ImageProcessor: React.FC = () => {
         const sizeUiTarget = resolveCanvasSizeErrorUiTarget(sizeEval.reason, finalSettings.cropAuto);
         if (sizeEval.reason === 'exceeds_webp_dimension') {
           reportProcessError(
-            t('alert_webp_canvas_size', {
+            msg('alert_webp_canvas_size', {
               width: sizeEval.width.toLocaleString(),
               height: sizeEval.height.toLocaleString(),
               maxWebpDimension: MAX_WEBP_DIMENSION.toLocaleString(),
@@ -2004,7 +2010,7 @@ const ImageProcessor: React.FC = () => {
           );
         } else {
           reportProcessError(
-            t('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }),
+            msg('alert_invalid_canvas_size', { width: sizeEval.width, height: sizeEval.height }),
             sizeUiTarget
           );
         }
@@ -2082,7 +2088,7 @@ const ImageProcessor: React.FC = () => {
           `Encoded output dimension mismatch: expected ${sizeEval.width}x${sizeEval.height}, got ${renderResult.actualWidth}x${renderResult.actualHeight}`
         );
         reportProcessError(
-          t('alert_output_dimension_mismatch', {
+          msg('alert_output_dimension_mismatch', {
             expectedWidth: sizeEval.width.toLocaleString(),
             expectedHeight: sizeEval.height.toLocaleString(),
             actualWidth: renderResult.actualWidth.toLocaleString(),
@@ -2092,7 +2098,7 @@ const ImageProcessor: React.FC = () => {
         return;
       }
       if (renderResult.status === 'allocation_failed' || renderResult.status === 'encode_failed') {
-        reportProcessError(t('alert_image_generation_failed'));
+        reportProcessError(msg('alert_image_generation_failed'));
         return;
       }
 
@@ -2121,7 +2127,7 @@ const ImageProcessor: React.FC = () => {
       }
       if (error instanceof ImageDecodeError) {
         console.error(`Failed to decode image "${error.fileName}":`, error);
-        reportProcessError(t('alert_image_decode_failed', { fileName: error.fileName }));
+        reportProcessError(msg('alert_image_decode_failed', { fileName: error.fileName }));
         return;
       }
       if (error instanceof ImageResolutionMismatchError) {
@@ -2129,7 +2135,7 @@ const ImageProcessor: React.FC = () => {
           `Image resolution mismatch for "${error.fileName}": expected ${error.expectedWidth}x${error.expectedHeight}, got ${error.actualWidth}x${error.actualHeight}`
         );
         reportProcessError(
-          t('alert_image_resolution_mismatch', {
+          msg('alert_image_resolution_mismatch', {
             fileName: error.fileName,
             actualWidth: error.actualWidth,
             actualHeight: error.actualHeight,
@@ -2267,7 +2273,7 @@ const ImageProcessor: React.FC = () => {
       if (!isCancelled) {
         console.warn('Failed to share result image:', error);
         if (isMountedRef.current) {
-          setShareError(t('alert_share_failed'));
+          setShareError(msg('alert_share_failed'));
         }
       }
     } finally {
@@ -2749,7 +2755,9 @@ const ImageProcessor: React.FC = () => {
                   closeText={t('close')}
                   sx={{ mt: 1.5 }}
                 >
-                  {fileSelectionNotice.message}
+                  {'params' in fileSelectionNotice
+                    ? t(fileSelectionNotice.messageKey, fileSelectionNotice.params)
+                    : t(fileSelectionNotice.messageKey)}
                 </Alert>
               )}
               {images.length > 0 && (
@@ -2972,7 +2980,7 @@ const ImageProcessor: React.FC = () => {
                   closeText={t('close')}
                   sx={{ mt: 2, whiteSpace: 'pre-line' }}
                 >
-                  {processError.message}
+                  {processError.lines.map((line) => t(line.key, line.params)).join('\n')}
                 </Alert>
               )}
               <Box sx={{ mt: processingStatusText ? 1.5 : 0 }} translate="no">
@@ -3051,7 +3059,7 @@ const ImageProcessor: React.FC = () => {
                       closeText={t('close')}
                       sx={{ mt: 1.5 }}
                     >
-                      {shareError}
+                      {t(shareError.key, shareError.params)}
                     </Alert>
                   )}
                   <Box sx={{ mt: 2, display: 'flex', gap: 1.5, alignItems: 'stretch' }}>
