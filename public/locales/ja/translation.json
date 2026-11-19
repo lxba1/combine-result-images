@@ -128,6 +128,6 @@
   "alert_cancelled_encode_slow": "キャンセルした処理の終了に時間がかかっています。終わらない場合はページを再読み込みしてください（画像は選び直しが必要です）。",
   "reload_page": "再読み込み",
   "status_processing_progress": "処理中… {{current}} / {{total}} 枚",
-  "status_encoding": "画像を書き出しています...",
+  "status_encoding": "画像を生成しています...",
   "status_cancelling": "処理をキャンセルしています..."
 }
