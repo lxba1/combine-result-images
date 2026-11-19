@@ -1705,10 +1705,6 @@ export interface MaskAccordionPreviewState {
   isUpdating?: boolean;
 }
 
-/**
- * Derives the mask-accordion ratio preview state, retaining the previous valid preview
- * image while a replacement builds so the accordion height does not jump mid-edit.
- */
 /** Wait before rebuilding the open ratio preview after only the manual crop changed. */
 export const RATIO_PREVIEW_CROP_DEBOUNCE_MS = 200;
 
@@ -1733,6 +1729,10 @@ export const resolveRatioPreviewBuildDelayMs = <TFile>(
     ? RATIO_PREVIEW_CROP_DEBOUNCE_MS
     : 0;
 
+/**
+ * Derives the mask-accordion ratio preview state, retaining the previous valid preview
+ * image while a replacement builds so the accordion height does not jump mid-edit.
+ */
 export const resolveMaskAccordionPreviewState = <TFile>({
   hasImages,
   previewSourceImage,
