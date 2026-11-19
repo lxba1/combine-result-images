@@ -1719,6 +1719,9 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handlePreviewExited = () => {
+    // Reopened during the close animation: keep the newly opened preview. (MUI already skips
+    // onExited in that case; this keeps it safe without relying on that.)
+    if (previewOpen) return;
     previewRequestIdRef.current += 1;
     requestedPreviewFileRef.current = null;
     setRequestedPreviewFile(null);
@@ -2415,7 +2418,12 @@ const ImageProcessor: React.FC = () => {
     }
   };
 
-  const activePreviewFile = renderedPreview?.file ?? requestedPreviewFile;
+  // The file being navigated to. Title, counter and the prev/next buttons follow it, just like
+  // handleStepPreview does, so they agree while its image is still loading.
+  const activePreviewFile = requestedPreviewFile ?? renderedPreview?.file ?? null;
+  // True until the image for activePreviewFile has loaded (or failed); the last image stays dimmed.
+  const isPreviewLoading =
+    activePreviewFile !== null && renderedPreview?.file !== activePreviewFile;
   const previewDimensions =
     renderedPreview && renderedPreview.file === activePreviewFile
       ? renderedPreview.dimensions
@@ -3348,7 +3356,9 @@ const ImageProcessor: React.FC = () => {
         </DialogTitle>
         <DialogContent
           dividers
+          aria-busy={isPreviewLoading || undefined}
           sx={{
+            position: 'relative',
             px: { xs: 1.5, sm: 2.5 },
             py: { xs: 1.5, sm: 2 },
             height: { xs: 'auto', sm: '62vh' },
@@ -3382,9 +3392,18 @@ const ImageProcessor: React.FC = () => {
                   border: 1,
                   borderColor: 'divider',
                   bgcolor: 'background.default',
+                  opacity: isPreviewLoading ? 0.4 : 1,
+                  transition: 'opacity 120ms',
                 }}
               />
             )
+          )}
+          {isPreviewLoading && (
+            <CircularProgress
+              size={32}
+              aria-hidden="true"
+              sx={{ position: 'absolute', top: '50%', left: '50%', mt: -2, ml: -2 }}
+            />
           )}
         </DialogContent>
         {hasMultiplePreviewFiles && (
