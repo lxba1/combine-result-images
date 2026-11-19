@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, ButtonBase, TextField, Container, Grid, Card, CardContent, Typography, CircularProgress, LinearProgress, Box, Slider, Switch, FormControlLabel, FormHelperText, Select, MenuItem, InputLabel, FormControl, Accordion, AccordionSummary, AccordionDetails, IconButton, Menu, ListItemIcon, ListItemText, Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Collapse, useMediaQuery } from '@mui/material';
 import { useColorScheme, useTheme, styled } from '@mui/material/styles';
@@ -1197,6 +1198,12 @@ const ImageProcessor: React.FC = () => {
   const isCompactViewportRef = useRef(isCompactViewport);
 
   const [settings, setSettings] = useState<ImageSettings>(() => loadSettingsFromStorage());
+  // Latest committed settings, updated during commit (also inside flushSync), so the process
+  // button can read values committed in the same click (see handleProcessClick).
+  const settingsRef = useRef(settings);
+  useLayoutEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   useEffect(() => {
     saveSettingsToStorage(settings);
@@ -1913,22 +1920,7 @@ const ImageProcessor: React.FC = () => {
     }
   };
 
-  /**
-   * Settings fields commit partial input (3-digit hex, empty or out-of-range numbers) on blur.
-   * Blur the focused field when the process button is released, before its click, so the run
-   * starts from the committed value even where pressing a button may not move focus
-   * (reported for iOS Safari). Where the browser already blurs it, this does nothing.
-   * Runs on pointerup, not pointerdown: a touch that turns into a scroll ends in pointercancel,
-   * so swiping over the button leaves the field (and the on-screen keyboard) alone.
-   */
-  const commitFocusedFieldBeforeProcessing = () => {
-    const active = document.activeElement;
-    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
-      active.blur();
-    }
-  };
-
-  const processImages = async () => {
+  const processImages = async (runSettings: ImageSettings) => {
     // This run outlives the render it started from, and `t` stays fixed to that render's
     // language. Messages kept in state therefore hold keys (msg) and are translated at render
     // time; strings needed right away use i18n.t, which follows the current language.
@@ -1940,7 +1932,7 @@ const ImageProcessor: React.FC = () => {
       return;
     }
 
-    const validation = validateSettingsBeforeProcess(settings);
+    const validation = validateSettingsBeforeProcess(runSettings);
     if (!validation.valid) {
       reportProcessError(msg(validation.alertKey), {
         accordions: [validation.accordion],
@@ -2033,7 +2025,7 @@ const ImageProcessor: React.FC = () => {
       const sourceBitmap = firstImageBitmap;
 
       const plan = await prepareMontagePlan({
-        settings,
+        settings: runSettings,
         imageSize: expectedDimensions,
         detectAutoCrop: () => detectAutoCropFromImage(sourceBitmap),
         detectOcrMasks: ({ cropRect, needsEnemyOcr, needsSelfOcr }) => {
@@ -2080,8 +2072,8 @@ const ImageProcessor: React.FC = () => {
 
       const nextSettings =
         Object.keys(plan.settingsPatch).length > 0
-          ? { ...settings, ...plan.settingsPatch }
-          : settings;
+          ? { ...runSettings, ...plan.settingsPatch }
+          : runSettings;
       if (Object.keys(plan.settingsPatch).length > 0) {
         setSettings(nextSettings);
       }
@@ -2334,6 +2326,24 @@ const ImageProcessor: React.FC = () => {
         setIsProcessing(false);
       }
     }
+  };
+
+  /**
+   * Settings fields commit partial input (3-digit hex, empty or out-of-range numbers) on blur.
+   * Where clicking a button may not move focus (reported for iOS Safari), the draft would still
+   * be uncommitted here. Blur the focused field inside flushSync so its commit renders now, then
+   * start the run with those committed settings. Doing this in the click (not on pointer
+   * events) means only a real click commits: a swipe over the button or a drag that merely ends
+   * on it leaves the field alone. Where the browser already blurred it, this does nothing.
+   */
+  const handleProcessClick = () => {
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+      flushSync(() => {
+        active.blur();
+      });
+    }
+    void processImages(settingsRef.current);
   };
 
   const processingStatusText = (() => {
@@ -3113,8 +3123,7 @@ const ImageProcessor: React.FC = () => {
                 <Button
                   variant={buttonVariants.process}
                   color="primary"
-                  onPointerUp={commitFocusedFieldBeforeProcessing}
-                  onClick={processImages}
+                  onClick={handleProcessClick}
                   disabled={isProcessing || images.length === 0}
                   fullWidth={!canCancelProcessing}
                   size="large"
