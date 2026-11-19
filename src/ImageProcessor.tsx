@@ -3414,6 +3414,9 @@ const ImageProcessor: React.FC = () => {
           aria-busy={isPreviewLoading || undefined}
           sx={{
             position: 'relative',
+            // Rapid clicks on a nav button that just became disabled (pointer-events: none) fall
+            // through as double/triple clicks and would select, and tint, the image.
+            userSelect: 'none',
             px: { xs: 1.5, sm: 2.5 },
             py: { xs: 1.5, sm: 2 },
             height: { xs: 'auto', sm: '62vh' },
@@ -3478,6 +3481,7 @@ const ImageProcessor: React.FC = () => {
               py: 1,
               borderBottom: 1,
               borderColor: 'divider',
+              userSelect: 'none',
             }}
           >
             <Button
@@ -3511,7 +3515,9 @@ const ImageProcessor: React.FC = () => {
             </Button>
           </Box>
         )}
-        <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1.5, justifyContent: 'space-between' }}>
+        <DialogActions
+          sx={{ px: { xs: 2, sm: 3 }, py: 1.5, justifyContent: 'space-between', userSelect: 'none' }}
+        >
           <Button
             color="error"
             variant="outlined"
