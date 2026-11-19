@@ -1216,6 +1216,13 @@ const ImageProcessor: React.FC = () => {
   // follows the UI language when it is switched.
   const [fileSelectionNotice, setFileSelectionNotice] = useState<FileSelectionNoticeSpec | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  // Mirrors previewOpen synchronously, so handlers that run before the next render (e.g. the
+  // dialog's onExited) see a reopen that has not rendered yet.
+  const previewOpenRef = useRef(false);
+  const updatePreviewOpen = (open: boolean) => {
+    previewOpenRef.current = open;
+    setPreviewOpen(open);
+  };
   const [requestedPreviewFile, setRequestedPreviewFile] = useState<File | null>(null);
   const [renderedPreview, setRenderedPreview] = useState<RenderedPreviewState | null>(null);
   const [ratioPreview, setRatioPreview] = useState<RatioPreviewSnapshot<File> | null>(null);
@@ -1628,7 +1635,7 @@ const ImageProcessor: React.FC = () => {
     setFileSelectionNotice(null);
     setProcessError(null);
     setFileListExpanded(true);
-    setPreviewOpen(false);
+    updatePreviewOpen(false);
     setRequestedPreviewFile(null);
     setRenderedPreview(null);
     setRatioPreview(null);
@@ -1663,7 +1670,7 @@ const ImageProcessor: React.FC = () => {
       requestedPreviewFileRef.current === targetFile
     ) {
       previewRequestIdRef.current += 1;
-      setPreviewOpen(false);
+      updatePreviewOpen(false);
     }
     removeImageFile(targetFile);
   };
@@ -1703,7 +1710,7 @@ const ImageProcessor: React.FC = () => {
   };
 
   const handleOpenPreview = (file: File) => {
-    setPreviewOpen(true);
+    updatePreviewOpen(true);
     startPreviewLoad(file);
   };
 
@@ -1729,13 +1736,14 @@ const ImageProcessor: React.FC = () => {
 
   const handleClosePreview = () => {
     previewRequestIdRef.current += 1;
-    setPreviewOpen(false);
+    updatePreviewOpen(false);
   };
 
   const handlePreviewExited = () => {
     // Reopened during the close animation: keep the newly opened preview. (MUI already skips
-    // onExited in that case; this keeps it safe without relying on that.)
-    if (previewOpen) return;
+    // onExited in that case; this keeps it safe without relying on that, and the ref also
+    // covers a reopen that has not rendered yet.)
+    if (previewOpenRef.current) return;
     previewRequestIdRef.current += 1;
     requestedPreviewFileRef.current = null;
     setRequestedPreviewFile(null);
@@ -1757,7 +1765,7 @@ const ImageProcessor: React.FC = () => {
       previewRequestIdRef.current += 1;
       requestedPreviewFileRef.current = null;
       setRequestedPreviewFile(null);
-      setPreviewOpen(false);
+      updatePreviewOpen(false);
     }
   };
 
