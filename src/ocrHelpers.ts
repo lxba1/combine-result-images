@@ -85,12 +85,15 @@ export interface OcrSessionController<
 > {
   ready: Promise<ManagedOcrSession<W, C, I>>;
   /**
-   * Shuts the session down. Resolves once every native Worker the factory spawned has been
-   * terminated and every worker wrapper delivered so far has finished terminating. It does not
-   * wait for a factory that has not returned yet: after an init timeout or abort the factory may
-   * never settle (its Worker thread is already gone), and waiting would hang the shutdown. A
-   * wrapper the factory delivers later is terminated as soon as it arrives, and any terminate()
-   * call made after that waits for it.
+   * Shuts the session down. Resolves once every native Worker captured while the factory ran
+   * synchronously has been terminated, and every worker wrapper delivered so far has finished
+   * terminating. Only Workers constructed during that synchronous call are captured (the Worker
+   * constructor is proxied just for it); tesseract.js spawns its Worker there, but a factory
+   * that creates one after its first await is not covered and relies on its wrapper's
+   * terminate(). It does not wait for a factory that has not returned yet: after an init
+   * timeout or abort the factory may never settle (its Worker thread is already gone), and
+   * waiting would hang the shutdown. A wrapper the factory delivers later is terminated as soon
+   * as it arrives, and any terminate() call made after that waits for it.
    */
   terminate: () => Promise<void>;
 }
