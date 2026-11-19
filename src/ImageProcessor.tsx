@@ -789,7 +789,9 @@ const MaskAccordion: React.FC<MaskAccordionProps> = ({
         />
       </AccordionSummary>
       <AccordionDetails>
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+        {/* mt matches the gap below the header in Settings and Cropping, whose first rows carry
+            their own top spacing (floating field labels, the switch's padding). */}
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75, mb: 1 }}>
           {description}
         </Typography>
         <FormControlLabel
