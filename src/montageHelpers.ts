@@ -801,6 +801,28 @@ export const resolveOutputExtension = (
   return FORMAT_TO_EXTENSION[requestedFormat] ?? 'webp';
 };
 
+const FORMAT_TO_MIME: Record<OutputFormat, string> = {
+  webp: 'image/webp',
+  png: 'image/png',
+  jpeg: 'image/jpeg',
+};
+
+/**
+ * Resolves the image MIME type for the result file, matching `resolveOutputExtension`: the actual
+ * Blob type when it is a known image type, otherwise the requested format. Never returns a
+ * non-image type, which `navigator.canShare` would reject.
+ */
+export const resolveOutputMimeType = (
+  blobType: string | undefined | null,
+  requestedFormat: OutputFormat
+): string => {
+  const normalizedMime = (blobType ?? '').split(';', 1)[0].trim().toLowerCase();
+  if (Object.hasOwn(MIME_TO_EXTENSION, normalizedMime)) {
+    return normalizedMime === 'image/jpg' ? 'image/jpeg' : normalizedMime;
+  }
+  return FORMAT_TO_MIME[requestedFormat] ?? 'image/webp';
+};
+
 export type PrepareMontagePlanAlert =
   | { kind: 'auto_crop_context_error' }
   | { kind: 'auto_crop_not_found' }

@@ -72,6 +72,7 @@ import {
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveOutputMimeType,
   resolveRatioPreviewBuildDelayMs,
   resolveRatioPreviewCropRect,
   resolveRemovablePreviewTarget,
@@ -2389,8 +2390,12 @@ const ImageProcessor: React.FC = () => {
 
   const shareableResultFile = useMemo(() => {
     if (!processedResult) return null;
+    // Always an image type, so navigator.canShare accepts the file even if Blob.type is empty.
     return new File([processedResult.blob], processedResult.filename, {
-      type: processedResult.blob.type || 'application/octet-stream',
+      type: resolveOutputMimeType(
+        processedResult.blob.type,
+        processedResult.settingsSnapshot.outputFormat
+      ),
     });
   }, [processedResult]);
 

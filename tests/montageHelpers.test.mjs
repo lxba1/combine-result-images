@@ -31,6 +31,7 @@ import {
   resolveMontageAbortUiTarget,
   resolveNextPreviewAfterRemoval,
   resolveOutputExtension,
+  resolveOutputMimeType,
   resolveRatioPreviewBuildDelayMs,
   resolveRatioPreviewCropRect,
   resolveRemovablePreviewTarget,
@@ -822,6 +823,45 @@ describe('resolveOutputExtension', () => {
     assert.equal(resolveOutputExtension(undefined, 'png'), 'png');
     assert.equal(resolveOutputExtension(null, 'jpeg'), 'jpg');
     assert.equal(resolveOutputExtension('application/octet-stream', 'jpeg'), 'jpg');
+  });
+});
+
+describe('resolveOutputMimeType', () => {
+  it('uses the actual Blob image type, normalized', () => {
+    assert.equal(resolveOutputMimeType('image/png', 'webp'), 'image/png');
+    assert.equal(resolveOutputMimeType(' IMAGE/WEBP; codecs=vp8 ', 'png'), 'image/webp');
+    assert.equal(resolveOutputMimeType('image/jpg', 'png'), 'image/jpeg');
+  });
+
+  it('falls back to the requested format, never to a non-image type', () => {
+    assert.equal(resolveOutputMimeType('', 'webp'), 'image/webp');
+    assert.equal(resolveOutputMimeType(undefined, 'png'), 'image/png');
+    assert.equal(resolveOutputMimeType(null, 'jpeg'), 'image/jpeg');
+    assert.equal(resolveOutputMimeType('application/octet-stream', 'png'), 'image/png');
+  });
+
+  it('matches the extension chosen by resolveOutputExtension', () => {
+    const extensionOf = { 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg' };
+    for (const blobType of ['', 'image/png', 'image/jpg', 'image/webp', 'text/plain']) {
+      for (const format of ['webp', 'png', 'jpeg']) {
+        assert.equal(
+          extensionOf[resolveOutputMimeType(blobType, format)],
+          resolveOutputExtension(blobType, format),
+          `${blobType || '(empty)'} / ${format}`
+        );
+      }
+    }
+  });
+
+  it('keeps an empty-typed result shareable where only image files can be shared', () => {
+    // Web Share only accepts certain file types; application/octet-stream is not one of them.
+    const imageOnlyNavigator = {
+      share: async () => {},
+      canShare: ({ files }) => files.every((file) => file.type.startsWith('image/')),
+    };
+    const fileFor = (type) => new File(['bytes'], 'tile.webp', { type });
+    assert.equal(canShareImageFile(fileFor('application/octet-stream'), imageOnlyNavigator), false);
+    assert.equal(canShareImageFile(fileFor(resolveOutputMimeType('', 'webp')), imageOnlyNavigator), true);
   });
 });
 
