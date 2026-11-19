@@ -550,19 +550,28 @@ export const startOcrSession = <
         throw createAbortError();
       });
     }
-    if (pendingWorkerError) {
-      // The worker failed between steps; fail now instead of waiting out the timeout.
-      const workerError = pendingWorkerError;
+    const failWithPendingWorkerError = (): Promise<T> => {
+      const workerError = pendingWorkerError as Error;
       pendingWorkerError = null;
       return startShutdown().then(() => {
         throw workerError;
       });
+    };
+    if (pendingWorkerError) {
+      // The worker failed between steps; fail now instead of waiting out the timeout.
+      return failWithPendingWorkerError();
     }
     let task: Promise<T>;
     try {
       task = Promise.resolve(run());
     } catch (error) {
       task = Promise.reject(toError(error));
+    }
+    if (pendingWorkerError) {
+      // run() reported a worker error synchronously, before this step's handlers were attached
+      // (they attach in the same tick, so nothing can arrive in between). Fail this step with it.
+      void task.catch(() => {});
+      return failWithPendingWorkerError();
     }
     return raceWithAbortAndTimeout(task, {
       timeoutMs,
@@ -628,8 +637,10 @@ export const startOcrSession = <
       throw error;
     }
 
-    // Ensure late resolution or rejection after timeout/abort never leaks an orphan worker or unhandled rejection.
-    // A worker that arrives after shutdown started is terminated here, and terminate() waits for it.
+    // Track the worker the moment initialization resolves (this handler runs before `ready`
+    // resumes), so a shutdown requested in between still terminates it. A worker that arrives
+    // after shutdown started is terminated here instead, and terminate() waits for it. Also keeps
+    // a late rejection after timeout/abort from becoming unhandled.
     rawWorkerPromise.then(
       (worker) => {
         if (terminated) {
@@ -637,6 +648,8 @@ export const startOcrSession = <
             () => {},
             () => {}
           );
+        } else {
+          resolvedWorker = worker;
         }
       },
       () => {}

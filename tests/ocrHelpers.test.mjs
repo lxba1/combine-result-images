@@ -474,6 +474,62 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
     assert.equal(workerTerminated, 2);
   });
 
+  it('fails a step with a worker error reported synchronously while the step starts', async () => {
+    let workerTerminated = 0;
+    const startSession = (recognizeResult) =>
+      startOcrSession({
+        initTimeoutMs: 1000,
+        recognizeTimeoutMs: 5000,
+        createWorkerFn: async (_langs, _oem, opts) => ({
+          recognize: () => {
+            opts?.errorHandler?.('sync worker failure');
+            return recognizeResult();
+          },
+          terminate: async () => {
+            workerTerminated += 1;
+          },
+        }),
+      });
+
+    // recognize() still resolves: the step must not be treated as a success.
+    const session = await startSession(() => Promise.resolve({ data: { blocks: [] } })).ready;
+    await assert.rejects(session.recognizeBlocks({ width: 100, height: 50 }), /sync worker failure/);
+    assert.equal(workerTerminated, 1);
+
+    // recognize() never answers: fail right away instead of waiting out the 5s timeout.
+    const session2 = await startSession(() => new Promise(() => {})).ready;
+    const startedAt = Date.now();
+    await assert.rejects(session2.recognizeBlocks({ width: 100, height: 50 }), /sync worker failure/);
+    assert.ok(Date.now() - startedAt < 1000, 'should not wait for the recognize timeout');
+    assert.equal(workerTerminated, 2);
+  });
+
+  it('terminates the worker wrapper when shutdown lands between init resolving and ready', async () => {
+    let wrapperTerminated = 0;
+    const workerObj = {
+      recognize: async () => ({ data: { blocks: [] } }),
+      terminate: async () => {
+        wrapperTerminated += 1;
+      },
+    };
+    let initPromise;
+    const handle = startOcrSession({
+      initTimeoutMs: 1000,
+      createWorkerFn: () => {
+        initPromise = Promise.resolve(workerObj);
+        return initPromise;
+      },
+    });
+    // Runs after initialization resolved but before `ready` resumes.
+    initPromise.then(() => {
+      void handle.terminate();
+    });
+
+    await assert.rejects(handle.ready, (err) => isAbortError(err));
+    await handle.terminate();
+    assert.equal(wrapperTerminated, 1);
+  });
+
   it('waits for a worker that finishes initializing just after an init error', async () => {
     let lateTerminateCalls = 0;
     let finishLateTerminate;
