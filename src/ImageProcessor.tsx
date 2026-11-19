@@ -147,7 +147,8 @@ const createFileTimestampFormatter = (locale?: string) => {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false,
+    // hourCycle alone: per ECMA-402, any hour12 value overrides hourCycle, leaving 00 vs 24 at
+    // midnight to locale data.
     hourCycle: 'h23',
   };
   const sameYearFmt = new Intl.DateTimeFormat(locale, baseOptions);
@@ -158,6 +159,10 @@ const createFileTimestampFormatter = (locale?: string) => {
       return '';
     }
     const date = new Date(timestamp);
+    // Beyond Date's ±8.64e15 ms range the date is invalid and format() would throw mid-render.
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
     return (date.getFullYear() === currentYear ? sameYearFmt : otherYearFmt).format(date);
   };
 };
