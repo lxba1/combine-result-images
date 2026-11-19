@@ -1328,7 +1328,9 @@ const ImageProcessor: React.FC = () => {
     const resolve = largeCanvasConfirmResolverRef.current;
     largeCanvasConfirmResolverRef.current = null;
     if (isMountedRef.current) {
-      setLargeCanvasConfirm({ open: false, message: null });
+      // Keep the message so the body stays visible while the dialog fades out; every open
+      // (requestLargeCanvasConfirm) sets a fresh one.
+      setLargeCanvasConfirm((prev) => ({ ...prev, open: false }));
     }
     resolve?.(confirmed);
   };
