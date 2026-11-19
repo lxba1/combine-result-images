@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="">
+<!-- Initial language for crawlers and pre-JS rendering; src/i18n.ts switches it to the detected UI language at runtime -->
+<html lang="ja">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -8,14 +9,23 @@
     <meta name="theme-color" content="#F3F5F9" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0D1117" media="(prefers-color-scheme: dark)" />
     <title>Image Combiner</title>
-    <!-- Open Graph Protocol (OGP) Tags -->
+    <meta name="description" content="ブルアカ対抗戦リザルト画像の結合 / Combine Blue Archive PvP result images" />
+    <!-- Open Graph Protocol (OGP) Tags (URLs must be absolute for crawlers) -->
     <meta property="og:title" content="Image Combiner" />
-    <meta property="og:description" content="ブルアカ対抗戦リザルト画像の結合" />
-    <meta property="og:url" content="https://lxba1.github.io/combine-result-images" />
+    <meta property="og:description" content="ブルアカ対抗戦リザルト画像の結合 / Combine Blue Archive PvP result images" />
+    <meta property="og:url" content="https://lxba1.github.io/combine-result-images/" />
     <meta property="og:type" content="website" />
-    <!-- Twitter Card Tags -->
-    <meta name="twitter:card" content="summary" />
+    <meta property="og:site_name" content="Image Combiner" />
+    <meta property="og:locale" content="ja_JP" />
+    <meta property="og:image" content="https://lxba1.github.io/combine-result-images/ogp.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Image Combiner - ブルアカ対抗戦リザルト結合 / BA PvP Result Combiner" />
+    <!-- Twitter Card Tags (title, description and image fall back to the og: tags) -->
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:creator" content="@lxba9" />
+    <meta name="twitter:image:alt" content="Image Combiner - ブルアカ対抗戦リザルト結合 / BA PvP Result Combiner" />
     <!-- End OGP & Twitter Card Tags -->
   </head>
   <body>
