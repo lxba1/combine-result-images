@@ -2430,6 +2430,9 @@ const ImageProcessor: React.FC = () => {
       : null;
   const previewLoadError =
     Boolean(renderedPreview && renderedPreview.file === activePreviewFile && renderedPreview.error);
+  // Whether the dialog body shows an error or an image (a failed preview has no image URL).
+  const hasPreviewBodyContent =
+    previewLoadError || Boolean(renderedPreview && renderedPreview.url !== '');
   const previewMetaSeparator = activeLocale?.startsWith('ja') ? ' ・ ' : ' · ';
   const previewMetaText = activePreviewFile
     ? [
@@ -3362,7 +3365,9 @@ const ImageProcessor: React.FC = () => {
             px: { xs: 1.5, sm: 2.5 },
             py: { xs: 1.5, sm: 2 },
             height: { xs: 'auto', sm: '62vh' },
-            minHeight: { xs: renderedPreview ? 0 : 160, sm: 320 },
+            // On phones the body is as tall as its image or error. With neither (first open, or
+            // stepping on from a failed image) keep room for the loading spinner.
+            minHeight: { xs: hasPreviewBodyContent ? 0 : 160, sm: 320 },
             maxHeight: { xs: 'none', sm: 620 },
             overflow: { xs: 'auto', sm: 'hidden' },
             display: 'flex',
