@@ -458,12 +458,36 @@ export const startOcrSession = <
   const spawnedBlobUrls: string[] = [];
   const detachNativeErrorListeners: (() => void)[] = [];
   let terminated = false;
+  // Shared by every terminate() call, so a second caller also waits for the shutdown to finish.
+  let terminatePromise: Promise<void> | null = null;
   let activeErrorRejector: ((err: Error) => void) | null = null;
   let activeCancelRejector: (() => void) | null = null;
+  // A worker error that arrived while no OCR step was waiting; the next step fails with it.
+  let pendingWorkerError: Error | null = null;
 
-  const terminate = async (): Promise<void> => {
-    if (terminated) return;
-    terminated = true;
+  const reportWorkerError = (err: Error): void => {
+    if (activeErrorRejector) {
+      activeErrorRejector(err);
+    } else if (!terminated && !pendingWorkerError) {
+      pendingWorkerError = err;
+    }
+  };
+
+  const terminate = (): Promise<void> => {
+    if (!terminatePromise) {
+      terminated = true;
+      // Assign the promise before shutting down: cancelling the active step below calls
+      // terminate() again (as its onSettlingError), which must get this same promise.
+      let finishTerminate: () => void = () => {};
+      terminatePromise = new Promise<void>((resolve) => {
+        finishTerminate = resolve;
+      });
+      void shutDown().finally(finishTerminate);
+    }
+    return terminatePromise;
+  };
+
+  const shutDown = async (): Promise<void> => {
     const cancelPending = activeCancelRejector;
     activeCancelRejector = null;
     cancelPending?.();
@@ -506,8 +530,17 @@ export const startOcrSession = <
     task: Promise<T>,
     timeoutMs: number,
     timeoutMessage: string
-  ): Promise<T> =>
-    raceWithAbortAndTimeout(task, {
+  ): Promise<T> => {
+    if (pendingWorkerError && !terminated) {
+      // The worker failed between steps; fail now instead of waiting out the timeout.
+      const workerError = pendingWorkerError;
+      pendingWorkerError = null;
+      void task.catch(() => {});
+      return terminate().then(() => {
+        throw workerError;
+      });
+    }
+    return raceWithAbortAndTimeout(task, {
       timeoutMs,
       timeoutMessage,
       signal,
@@ -526,6 +559,7 @@ export const startOcrSession = <
         };
       },
     });
+  };
 
   const ready = (async (): Promise<ManagedOcrSession<W, C, I>> => {
     if (signal?.aborted) {
@@ -533,33 +567,42 @@ export const startOcrSession = <
     }
 
     const initDeadline = Date.now() + initTimeoutMs;
-    const rawWorkerPromise = captureSpawnedWorkers(
-      () =>
-        createWorkerFn(langs, oem, {
-          errorHandler: (err) => {
-            activeErrorRejector?.(toError(err));
-          },
-        }),
-      (nativeWorker, scriptUrl) => {
-        spawnedNativeWorkers.push(nativeWorker);
-        const normalizedUrl =
-          typeof URL !== 'undefined' && scriptUrl instanceof URL ? scriptUrl.href : scriptUrl;
-        if (typeof normalizedUrl === 'string' && normalizedUrl.startsWith('blob:')) {
-          spawnedBlobUrls.push(normalizedUrl);
+    let rawWorkerPromise: Promise<W>;
+    try {
+      rawWorkerPromise = captureSpawnedWorkers(
+        () =>
+          createWorkerFn(langs, oem, {
+            errorHandler: (err) => {
+              reportWorkerError(toError(err));
+            },
+          }),
+        (nativeWorker, scriptUrl) => {
+          spawnedNativeWorkers.push(nativeWorker);
+          const normalizedUrl =
+            typeof URL !== 'undefined' && scriptUrl instanceof URL ? scriptUrl.href : scriptUrl;
+          if (typeof normalizedUrl === 'string' && normalizedUrl.startsWith('blob:')) {
+            spawnedBlobUrls.push(normalizedUrl);
+          }
+          if (typeof nativeWorker.addEventListener === 'function') {
+            const onWorkerError = (event: ErrorEvent) => {
+              const detail =
+                event?.error ??
+                (event?.message ? new Error(event.message) : new Error('OCR web worker error'));
+              reportWorkerError(toError(detail));
+            };
+            nativeWorker.addEventListener('error', onWorkerError);
+            detachNativeErrorListeners.push(() => {
+              nativeWorker.removeEventListener?.('error', onWorkerError);
+            });
+          }
         }
-        if (typeof nativeWorker.addEventListener === 'function') {
-          const onWorkerError = (event: ErrorEvent) => {
-            const detail =
-              event?.error ?? (event?.message ? new Error(event.message) : new Error('OCR web worker error'));
-            activeErrorRejector?.(toError(detail));
-          };
-          nativeWorker.addEventListener('error', onWorkerError);
-          detachNativeErrorListeners.push(() => {
-            nativeWorker.removeEventListener?.('error', onWorkerError);
-          });
-        }
-      }
-    );
+      );
+    } catch (error) {
+      // createWorkerFn threw synchronously, possibly after spawning a Worker: shut it down here
+      // rather than relying on the caller to terminate the session.
+      await terminate();
+      throw error;
+    }
 
     // Ensure late resolution or rejection after timeout/abort never leaks an orphan worker or unhandled rejection.
     rawWorkerPromise.then(

@@ -325,6 +325,126 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
     assert.equal(workerTerminated, 1);
   });
 
+  it('makes every terminate() call wait for the same shutdown to finish', async () => {
+    let workerTerminateCalls = 0;
+    let finishWorkerTerminate;
+    const handle = startOcrSession({
+      initTimeoutMs: 1000,
+      recognizeTimeoutMs: 5000,
+      createWorkerFn: async () => ({
+        recognize: () => new Promise(() => {}),
+        terminate: () => {
+          workerTerminateCalls += 1;
+          return new Promise((resolve) => {
+            finishWorkerTerminate = resolve;
+          });
+        },
+      }),
+    });
+    const session = await handle.ready;
+
+    let recognizeSettled = false;
+    const recognizing = session.recognizeBlocks({ width: 100, height: 50 });
+    recognizing.catch(() => {}).finally(() => {
+      recognizeSettled = true;
+    });
+
+    let firstDone = false;
+    let secondDone = false;
+    const first = handle.terminate().then(() => {
+      firstDone = true;
+    });
+    const second = handle.terminate().then(() => {
+      secondDone = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    // Neither caller (nor the cancelled step) moves on while worker.terminate() is pending.
+    assert.equal(workerTerminateCalls, 1);
+    assert.equal(firstDone, false);
+    assert.equal(secondDone, false);
+    assert.equal(recognizeSettled, false);
+
+    finishWorkerTerminate();
+    await Promise.all([first, second]);
+    assert.equal(firstDone && secondDone, true);
+    await assert.rejects(recognizing, (err) => isAbortError(err));
+    assert.equal(workerTerminateCalls, 1);
+  });
+
+  it('fails the next step right away when the worker errors between steps', async () => {
+    let nativeTerminated = 0;
+    let workerTerminated = 0;
+    let errorListener = null;
+    let errorHandlerFromOptions = null;
+
+    class FakeNativeWorker {
+      addEventListener(type, listener) {
+        if (type === 'error') errorListener = listener;
+      }
+      removeEventListener(type, listener) {
+        if (type === 'error' && errorListener === listener) errorListener = null;
+      }
+      terminate() {
+        nativeTerminated += 1;
+      }
+    }
+    globalThis.Worker = FakeNativeWorker;
+
+    const startSession = () =>
+      startOcrSession({
+        initTimeoutMs: 1000,
+        recognizeTimeoutMs: 5000,
+        createWorkerFn: async (_langs, _oem, opts) => {
+          new globalThis.Worker('fake-worker.js');
+          errorHandlerFromOptions = opts?.errorHandler ?? null;
+          return {
+            recognize: () => new Promise(() => {}), // a crashed worker never answers
+            terminate: async () => {
+              workerTerminated += 1;
+            },
+          };
+        },
+      });
+
+    // Native Worker error event while no step is running.
+    const handle = startSession();
+    const session = await handle.ready;
+    errorListener({ message: 'worker crashed' });
+    const startedAt = Date.now();
+    await assert.rejects(session.recognizeBlocks({ width: 100, height: 50 }), /worker crashed/);
+    assert.ok(Date.now() - startedAt < 1000, 'should not wait for the 5s recognize timeout');
+    assert.equal(nativeTerminated, 1);
+    assert.equal(workerTerminated, 1);
+
+    // tesseract.js errorHandler call between steps.
+    const handle2 = startSession();
+    const session2 = await handle2.ready;
+    errorHandlerFromOptions('job failed');
+    await assert.rejects(session2.recognizeBlocks({ width: 100, height: 50 }), /job failed/);
+    assert.equal(workerTerminated, 2);
+  });
+
+  it('terminates a spawned Worker when createWorkerFn throws synchronously', async () => {
+    let nativeTerminated = 0;
+
+    class FakeNativeWorker {
+      terminate() {
+        nativeTerminated += 1;
+      }
+    }
+    globalThis.Worker = FakeNativeWorker;
+
+    const handle = startOcrSession({
+      createWorkerFn: () => {
+        new globalThis.Worker('fake-worker.js');
+        throw new Error('createWorker exploded');
+      },
+    });
+
+    await assert.rejects(handle.ready, /createWorker exploded/);
+    assert.equal(nativeTerminated, 1);
+  });
+
   it('rejects 0x0 canvas dimensions cleanly before calling worker.recognize()', async () => {
     let recognizeCalled = 0;
 
