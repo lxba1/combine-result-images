@@ -657,10 +657,14 @@ export const startOcrSession = <
     rawWorkerPromise.then(
       (worker) => {
         if (terminated) {
-          lateWorkerShutdown = worker.terminate().then(
-            () => {},
-            () => {}
-          );
+          // Call terminate() inside a then so a synchronous throw is absorbed like a rejection
+          // (as shutDown() does) instead of escaping this handler as an unhandled rejection.
+          lateWorkerShutdown = Promise.resolve()
+            .then(() => worker.terminate())
+            .then(
+              () => {},
+              () => {}
+            );
         } else {
           resolvedWorker = worker;
         }

@@ -586,6 +586,38 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
     assert.equal(nativeTerminated, 1);
   });
 
+  it('absorbs a synchronous throw from a late worker terminate()', async () => {
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      let deliverWorker;
+      const handle = startOcrSession({
+        initTimeoutMs: 20,
+        createWorkerFn: () =>
+          new Promise((resolve) => {
+            deliverWorker = resolve;
+          }),
+      });
+      await assert.rejects(handle.ready, /initialization timed out/i);
+      await handle.terminate();
+
+      // The factory returns after shutdown, and its wrapper's terminate() throws synchronously.
+      deliverWorker({
+        recognize: async () => ({ data: { blocks: [] } }),
+        terminate: () => {
+          throw new Error('terminate exploded');
+        },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      await handle.terminate(); // still resolves
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('waits for a worker that finishes initializing just after an init error', async () => {
     let lateTerminateCalls = 0;
     let finishLateTerminate;
