@@ -530,6 +530,62 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
     assert.equal(wrapperTerminated, 1);
   });
 
+  it('does not wait on a factory that returns only after an init timeout and terminate()', async () => {
+    let nativeTerminated = 0;
+    class FakeNativeWorker {
+      terminate() {
+        nativeTerminated += 1;
+      }
+    }
+    globalThis.Worker = FakeNativeWorker;
+
+    let deliverWorker;
+    let wrapperTerminateCalls = 0;
+    let finishWrapperTerminate;
+    const handle = startOcrSession({
+      initTimeoutMs: 20,
+      createWorkerFn: () => {
+        new globalThis.Worker('fake-worker.js');
+        return new Promise((resolve) => {
+          deliverWorker = resolve;
+        });
+      },
+    });
+
+    await assert.rejects(handle.ready, /initialization timed out/i);
+    // Order 1: terminate() completes while the factory has still not returned. It must not hang,
+    // and the Worker thread the factory spawned is already terminated.
+    await handle.terminate();
+    assert.equal(nativeTerminated, 1);
+    assert.equal(wrapperTerminateCalls, 0);
+
+    // Order 2: the factory returns afterwards; its wrapper is terminated as soon as it arrives.
+    deliverWorker({
+      recognize: async () => ({ data: { blocks: [] } }),
+      terminate: () => {
+        wrapperTerminateCalls += 1;
+        return new Promise((resolve) => {
+          finishWrapperTerminate = resolve;
+        });
+      },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(wrapperTerminateCalls, 1);
+
+    // A terminate() call made after the wrapper arrived waits for its shutdown.
+    let secondDone = false;
+    const second = handle.terminate().then(() => {
+      secondDone = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(secondDone, false);
+    finishWrapperTerminate();
+    await second;
+    assert.equal(secondDone, true);
+    assert.equal(wrapperTerminateCalls, 1);
+    assert.equal(nativeTerminated, 1);
+  });
+
   it('waits for a worker that finishes initializing just after an init error', async () => {
     let lateTerminateCalls = 0;
     let finishLateTerminate;

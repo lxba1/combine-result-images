@@ -84,6 +84,14 @@ export interface OcrSessionController<
   I = Blob | HTMLCanvasElement,
 > {
   ready: Promise<ManagedOcrSession<W, C, I>>;
+  /**
+   * Shuts the session down. Resolves once every native Worker the factory spawned has been
+   * terminated and every worker wrapper delivered so far has finished terminating. It does not
+   * wait for a factory that has not returned yet: after an init timeout or abort the factory may
+   * never settle (its Worker thread is already gone), and waiting would hang the shutdown. A
+   * wrapper the factory delivers later is terminated as soon as it arrives, and any terminate()
+   * call made after that waits for it.
+   */
   terminate: () => Promise<void>;
 }
 
@@ -491,8 +499,10 @@ export const startOcrSession = <
     return terminatePromise;
   };
 
-  // Public shutdown: also waits for a worker that finished initializing after the shutdown
-  // began; it is terminated separately as soon as it arrives (see the rawWorkerPromise handler).
+  // Public shutdown (contract on OcrSessionController.terminate): also waits for a worker that
+  // finished initializing after the shutdown began; it is terminated separately as soon as it
+  // arrives (see the rawWorkerPromise handler). lateWorkerShutdown is read when the shutdown
+  // settles, so each call covers every worker delivered by then; it never waits on the factory.
   const terminate = (): Promise<void> =>
     startShutdown().then(() => lateWorkerShutdown ?? undefined);
 
