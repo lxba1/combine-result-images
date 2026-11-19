@@ -567,6 +567,33 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
     assert.equal(lateTerminateCalls, 1);
   });
 
+  it('shuts the session down when recognizeBlocks() starts after an abort', async () => {
+    let recognizeCalls = 0;
+    let workerTerminated = 0;
+    const controller = new AbortController();
+    const handle = startOcrSession({
+      initTimeoutMs: 1000,
+      recognizeTimeoutMs: 5000,
+      signal: controller.signal,
+      createWorkerFn: async () => ({
+        recognize: async () => {
+          recognizeCalls += 1;
+          return { data: { blocks: [] } };
+        },
+        terminate: async () => {
+          workerTerminated += 1;
+        },
+      }),
+    });
+    const session = await handle.ready;
+
+    // Aborted between steps; the caller never calls terminate() itself.
+    controller.abort();
+    await assert.rejects(session.recognizeBlocks({ width: 100, height: 50 }), (err) => isAbortError(err));
+    assert.equal(recognizeCalls, 0);
+    assert.equal(workerTerminated, 1);
+  });
+
   it('terminates a spawned Worker when createWorkerFn throws synchronously', async () => {
     let nativeTerminated = 0;
 

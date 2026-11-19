@@ -680,6 +680,9 @@ export const startOcrSession = <
       worker,
       recognizeBlocks: async (input) => {
         if (terminated || signal?.aborted) {
+          // Shut down first, as the init path does, so an abort seen here never leaves the
+          // worker running for callers that do not terminate the session themselves.
+          await startShutdown();
           throw createAbortError();
         }
         const recognizeDeadline = Date.now() + recognizeTimeoutMs;
