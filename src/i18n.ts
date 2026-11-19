@@ -5,6 +5,13 @@ import HttpApi from 'i18next-http-backend';
 
 export const LANGUAGE_STORAGE_KEY = 'i18nextLng';
 
+// Dynamically update the HTML lang attribute when the language changes. Registered before init()
+// so the first languageChanged is caught even if init ever runs synchronously (bundled resources
+// or initAsync: false); today init defers its work with setTimeout.
+i18n.on('languageChanged', (lng) => {
+  document.documentElement.lang = lng;
+});
+
 i18n
   .use(HttpApi) // loads translations from your server
   .use(LanguageDetector) // detect user language
@@ -25,10 +32,5 @@ i18n
       useSuspense: true, // this is important for non-web-vitals-focused apps
     },
   });
-
-// Dynamically update the HTML lang attribute when the language changes
-i18n.on('languageChanged', (lng) => {
-  document.documentElement.lang = lng;
-});
 
 export default i18n;
