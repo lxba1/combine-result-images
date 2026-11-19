@@ -1915,9 +1915,11 @@ const ImageProcessor: React.FC = () => {
 
   /**
    * Settings fields commit partial input (3-digit hex, empty or out-of-range numbers) on blur.
-   * Blur the focused field when the process button is pressed, before its click, so the run
+   * Blur the focused field when the process button is released, before its click, so the run
    * starts from the committed value even where pressing a button may not move focus
    * (reported for iOS Safari). Where the browser already blurs it, this does nothing.
+   * Runs on pointerup, not pointerdown: a touch that turns into a scroll ends in pointercancel,
+   * so swiping over the button leaves the field (and the on-screen keyboard) alone.
    */
   const commitFocusedFieldBeforeProcessing = () => {
     const active = document.activeElement;
@@ -3111,7 +3113,7 @@ const ImageProcessor: React.FC = () => {
                 <Button
                   variant={buttonVariants.process}
                   color="primary"
-                  onPointerDown={commitFocusedFieldBeforeProcessing}
+                  onPointerUp={commitFocusedFieldBeforeProcessing}
                   onClick={processImages}
                   disabled={isProcessing || images.length === 0}
                   fullWidth={!canCancelProcessing}
