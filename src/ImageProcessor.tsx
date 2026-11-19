@@ -2158,7 +2158,10 @@ const ImageProcessor: React.FC = () => {
 
       const montageCanvas = canvasRef.current;
       if (!montageCanvas) {
-        throw new Error(i18n.t('alert_canvas_not_ready'));
+        // Nothing is left half-done here, so report it inline and keep the selected images
+        // instead of falling through to the catch-all alert and page reload.
+        reportProcessError(msg('alert_canvas_not_ready'));
+        return;
       }
 
       montageCanvasUsed = true;
@@ -2205,8 +2208,15 @@ const ImageProcessor: React.FC = () => {
         }
         return;
       }
-      if (renderResult.status === 'context_failed') {
-        throw new Error(i18n.t('alert_failed_to_get_context'));
+      if (
+        renderResult.status === 'context_failed' ||
+        renderResult.status === 'allocation_failed' ||
+        renderResult.status === 'encode_failed'
+      ) {
+        // All three usually mean the browser ran short of memory. The canvas has already been
+        // shrunk back, so the user can retry with fewer images without reloading the page.
+        reportProcessError(msg('alert_image_generation_failed'));
+        return;
       }
       if (renderResult.status === 'dimension_mismatch') {
         console.warn(
@@ -2220,10 +2230,6 @@ const ImageProcessor: React.FC = () => {
             actualHeight: renderResult.actualHeight.toLocaleString(),
           })
         );
-        return;
-      }
-      if (renderResult.status === 'allocation_failed' || renderResult.status === 'encode_failed') {
-        reportProcessError(msg('alert_image_generation_failed'));
         return;
       }
 
