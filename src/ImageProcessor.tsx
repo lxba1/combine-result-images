@@ -582,8 +582,8 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
   const isFocusedRef = useRef(false);
   const isDirtyRef = useRef(false);
   const preEditValueRef = useRef(value);
+  // Bumped on every commit so the effect below resyncs the DOM even when `value` is unchanged.
   const [commitVersion, setCommitVersion] = useState(0);
-  const syncedCommitVersionRef = useRef(0);
 
   const normalize = (num: number): number => {
     let next = integer ? Math.round(num) : Math.round(num * 10000) / 10000;
@@ -599,7 +599,6 @@ const NumericTextField: React.FC<NumericTextFieldProps> = ({
     }
     // Resync DOM value and pre-edit baseline after commits even if parent swap/clamp keeps `value` unchanged.
     if ((!isFocusedRef.current || !isDirtyRef.current) && inputRef.current) {
-      syncedCommitVersionRef.current = commitVersion;
       inputRef.current.value = String(value);
       preEditValueRef.current = value;
     }
