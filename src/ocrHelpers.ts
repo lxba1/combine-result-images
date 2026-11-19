@@ -460,6 +460,8 @@ export const startOcrSession = <
   let terminated = false;
   // Shared by every terminate() call, so a second caller also waits for the shutdown to finish.
   let terminatePromise: Promise<void> | null = null;
+  // Termination of a worker whose initialization finished only after shutdown had started.
+  let lateWorkerShutdown: Promise<void> | null = null;
   let activeErrorRejector: ((err: Error) => void) | null = null;
   let activeCancelRejector: (() => void) | null = null;
   // A worker error that arrived while no OCR step was waiting; the next step fails with it.
@@ -473,11 +475,13 @@ export const startOcrSession = <
     }
   };
 
-  const terminate = (): Promise<void> => {
+  // Starts the shutdown once and returns it. The session's own failure paths wait on this, so a
+  // failure is reported without also waiting on a late worker (callers then use terminate()).
+  const startShutdown = (): Promise<void> => {
     if (!terminatePromise) {
       terminated = true;
       // Assign the promise before shutting down: cancelling the active step below calls
-      // terminate() again (as its onSettlingError), which must get this same promise.
+      // startShutdown() again (as its onSettlingError), which must get this same promise.
       let finishTerminate: () => void = () => {};
       terminatePromise = new Promise<void>((resolve) => {
         finishTerminate = resolve;
@@ -486,6 +490,11 @@ export const startOcrSession = <
     }
     return terminatePromise;
   };
+
+  // Public shutdown: also waits for a worker that finished initializing after the shutdown
+  // began; it is terminated separately as soon as it arrives (see the rawWorkerPromise handler).
+  const terminate = (): Promise<void> =>
+    startShutdown().then(() => lateWorkerShutdown ?? undefined);
 
   const shutDown = async (): Promise<void> => {
     const cancelPending = activeCancelRejector;
@@ -526,26 +535,41 @@ export const startOcrSession = <
     spawnedBlobUrls.length = 0;
   };
 
+  /**
+   * Runs one OCR step under the session's timeout, abort and worker-error guards. The step is
+   * passed as a function so a cancelled session, or a worker that already failed, never calls
+   * into the worker; a synchronous throw from the step also shuts the session down.
+   */
   const raceWithGuards = <T>(
-    task: Promise<T>,
+    run: () => Promise<T>,
     timeoutMs: number,
     timeoutMessage: string
   ): Promise<T> => {
-    if (pendingWorkerError && !terminated) {
+    if (terminated || signal?.aborted) {
+      return startShutdown().then(() => {
+        throw createAbortError();
+      });
+    }
+    if (pendingWorkerError) {
       // The worker failed between steps; fail now instead of waiting out the timeout.
       const workerError = pendingWorkerError;
       pendingWorkerError = null;
-      void task.catch(() => {});
-      return terminate().then(() => {
+      return startShutdown().then(() => {
         throw workerError;
       });
+    }
+    let task: Promise<T>;
+    try {
+      task = Promise.resolve(run());
+    } catch (error) {
+      task = Promise.reject(toError(error));
     }
     return raceWithAbortAndTimeout(task, {
       timeoutMs,
       timeoutMessage,
       signal,
       isAborted: () => terminated,
-      onSettlingError: terminate,
+      onSettlingError: startShutdown,
       registerHandlers: ({ onError, onCancel }) => {
         activeErrorRejector = onError;
         activeCancelRejector = onCancel;
@@ -600,36 +624,40 @@ export const startOcrSession = <
     } catch (error) {
       // createWorkerFn threw synchronously, possibly after spawning a Worker: shut it down here
       // rather than relying on the caller to terminate the session.
-      await terminate();
+      await startShutdown();
       throw error;
     }
 
     // Ensure late resolution or rejection after timeout/abort never leaks an orphan worker or unhandled rejection.
+    // A worker that arrives after shutdown started is terminated here, and terminate() waits for it.
     rawWorkerPromise.then(
       (worker) => {
         if (terminated) {
-          void worker.terminate().catch(() => {});
+          lateWorkerShutdown = worker.terminate().then(
+            () => {},
+            () => {}
+          );
         }
       },
       () => {}
     );
 
     const worker = await raceWithGuards(
-      rawWorkerPromise,
+      () => rawWorkerPromise,
       initTimeoutMs,
       'OCR worker initialization timed out'
     );
     resolvedWorker = worker;
 
     if (terminated || signal?.aborted) {
-      await terminate();
+      await startShutdown();
       throw createAbortError();
     }
 
     if (configureWorker) {
       const remainingInitMs = Math.max(1, initDeadline - Date.now());
       await raceWithGuards(
-        configureWorker(worker),
+        () => configureWorker(worker),
         remainingInitMs,
         'OCR worker parameter initialization timed out'
       );
@@ -661,7 +689,7 @@ export const startOcrSession = <
           inputImage =
             typeof toBlobFn === 'function'
               ? await raceWithGuards(
-                  canvasToBlob({ toBlob: toBlobFn.bind(canvas) }),
+                  () => canvasToBlob({ toBlob: toBlobFn.bind(canvas) }),
                   recognizeTimeoutMs,
                   'OCR image encoding timed out'
                 )
@@ -669,7 +697,7 @@ export const startOcrSession = <
         }
         const remainingRecognizeMs = Math.max(1, recognizeDeadline - Date.now());
         const result = await raceWithGuards(
-          worker.recognize(inputImage as I, {}, { blocks: true }),
+          () => worker.recognize(inputImage as I, {}, { blocks: true }),
           remainingRecognizeMs,
           'OCR recognition timed out'
         );

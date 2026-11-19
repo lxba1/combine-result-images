@@ -424,6 +424,93 @@ describe('startOcrSession timeouts, worker failures, and cancellation', () => {
     assert.equal(workerTerminated, 2);
   });
 
+  it('checks a recorded worker error before calling into the worker, and handles sync throws', async () => {
+    let errorListener = null;
+    class FakeNativeWorker {
+      addEventListener(type, listener) {
+        if (type === 'error') errorListener = listener;
+      }
+      removeEventListener() {}
+      terminate() {}
+    }
+    globalThis.Worker = FakeNativeWorker;
+
+    let recognizeCalls = 0;
+    let workerTerminated = 0;
+    const startSession = () =>
+      startOcrSession({
+        initTimeoutMs: 1000,
+        recognizeTimeoutMs: 5000,
+        createWorkerFn: async () => {
+          new globalThis.Worker('fake-worker.js');
+          return {
+            recognize: () => {
+              recognizeCalls += 1;
+              throw new Error('recognize threw synchronously');
+            },
+            terminate: async () => {
+              workerTerminated += 1;
+            },
+          };
+        },
+      });
+
+    // A recorded worker error wins, and recognize() is never called on the failed worker.
+    const handle = startSession();
+    const session = await handle.ready;
+    errorListener({ message: 'worker crashed' });
+    await assert.rejects(session.recognizeBlocks({ width: 100, height: 50 }), /worker crashed/);
+    assert.equal(recognizeCalls, 0);
+    assert.equal(workerTerminated, 1);
+
+    // Without a recorded error, a sync throw from recognize() still shuts the session down.
+    const handle2 = startSession();
+    const session2 = await handle2.ready;
+    await assert.rejects(
+      session2.recognizeBlocks({ width: 100, height: 50 }),
+      /recognize threw synchronously/
+    );
+    assert.equal(recognizeCalls, 1);
+    assert.equal(workerTerminated, 2);
+  });
+
+  it('waits for a worker that finishes initializing just after an init error', async () => {
+    let lateTerminateCalls = 0;
+    let finishLateTerminate;
+    const handle = startOcrSession({
+      initTimeoutMs: 5000,
+      createWorkerFn: (_langs, _oem, opts) =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            opts?.errorHandler?.('language load failed');
+            resolve({
+              recognize: async () => ({ data: { blocks: [] } }),
+              terminate: () => {
+                lateTerminateCalls += 1;
+                return new Promise((r) => {
+                  finishLateTerminate = r;
+                });
+              },
+            });
+          }, 10);
+        }),
+    });
+
+    await assert.rejects(handle.ready, /language load failed/);
+    let terminateDone = false;
+    const terminating = handle.terminate().then(() => {
+      terminateDone = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(lateTerminateCalls, 1);
+    assert.equal(terminateDone, false, 'terminate() must wait for the late worker to shut down');
+
+    finishLateTerminate();
+    await terminating;
+    assert.equal(terminateDone, true);
+    assert.equal(lateTerminateCalls, 1);
+  });
+
   it('terminates a spawned Worker when createWorkerFn throws synchronously', async () => {
     let nativeTerminated = 0;
 
