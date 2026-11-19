@@ -3366,8 +3366,12 @@ const ImageProcessor: React.FC = () => {
             py: { xs: 1.5, sm: 2 },
             height: { xs: 'auto', sm: '62vh' },
             // On phones the body is as tall as its image or error. With neither (first open, or
-            // stepping on from a failed image) keep room for the loading spinner.
-            minHeight: { xs: hasPreviewBodyContent ? 0 : 160, sm: 320 },
+            // stepping on from a failed image) keep 160px; while loading over a very flat image,
+            // keep at least the 32px spinner plus padding.
+            minHeight: {
+              xs: !hasPreviewBodyContent ? 160 : isPreviewLoading ? 64 : 0,
+              sm: 320,
+            },
             maxHeight: { xs: 'none', sm: 620 },
             overflow: { xs: 'auto', sm: 'hidden' },
             display: 'flex',
