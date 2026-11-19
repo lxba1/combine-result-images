@@ -2517,7 +2517,10 @@ const ImageProcessor: React.FC = () => {
   });
 
   return (
-    <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100vh' }}>
+    // Top spacing is padding, not margin: with border-box sizing it stays inside the min-height,
+    // so a short page fits the viewport exactly and shows no scrollbar until the content needs one.
+    // svh = the viewport with mobile browser toolbars shown, so short pages don't scroll by the toolbar height either.
+    <Container maxWidth="lg" sx={{ pt: { xs: 2, sm: 4 }, pb: { xs: 6, md: 20 }, minHeight: '100svh' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: { xs: 2, sm: 3 } }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.75 }, minWidth: 0 }}>
           <Box
